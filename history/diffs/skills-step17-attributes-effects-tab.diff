@@ -1,0 +1,572 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 22:15:18.407279354 +0000
++++ b/src/act.c	2026-10-13 22:15:18.413744413 +0000
+@@ -86,6 +86,7 @@
+ 
+             if (ch[cn].mana < ch[cn].value[0][V_MANA] * POWERSCALE) {
+                 if (!(val = ch[cn].value[0][V_MEDITATE])) val = 7;
++                val += wisdom_boost(cn); // Wisdom helps mana regeneration
+                 ch[cn].mana = min(ch[cn].value[0][V_MANA] * POWERSCALE, ch[cn].mana + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
+                 if ((ch[cn].flags & CF_PLAYER) && RANDOM(TICKS) < ch[cn].act1) skill_used(cn, skill_for_value(V_MEDITATE)); // about once per second
+@@ -761,7 +762,7 @@
+ 
+     if ((ch[cn].flags & CF_NOMAGIC) && !(ch[cn].flags & CF_NONOMAGIC)) return 0;
+ 
+-    ch[cn].lifeshield = min(ch[cn].value[0][V_MAGICSHIELD] * POWERSCALE / MAGICSHIELDMOD, ch[cn].lifeshield + str);
++    ch[cn].lifeshield = min(spellpower(cn, V_MAGICSHIELD) * POWERSCALE / MAGICSHIELDMOD, ch[cn].lifeshield + str);
+ 
+     create_show_effect(EF_MAGICSHIELD, cn, ticker, ticker + 3, 25, 0);
+ 
+@@ -831,10 +832,10 @@
+     in = create_item("bless_spell");
+     if (!in) return 0;
+ 
+-    it[in].mod_value[0] = ch[cn].value[0][V_BLESS] / 4;
+-    it[in].mod_value[1] = ch[cn].value[0][V_BLESS] / 4;
+-    it[in].mod_value[2] = ch[cn].value[0][V_BLESS] / 4;
+-    it[in].mod_value[3] = ch[cn].value[0][V_BLESS] / 4;
++    it[in].mod_value[0] = spellpower(cn, V_BLESS) / 4;
++    it[in].mod_value[1] = spellpower(cn, V_BLESS) / 4;
++    it[in].mod_value[2] = spellpower(cn, V_BLESS) / 4;
++    it[in].mod_value[3] = spellpower(cn, V_BLESS) / 4;
+ 
+     it[in].driver = IDR_BLESS;
+ 
+@@ -843,7 +844,7 @@
+ 
+     *(int *)(it[in].drdata) = ticker + duration;
+     *(int *)(it[in].drdata + 4) = ticker;
+-    *(int *)(it[in].drdata + 8) = ch[cn].value[0][V_BLESS];
++    *(int *)(it[in].drdata + 8) = spellpower(cn, V_BLESS);
+ 
+     it[in].carried = cn;
+ 
+@@ -873,7 +874,7 @@
+         duration = BLESSDURATION;
+         if (ch[cn].value[1][V_DURATION]) duration += BLESSDURATION * ch[cn].value[0][V_DURATION] / DURATION;
+ 
+-        if (!bless_someone(co, ch[cn].value[0][V_BLESS], duration)) return 0;
++        if (!bless_someone(co, spellpower(cn, V_BLESS), duration)) return 0;
+     }
+ 
+     if (!(ch[cn].flags & CF_NONOTIFY)) notify_area(ch[cn].x, ch[cn].y, NT_CHAR, cn, 0, 0);
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 22:15:18.519279360 +0000
++++ b/src/balance.c	2026-10-13 22:15:18.523978024 +0000
+@@ -2,11 +2,15 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
++#include <stdio.h>
++#include <stdarg.h>
++#include <string.h>
+ #include "server.h"
+ #include "log.h"
+ #include "talk.h"
+ #include "btrace.h"
+ #include "balance.h"
++#include "skillreg.h"
+ 
+ int get_fight_skill(int cn) {
+     int in, m = 0;
+@@ -61,6 +65,37 @@
+ // mode and lowered this percent in fast mode; stealth walking costs this percent of a fast step's endurance
+ int perception_stealth = 25, perception_fast = 25, stealth_endurance = 100;
+ 
++// Attributes, one job each (George 2026-10-13). They never change skill levels (the skills menu shows the
++// trained level); they work inside the formulas, each adding this percent of the attribute:
++// Strength -> the melee strength level ((weapon skill + STR) / 2 below)
++// Agility -> the melee accuracy and defence levels (agility_bonus) and Speed (agility_speed, update_char)
++// Intuition -> spell power of Bless, Heal, Freeze, Magic Shield, Lightning and Fire (spellpower())
++// Wisdom -> Meditate's mana regeneration and Immunity against spells (wisdom_bonus)
++int attr_agility = 10, attr_agility_speed = 40, attr_intuition = 20, attr_wisdom = 20;
++
++// what the attributes add to a value in update_char(): only Speed now
++int attribute_bonus(int cn, int v) {
++    if (v == V_SPEED) return ch[cn].value[0][V_AGI] * attr_agility_speed / 100;
++    return 0;
++}
++
++static int agility_boost(int cn) {
++    return ch[cn].value[0][V_AGI] * attr_agility / 100;
++}
++
++int wisdom_boost(int cn) {
++    return ch[cn].value[0][V_WIS] * attr_wisdom / 100;
++}
++
++int intuition_boost(int cn) {
++    return ch[cn].value[0][V_INT] * attr_intuition / 100;
++}
++
++// Immunity against spells: the skill plus Wisdom
++int immunity_value(int cn) {
++    return ch[cn].value[0][V_IMMUNITY] + wisdom_boost(cn);
++}
++
+ // Perception after the looker's speed mode (cautious in stealth, careless when running)
+ int perception_value(int cn) {
+     int val = ch[cn].value[0][V_PERCEPT];
+@@ -82,6 +117,10 @@
+     perception_stealth = 25;
+     perception_fast = 25;
+     stealth_endurance = 100;
++    attr_agility = 10;
++    attr_agility_speed = 40;
++    attr_intuition = 20;
++    attr_wisdom = 20;
+ }
+ 
+ // the skill an item's level requirement is on, when that skill boosts the item: Armor Class for
+@@ -136,7 +175,7 @@
+ }
+ 
+ int melee_attack_level(int cn) {
+-    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn));
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn) + agility_boost(cn));
+ }
+ 
+ int melee_strength_level(int cn) {
+@@ -144,7 +183,7 @@
+ }
+ 
+ int melee_defence_level(int cn) {
+-    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn));
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn) + agility_boost(cn));
+ }
+ 
+ int melee_surround_level(int cn) {
+@@ -175,7 +214,12 @@
+     return val * 15 / 100;
+ }
+ 
++// spell strength: the spell's level plus Intuition (spells only, not Warcry)
+ int spellpower(int cn, int v) {
++    if (v == V_BLESS || v == V_HEAL || v == V_FREEZE || v == V_MAGICSHIELD || v == V_FLASH || v == V_FIRE) {
++        if (!ch[cn].value[0][v]) return 0;
++        return ch[cn].value[0][v] + intuition_boost(cn);
++    }
+     return ch[cn].value[0][v];
+ }
+ 
+@@ -362,7 +406,7 @@
+     int immun, stren, diff, dam;
+     extern int showspell;
+ 
+-    immun = ch[subject].value[0][V_IMMUNITY];
++    immun = immunity_value(subject);
+     if (ch[subject].value[1][V_RAGE]) immun += ch[subject].rage / POWERSCALE / RAGEMOD;
+ 
+     // equipment: magic accuracy raises the caster's side, magic defence the target's, the way
+@@ -389,7 +433,7 @@
+ int freeze_value(int cn, int co) {
+     int str, dam, diff, immun;
+ 
+-    immun = ch[co].value[0][V_IMMUNITY];
++    immun = immunity_value(co);
+     if (ch[co].value[1][V_RAGE]) immun += ch[co].rage / POWERSCALE / RAGEMOD;
+ 
+     str = clarity(cn, spellpower(cn, V_FREEZE));
+@@ -414,7 +458,7 @@
+ int warcry_value(int cn, int co, int pwr) {
+     int str, immun, diff, dam;
+ 
+-    immun = ch[co].value[0][V_IMMUNITY];
++    immun = immunity_value(co);
+     if (ch[co].value[1][V_RAGE]) immun += ch[co].rage / POWERSCALE / RAGEMOD;
+ 
+     diff = pwr - immun;
+@@ -449,3 +493,99 @@
+ int strike_damage(int cn, int co, int str) {
+     return spell_damage(cn, co, str);
+ }
++
++// ---------- effects breakdown (client Effects tab, /effects) ----------
++
++void effect_add(struct effect_list *e, int group, const char *label, const char *desc, const char *fmt, ...) {
++    va_list args;
++
++    if (e->n >= MAXEFFECTLINES) return;
++    e->group[e->n] = group;
++    snprintf(e->label[e->n], sizeof(e->label[0]), "%s", label);
++    snprintf(e->desc[e->n], sizeof(e->desc[0]), "%s", desc ? desc : "");
++    va_start(args, fmt);
++    vsnprintf(e->value[e->n], sizeof(e->value[0]), fmt, args);
++    va_end(args);
++    e->n++;
++}
++
++static double permille_pct(int permille) {
++    return (permille - 1000) / 10.0;
++}
++
++static void spell_line(int cn, struct effect_list *e, int v, const char *label, const char *what) {
++    char desc[160];
++
++    if (!ch[cn].value[1][v]) return;
++    snprintf(desc, sizeof(desc), "%s level %d, plus Intuition (+%d) and Clarity. %s", label, ch[cn].value[1][v], intuition_boost(cn), what);
++    effect_add(e, EG_MAGIC, label, desc, "%d", spellpower(cn, v));
++}
++
++void skilling_effects(int cn, struct effect_list *e); // skilling.c: gathering lines
++
++void effects_build(int cn, struct effect_list *e) {
++    int in, sk, id, dmg;
++    char desc[160];
++
++    e->n = 0;
++
++    // melee
++    effect_add(e, EG_MELEE, "Accuracy level", "Melee hit chance: (weapon skill + Attack) / 2, plus Agility, Tactics and Body Control.", "%d", melee_attack_level(cn));
++    effect_add(e, EG_MELEE, "Strength level", "Melee max hit: (weapon skill + Strength) / 2, plus Tactics and Body Control.", "%d", melee_strength_level(cn));
++    effect_add(e, EG_MELEE, "Defence level", "Chance to avoid melee hits: (weapon skill + Parry) / 2, plus Agility, Tactics and Body Control.", "%d", melee_defence_level(cn));
++    effect_add(e, EG_MELEE, "Max hit", "Highest damage one melee hit can do, in HP, before the enemy's armour.", "%.1f", melee_max_hit(cn) / (double)POWERSCALE);
++    effect_add(e, EG_MELEE, "Gear accuracy", "Melee accuracy bonus from your equipment (raises hit chance).", "%+d", ch[cn].value[0][V_MELEE_ACC]);
++    effect_add(e, EG_MELEE, "Gear strength", "Melee strength bonus from your equipment (raises max hit).", "%+d", ch[cn].value[0][V_MELEE_STR]);
++    effect_add(e, EG_MELEE, "Gear defence", "Melee defence bonus from your equipment (lowers the enemy's hit chance).", "%+d", ch[cn].value[0][V_MELEE_DEF]);
++    in = ch[cn].item[WN_RHAND];
++    if (in && (sk = item_boost_skill(in)) >= 0 && (id = skill_for_value(sk)) >= 0) {
++        snprintf(desc, sizeof(desc), "Your %s level raises the stats of the weapon you hold by %.1f%% per level, on you only.", skilldef[id].name, combat_weapon_skill_percent / 10.0);
++        effect_add(e, EG_MELEE, "Weapon bonus", desc, "%+.1f%%", permille_pct(item_skill_permille(cn, sk)));
++    }
++    if (ch[cn].value[1][V_ARMORSKILL]) {
++        snprintf(desc, sizeof(desc), "Your Armor Class level raises the stats of the armour you wear by %.1f%% per level, on you only.", combat_armor_class_percent / 10.0);
++        effect_add(e, EG_MELEE, "Armor bonus", desc, "%+.1f%%", permille_pct(item_skill_permille(cn, V_ARMORSKILL)));
++    }
++    if (ch[cn].value[1][V_BODYCONTROL]) {
++        snprintf(desc, sizeof(desc), "Your Body Control level raises your melee accuracy, strength and defence levels by %.1f%% per level.", combat_body_control / 10.0);
++        effect_add(e, EG_MELEE, "Body Control", desc, "%+.1f%%", permille_pct(body_control_permille(cn)));
++    }
++    if (ch[cn].value[1][V_TACTICS]) effect_add(e, EG_MELEE, "Tactics", "Your Tactics level adds to your melee accuracy, strength and defence levels.", "%+d", tactics_boost(cn));
++    snprintf(desc, sizeof(desc), "Armour from your gear. Each melee hit on you is reduced by up to %.1f HP, at most %d%% of the hit.", ch[cn].value[0][V_ARMOR] / 20.0 / ATTACK_DIV, combat_armor_soak);
++    effect_add(e, EG_MELEE, "Armor", desc, "%d", ch[cn].value[0][V_ARMOR]);
++
++    // magic
++    spell_line(cn, e, V_FIRE, "Fire", "Raises fire damage and fireball hit chance.");
++    spell_line(cn, e, V_FLASH, "Lightning", "Raises lightning damage and hit chance.");
++    spell_line(cn, e, V_FREEZE, "Freeze", "Raises how much Freeze slows enemies.");
++    spell_line(cn, e, V_HEAL, "Heal", "Raises how many HP Heal restores.");
++    spell_line(cn, e, V_BLESS, "Bless", "Raises Bless strength.");
++    spell_line(cn, e, V_MAGICSHIELD, "Magic Shield", "Raises the Magic Shield's strength.");
++    effect_add(e, EG_MAGIC, "Magic accuracy", "Spell accuracy bonus from your equipment (raises spell hit chance).", "%+d", ch[cn].value[0][V_MAGIC_ACC]);
++    dmg = max(-100, min(combat_magic_damage_cap, ch[cn].value[0][V_MAGIC_DMG]));
++    snprintf(desc, sizeof(desc), "Spell damage bonus from your equipment, at most %d%%.", combat_magic_damage_cap);
++    effect_add(e, EG_MAGIC, "Spell damage", desc, "%+d%%", dmg);
++    effect_add(e, EG_MAGIC, "Magic defence", "Magic defence from your equipment (lowers enemy spell hit chance). Melee armour lowers it.", "%+d", ch[cn].value[0][V_MAGIC_DEF]);
++    if (ch[cn].value[1][V_CLARITY]) {
++        snprintf(desc, sizeof(desc), "Your Clarity level raises spell power, spell damage and immunity by %.1f%% per level.", combat_clarity / 10.0);
++        effect_add(e, EG_MAGIC, "Clarity", desc, "%+.1f%%", permille_pct(clarity_permille(cn)));
++    }
++    effect_add(e, EG_MAGIC, "Immunity", "Resistance to enemy spells: Immunity level plus Wisdom, and Clarity.", "%d", immunity_value(cn));
++    effect_add(e, EG_MAGIC, "Mana regen", "Mana regained while resting: Meditate level plus Wisdom.", "%d", (ch[cn].value[0][V_MEDITATE] ? ch[cn].value[0][V_MEDITATE] : 7) + wisdom_boost(cn));
++
++    // attributes, one job each
++    effect_add(e, EG_ATTRIBUTE, "Strength", "Half of your Strength is added to your melee strength level.", "%+d", ch[cn].value[0][V_STR] / 2);
++    snprintf(desc, sizeof(desc), "Adds +%d to your melee accuracy and defence levels and +%d speed.", agility_boost(cn), attribute_bonus(cn, V_SPEED));
++    effect_add(e, EG_ATTRIBUTE, "Agility", desc, "%+d", agility_boost(cn));
++    effect_add(e, EG_ATTRIBUTE, "Intuition", "Added to the power of every spell you know.", "%+d", intuition_boost(cn));
++    effect_add(e, EG_ATTRIBUTE, "Wisdom", "Added to your mana regeneration and immunity.", "%+d", wisdom_boost(cn));
++
++    // gathering
++    skilling_effects(cn, e);
++
++    // stealth
++    snprintf(desc, sizeof(desc), "How well you see hidden characters. Now in %s mode: stealth mode raises it by %d%%, fast mode lowers it by %d%%.",
++             ch[cn].speed_mode == SM_STEALTH ? "stealth" : ch[cn].speed_mode == SM_FAST ? "fast" : "normal", perception_stealth, perception_fast);
++    effect_add(e, EG_STEALTH, "Perception", desc, "%d", perception_value(cn));
++    effect_add(e, EG_STEALTH, "Stealth", "How well you stay hidden in stealth mode. Moving in stealth mode drains endurance.", "%d", ch[cn].value[0][V_STEALTH]);
++}
+diff -ru a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 22:15:19.311279407 +0000
++++ b/src/balance.h	2026-10-13 22:15:19.314734558 +0000
+@@ -21,6 +21,30 @@
+ extern int combat_armor_class_percent; // tenths of a percent per Armor Class level on worn armour's stats
+ extern int perception_stealth, perception_fast, stealth_endurance; // step 16, see balance.c
+ int perception_value(int cn); // Perception after the speed mode
++extern int attr_agility, attr_agility_speed, attr_intuition, attr_wisdom; // percent of the attribute, see balance.c
++int attribute_bonus(int cn, int v); // what the attributes add to value v (update_char): Speed only
++int wisdom_boost(int cn);
++int intuition_boost(int cn);
++int immunity_value(int cn); // Immunity + Wisdom
++
++// effects breakdown (George 2026-10-13): what levels, gear and attributes add up to, for the client's
++// Effects tab (SV_EFFECTS, skillreg.c) and /effects. Skill levels themselves stay unmodified.
++#define MAXEFFECTLINES 48
++#define EG_MELEE 0
++#define EG_MAGIC 1
++#define EG_ATTRIBUTE 2
++#define EG_GATHERING 3
++#define EG_STEALTH 4
++struct effect_list {
++    int n;
++    unsigned char group[MAXEFFECTLINES];
++    char label[MAXEFFECTLINES][24]; // short, fits the panel next to the value
++    char value[MAXEFFECTLINES][16];
++    char desc[MAXEFFECTLINES][160]; // hover text
++};
++// desc may be NULL; the value is printf-formatted
++void effect_add(struct effect_list *e, int group, const char *label, const char *desc, const char *fmt, ...) __attribute__((format(printf, 5, 6)));
++void effects_build(int cn, struct effect_list *e);
+ extern int combat_weapon_skill_percent; // tenths of a percent per weapon skill level on the wielded weapon's stats
+ int item_boost_skill(int in); // V_ARMORSKILL or the weapon skill an item requires, -1 = none
+ int item_skill_permille(int cn, int v); // 1000 = no bonus
+Only in b/src: client.h
+diff -ru a/src/command.c b/src/command.c
+--- a/src/command.c	2026-10-13 22:15:18.607279366 +0000
++++ b/src/command.c	2026-10-13 22:15:18.613929732 +0000
+@@ -37,6 +37,7 @@
+ #include "misc_ppd.h"
+ #include "libload.h"
+ #include "effect.h"
++#include "balance.h"
+ #include "depot.h"
+ #include "lab.h"
+ #include "club.h"
+@@ -1430,6 +1431,22 @@
+         skills_show(cn, ptr);
+         return 1;
+     }
++    if ((len = cmdcmp(ptr, "effects", 7))) { // /effects, the same lines as the client's Effects tab
++        static struct effect_list e;
++        static const char *gname[] = {"Melee", "Magic", "Attributes", "Gathering", "Stealth"};
++        int n, g = -1;
++
++        effects_build(cn, &e);
++        for (n = 0; n < e.n; n++) {
++            if (e.group[n] != g) {
++                g = e.group[n];
++                log_char(cn, LOG_SYSTEM, 0, "\260c3%s:", g >= 0 && g <= EG_STEALTH ? gname[g] : "Other");
++            }
++            log_char(cn, LOG_SYSTEM, 0, "  %s: %s", e.label[n], e.value[n]);
++            if (e.desc[n][0] && ptr[len] && strstr(ptr + len, "long")) log_char(cn, LOG_SYSTEM, 0, "    %s", e.desc[n]);
++        }
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "skillxp", 7)) && (ch[cn].flags & CF_GOD)) { // /skillxp <key> <xp>, for testing
+         char key[64];
+         int id, n;
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 22:15:18.723279373 +0000
++++ b/src/create.c	2026-10-13 22:15:18.727279345 +0000
+@@ -1561,7 +1561,7 @@
+ }
+ 
+ void update_char(int cn) {
+-    int mod[V_MAX], base[V_MAX], n, in, m, v1, v2, v3, oldlight, fn, bless[V_MAX], infrared = 0, newlight, nonomagic = 0, oxygen = 0;
++    int mod[V_MAX], base[V_MAX], n, in, m, v1, oldlight, fn, bless[V_MAX], infrared = 0, newlight, nonomagic = 0, oxygen = 0;
+     int spellspeed = 0, cnt, boost, boostsk;
+     double effectivity;
+ 
+@@ -1662,12 +1662,9 @@
+             continue;
+         }
+ 
+-        // Add base values
+-        v1 = skill[n].base1;
+-        v2 = skill[n].base2;
+-        v3 = skill[n].base3;
+-        if (v1 != -1 && v2 != -1 && v3 != -1)
+-            base[n] += (ch[cn].value[0][v1] + ch[cn].value[0][v2] + ch[cn].value[0][v3]) / 5;
++        // Add base values: each attribute has one job now (George 2026-10-13, balance.c attribute_bonus);
++        // the old (three attributes) / 5 on every skill from skill[] is gone
++        base[n] += attribute_bonus(cn, n);
+ 
+         // Set total value
+         if (!ch[cn].value[1][n] && n >= V_DAGGER) ch[cn].value[0][n] = 0;
+@@ -1794,8 +1791,8 @@
+     ch[cn].value[0][V_DEFENSE] = get_parry_skill(cn) + mod[V_DEFENSE];
+     ch[cn].value[0][V_WEAPON] += ch[cn].value[0][V_STR] * 20 / 8; //(1 ... 25)
+ 
+-    if (ch[cn].lifeshield > ch[cn].value[0][V_MAGICSHIELD] * POWERSCALE / MAGICSHIELDMOD)
+-        ch[cn].lifeshield = ch[cn].value[0][V_MAGICSHIELD] * POWERSCALE / MAGICSHIELDMOD;
++    if (ch[cn].lifeshield > spellpower(cn, V_MAGICSHIELD) * POWERSCALE / MAGICSHIELDMOD)
++        ch[cn].lifeshield = spellpower(cn, V_MAGICSHIELD) * POWERSCALE / MAGICSHIELDMOD;
+ }
+ 
+ int destroy_items(int cn) {
+diff -ru a/src/do.c b/src/do.c
+--- a/src/do.c	2026-10-13 22:15:18.835279379 +0000
++++ b/src/do.c	2026-10-13 22:15:18.840556991 +0000
+@@ -1030,9 +1030,9 @@
+         return 0;
+     }
+ 
+-    str = ch[cn].value[0][V_MAGICSHIELD] * POWERSCALE;
++    str = spellpower(cn, V_MAGICSHIELD) * POWERSCALE;
+     str = min(str, ch[cn].mana);
+-    str = min(str, (ch[cn].value[0][V_MAGICSHIELD] * POWERSCALE / MAGICSHIELDMOD - ch[cn].lifeshield));
++    str = min(str, (spellpower(cn, V_MAGICSHIELD) * POWERSCALE / MAGICSHIELDMOD - ch[cn].lifeshield));
+ 
+     if (str < 1) {
+         error = ERR_NO_EFFECT;
+@@ -1078,7 +1078,7 @@
+         return 0;
+     }
+ 
+-    mod = ch[cn].value[0][V_FLASH] / 20;
++    mod = spellpower(cn, V_FLASH) / 20;
+     cost = FLASHCOST;
+ 
+     if (ch[cn].mana < cost) {
+diff -ru a/src/player.c b/src/player.c
+--- a/src/player.c	2026-10-13 22:15:18.955279386 +0000
++++ b/src/player.c	2026-10-13 22:15:18.961332726 +0000
+@@ -57,7 +57,7 @@
+ #include "config.h"
+ #include "skillreg.h"
+ 
+-#define SERVER_PROTOCOL_VERSION 9 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c), 9: workbench window, station texts in SV_CRAFTLIST
++#define SERVER_PROTOCOL_VERSION 10 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c), 9: workbench window, station texts in SV_CRAFTLIST, 10: effects tab (SV_EFFECTS)
+ 
+ #define MAX_IDLE (TICKS * 30)
+ 
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 22:15:19.055279392 +0000
++++ b/src/skilling.c	2026-10-13 22:15:19.061529185 +0000
+@@ -260,6 +260,10 @@
+                 else if (!strcasecmp(name, "perception_stealth")) perception_stealth = max(0, atoi(value));
+                 else if (!strcasecmp(name, "perception_fast")) perception_fast = max(0, min(100, atoi(value)));
+                 else if (!strcasecmp(name, "stealth_endurance")) stealth_endurance = max(0, atoi(value));
++                else if (!strcasecmp(name, "agility_bonus")) attr_agility = max(0, atoi(value));
++                else if (!strcasecmp(name, "agility_speed")) attr_agility_speed = max(0, atoi(value));
++                else if (!strcasecmp(name, "intuition_bonus")) attr_intuition = max(0, atoi(value));
++                else if (!strcasecmp(name, "wisdom_bonus")) attr_wisdom = max(0, atoi(value));
+                 else if (!strcasecmp(name, "body_control_gather")) body_control_gather = max(0, atoi(value));
+                 else if (!strcasecmp(name, "clarity_luck")) clarity_luck = max(0, atoi(value));
+                 else {
+@@ -1206,3 +1210,18 @@
+     send_craft_list(cn, rtype, 0);
+     return 1;
+ }
++
++// gathering lines of the effects breakdown (balance.c effects_build)
++void skilling_effects(int cn, struct effect_list *e) {
++    int b;
++    char desc[160];
++
++    snprintf(desc, sizeof(desc), "Extra chance to gather from rocks and trees: %.1f%% per Body Control level.", body_control_gather / 10.0);
++    effect_add(e, EG_GATHERING, "Gather chance", desc, "%+.1f%%", ch[cn].value[0][V_BODYCONTROL] * body_control_gather / 10.0);
++    if ((b = bless_bonus(cn, bless_gather, bless_gather_strength))) {
++        snprintf(desc, sizeof(desc), "Bless adds %d%% gather chance and lowers craft failure by %d%%.", b, bless_bonus(cn, bless_craft, bless_craft_strength));
++        effect_add(e, EG_GATHERING, "Bless", desc, "%+d%%", b);
++    }
++    snprintf(desc, sizeof(desc), "Chance to get one extra resource when gathering: %.1f%% per Clarity level.", clarity_luck / 10.0);
++    effect_add(e, EG_GATHERING, "Extra resource", desc, "%.1f%%", min(1000, ch[cn].value[0][V_CLARITY] * clarity_luck) / 10.0);
++}
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 22:15:19.203279401 +0000
++++ b/src/skillreg.c	2026-10-13 22:15:19.206969503 +0000
+@@ -22,6 +22,7 @@
+ #include "skillreg.h"
+ #include "player.h"
+ #include "io.h"
++#include "balance.h"
+ 
+ #define SKILLS_CFG "zones/generic/skills.cfg"
+ #define QUESTS_CFG "zones/generic/quests.cfg"
+@@ -666,9 +667,11 @@
+ static unsigned int sent_xp[MAXPLAYER][MAXSKILLS];
+ static unsigned char sent_level[MAXPLAYER][MAXSKILLS];
+ static char sent_defs[MAXPLAYER];
++static unsigned int sent_effects[MAXPLAYER]; // hash of the last effects packet, 0 = none sent
+ 
+ void skill_client_reset(int nr) {
+     if (nr < 1 || nr >= MAXPLAYER) return;
++    sent_effects[nr] = 0;
+     bzero(sent_xp[nr], sizeof(sent_xp[nr]));
+     bzero(sent_level[nr], sizeof(sent_level[nr]));
+     sent_defs[nr] = 0;
+@@ -696,6 +699,41 @@
+     return get_player_version(nr) != 0; // 0: kicked while sending
+ }
+ 
++// Effects tab (protocol 10): [SV_EFFECTS][length, 2 bytes][count] then per line
++// [group][label length][label][value length][value][desc length][desc]. Sent only when a line changed.
++static int effects_client_update(int cn, int nr) {
++    static unsigned char buf[8192];
++    static struct effect_list e;
++    unsigned int hash = 2166136261u;
++    int n, p = 4, l;
++
++    effects_build(cn, &e);
++    for (n = 0; n < e.n; n++) {
++        buf[p++] = e.group[n];
++        l = strlen(e.label[n]);
++        buf[p++] = l;
++        memcpy(buf + p, e.label[n], l);
++        p += l;
++        l = strlen(e.value[n]);
++        buf[p++] = l;
++        memcpy(buf + p, e.value[n], l);
++        p += l;
++        l = strlen(e.desc[n]);
++        buf[p++] = l;
++        memcpy(buf + p, e.desc[n], l);
++        p += l;
++    }
++    buf[0] = SV_EFFECTS;
++    *(unsigned short *)(buf + 1) = p;
++    buf[3] = e.n;
++    for (n = 3; n < p; n++) hash = (hash ^ buf[n]) * 16777619u;
++    if (!hash) hash = 1;
++    if (hash == sent_effects[nr]) return 1;
++    sent_effects[nr] = hash;
++    psend(nr, (char *)buf, p);
++    return get_player_version(nr) != 0;
++}
++
+ // returns 0 if the player was kicked while sending
+ int skill_client_update(int cn, int nr) {
+     unsigned char buf[16];
+@@ -730,5 +768,6 @@
+         psend(nr, (char *)buf, 15);
+         if (!get_player_version(nr)) return 0;
+     }
++    if (get_player_version(nr) >= EFFECTS_CLIENT_VERSION) return effects_client_update(cn, nr);
+     return 1;
+ }
+diff -ru a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 22:15:19.407279413 +0000
++++ b/src/skillreg.h	2026-10-13 22:15:19.410884614 +0000
+@@ -81,6 +81,8 @@
+ // Both use free command numbers of client.h (were SV_RESERVED1/2).
+ #define SV_SKILLDEF 54 // id, group, value slot (255 none), max, name len, name, desc len, desc
+ #define SV_SKILLXP 55 // id, level, xp, xp at this level, xp at next level (0 = max), 15 bytes
++#define SV_EFFECTS 57 // effects tab, see effects_client_update()
++#define EFFECTS_CLIENT_VERSION 10
+ #define SKILL_CLIENT_VERSION 5 // clients from this protocol version on get the messages
+ 
+ void skill_client_reset(int nr);
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 22:15:19.595279424 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 22:15:19.602790709 +0000
+@@ -108,6 +108,17 @@
+ # stealth_endurance: a step in stealth mode costs this percent of a fast
+ #   step's endurance (players). Players get no endurance back while in
+ #   stealth mode, and drop to normal mode when exhausted. 0 = sneaking free.
++#
++# Attributes, one job each (players and enemies). They no longer raise any
++# skill level, the skills menu shows the trained level; each works inside
++# the formulas, adding this percent of itself:
++# Strength: goes into the melee strength level (weapon skill + STR) / 2.
++# agility_bonus: to the melee accuracy and defence levels.
++# agility_speed: to Speed (movement and action speed).
++# intuition_bonus: to the spell power of Bless, Heal, Freeze, Magic Shield,
++#   Lightning and Fire.
++# wisdom_bonus: to Meditate's mana regeneration and to Immunity against
++#   spells.
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -126,6 +137,10 @@
+ perception_stealth=25
+ perception_fast=25
+ stealth_endurance=100
++agility_bonus=10
++agility_speed=40
++intuition_bonus=20
++wisdom_bonus=20
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------

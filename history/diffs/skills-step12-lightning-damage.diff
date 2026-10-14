@@ -1,0 +1,85 @@
+diff -u a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 19:12:58.965238676 +0000
++++ b/src/balance.c	2026-10-13 19:12:58.966968787 +0000
+@@ -302,6 +302,8 @@
+     return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0);
+ }
+ 
++// total damage of a lightning ball or flash over its whole life: the same as
++// one fireball (add_strike() in effect.c spreads it over the strikes)
+ int strike_damage(int cn, int co, int str) {
+-    return immunity_reduction(cn, co, str) * STRIKE_DAMAGE * (1.0 + str / 400.0);
++    return fireball_damage(cn, co, str);
+ }
+diff -u a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 19:12:58.968429125 +0000
++++ b/src/balance.h	2026-10-13 19:12:58.970547506 +0000
+@@ -5,7 +5,7 @@
+ #define ATTACK_DIV 10 // turns an average of 50 weapon value into an average of 5 damage (before armor)
+ 
+ #define FIREBALL_DAMAGE (85 / ATTACK_DIV) // makes it the same as weapon damage
+-#define STRIKE_DAMAGE (56 / ATTACK_DIV) // ...
++#define STRIKE_DAMAGE (56 / ATTACK_DIV) // unused: lightning now deals FIREBALL_DAMAGE spread over time (strike_damage in balance.c)
+ 
+ #define RAGEMOD 4 // rage skill is divided by this before being used
+ 
+diff -u a/src/effect.c b/src/effect.c
+--- a/src/effect.c	2026-10-13 19:12:58.958762184 +0000
++++ b/src/effect.c	2026-10-13 19:20:31.070620327 +0000
+@@ -511,8 +511,14 @@
+     }
+ }
+ 
+-static void add_strike(int xc, int yc, int x, int y, int str, int cn, int cc, int cnt) {
+-    int n, dam, cnt_multi, fn;
++// Lightning deals the same total damage as Fire at the same spell level, but
++// spread over the lifetime of the ball or flash: one strike every 4 ticks,
++// each worth total/strikes. start and stop are the ball's or flash's. Strikes
++// are counted back from stop so none is lost on the tick the spell is cast.
++// The total is for 5 seconds (FLASHDURATION): a flash made longer by Duration
++// keeps striking at the same rate, so it deals more in total.
++static void add_strike(int xc, int yc, int x, int y, int str, int cn, int cc, int cnt, int start, int stop) {
++    int n, dam, cnt_multi, fn, hits;
+ 
+     for (n = 0; n < 4; n++) {
+         if ((fn = ch[cn].ef[n]) &&
+@@ -561,13 +567,15 @@
+ 
+     if (cc && ch[cc].action == AC_WALK) cnt_multi = (cnt_multi * 75) / 100;
+ 
+-    if ((ticker & 3) == 0) {
+-        dam = strike_damage(cc, cn, str) * cnt_multi / (25 * TICKS);
++    hits = max(1, (min(stop - start, TICKS * 5) + 2) / 4);
++    if (ticker > start && ((stop - 1 - ticker) & 3) == 0) {
++        dam = strike_damage(cc, cn, str) * cnt_multi / 100 / hits;
+         if (ch[cn].flags & CF_EDEMON) { // earth demons dont suffer as much damage
+             dam -= min(dam / 4, (dam * max(0, ch[cn].value[1][V_DEMON] - ch[cc].value[1][V_DEMON])) / 10);
+         }
+         skill_xp_context = skill_for_value(V_FLASH);
+-        hurt(cn, dam, cc, 8, 60, 85);
++        // armor counts once over all strikes, like it does for one fireball
++        hurt(cn, dam, cc, 10 * hits, 60, 85);
+         skill_xp_context = -1;
+     }
+ }
+@@ -591,7 +599,7 @@
+                 // not through walls
+                 if (!(tmp = los_can_see(0, xc, yc, x, y, 5))) continue;
+ 
+-                add_strike(xc, yc, x, y, ef[fn].strength, co, ef[fn].cn, ef[fn].number_of_enemies);
++                add_strike(xc, yc, x, y, ef[fn].strength, co, ef[fn].cn, ef[fn].number_of_enemies, ef[fn].start, ef[fn].stop);
+                 if (cnt == 0 && (ticker & 7) == 0) {
+                     sound_area(ch[cn].x, ch[cn].y, 30);
+                 }
+@@ -708,7 +716,10 @@
+     ef[n].cn = cn;
+     if (cn) ef[n].sercn = ch[cn].serial;
+     ef[n].field_cnt = 0;
+-    ef[n].stop = ticker + TICKS * 5;
++    // the ball lives until it hits a wall or character, 5 seconds at most,
++    // so its damage is spread over the time it will really fly
++    ef[n].start = ticker;
++    ef[n].stop = ticker + min(TICKS * 5, 4 * calc_steps_ball(cn, frx, fry, tox, toy) + 3);
+     ef[n].number_of_enemies = 0;
+ 
+     ef[n].x = ef[n].frx * 1024 + 512;

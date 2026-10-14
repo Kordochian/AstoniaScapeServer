@@ -1,0 +1,4402 @@
+diff --git a/Makefile b/Makefile
+index bca6d81..027225b 100755
+--- a/Makefile
++++ b/Makefile
+@@ -49,12 +49,14 @@ runtime/36/caligar.dll \
+ runtime/37/arkhata.dll 
+ 
+ CC=gcc
++# 64-bit by default. 'make ARCH=-m32' still builds the old 32-bit server.
++ARCH?=-m64
+ DEBUG=-g
+-CFLAGS=-Wall -Wshadow -Werror -Wno-pointer-sign -O3 $(DEBUG) -fno-strict-aliasing -m32 -Isrc # for normal object files
+-LDFLAGS=-O $(DEBUG) -L/usr/lib/mysql -m32 # building tools
+-LDRFLAGS=-O $(DEBUG) -rdynamic -L/usr/lib/mysql -m32 # building server
+-DDFLAGS=-O $(DEBUG) -fPIC -shared -m32 # building DLLs
+-DFLAGS=$(CFLAGS) -fPIC -m32 -Isrc # for DLL object files
++CFLAGS=-Wall -Wshadow -Werror -Wno-pointer-sign -O3 $(DEBUG) -fno-strict-aliasing $(ARCH) -Isrc # for normal object files
++LDFLAGS=-O $(DEBUG) -L/usr/lib/mysql $(ARCH) # building tools
++LDRFLAGS=-O $(DEBUG) -rdynamic -L/usr/lib/mysql $(ARCH) # building server
++DDFLAGS=-O $(DEBUG) -fPIC -shared $(ARCH) # building DLLs
++DFLAGS=$(CFLAGS) -fPIC $(ARCH) -Isrc # for DLL object files
+ DEPFLAGS = -MMD -MP
+ 
+ OBJS=.obj/server.o .obj/io.o .obj/libload.o .obj/tool.o .obj/sleep.o \
+@@ -80,8 +82,6 @@ OBJS=.obj/server.o .obj/io.o .obj/libload.o .obj/tool.o .obj/sleep.o \
+ server35:	$(OBJS) src/version.c
+ 	$(CC) $(LDRFLAGS) -o server35 $(OBJS) src/version.c -lmysqlclient -lm -lz -ldl -lpthread -largon2
+ 	
+-.obj/rdtsc.o:
+-	$(CC) $(CFLAGS) $(DEPFLAGS) -o .obj/rdtsc.o -c src/rdtsc.S
+ 
+ .obj/mem.o:
+ 	$(CC) $(CFLAGS) $(DEPFLAGS) -DDEBUG -o $@ -c src/mem.c
+@@ -341,10 +341,10 @@ chatserver:		.obj/chatserver.o
+ 	$(CC) $(CFLAGS) -o .obj/chatserver.o -c src/chatserver.c
+ 
+ create_character:	src/create_character.c src/config.h src/server.h src/drdata.h .obj/config.o
+-	$(CC) $(CFLAGS) -o create_character src/create_character.c .obj/config.o -L/usr/lib/mysql -m32 -lmysqlclient
++	$(CC) $(CFLAGS) -o create_character src/create_character.c .obj/config.o -L/usr/lib/mysql $(ARCH) -lmysqlclient
+ 
+ create_account:		src/create_account.c .obj/argon.o src/argon.h src/config.h .obj/config.o
+-	$(CC) $(CFLAGS) -o create_account src/create_account.c .obj/argon.o .obj/config.o -L/usr/lib/mysql -m32 -lmysqlclient -largon2
++	$(CC) $(CFLAGS) -o create_account src/create_account.c .obj/argon.o .obj/config.o -L/usr/lib/mysql $(ARCH) -lmysqlclient -largon2
+ 
+ # ------- Helper -----
+ 
+diff --git a/src/alchemy.c b/src/alchemy.c
+index 8bf6cfa..8a6009d 100644
+--- a/src/alchemy.c
++++ b/src/alchemy.c
+@@ -45,7 +45,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/arena.c b/src/arena.c
+index 5d0c7cc..8122f1c 100644
+--- a/src/arena.c
++++ b/src/arena.c
+@@ -25,7 +25,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/arkhata.c b/src/arkhata.c
+index aa66ed1..24dd272 100644
+--- a/src/arkhata.c
++++ b/src/arkhata.c
+@@ -39,7 +39,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/aston.c b/src/aston.c
+index c2b4d91..d527c2b 100644
+--- a/src/aston.c
++++ b/src/aston.c
+@@ -36,7 +36,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/badip.c b/src/badip.c
+index 9afdc66..2f7aea7 100644
+--- a/src/badip.c
++++ b/src/badip.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <time.h>
+ #include <mysql/mysql.h>
+ #include "badip.h"
+diff --git a/src/bank.c b/src/bank.c
+index 54aa8c7..d8141b4 100644
+--- a/src/bank.c
++++ b/src/bank.c
+@@ -27,7 +27,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/base.c b/src/base.c
+index e56f7f3..77cdd4a 100644
+--- a/src/base.c
++++ b/src/base.c
+@@ -49,7 +49,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+@@ -584,7 +584,7 @@ void chest_driver(int in, int cn) {
+     // get chest number
+     nr = it[in].drdata[0];
+     if (nr >= sizeof(ppd->last_access) / sizeof(int)) {
+-        elog("treasure_chest item driver: chest number (drdata[0]) must be below %d!", sizeof(ppd->last_access) / sizeof(int));
++        elog("treasure_chest item driver: chest number (drdata[0]) must be below %d!", (int)(sizeof(ppd->last_access) / sizeof(int)));
+         return;
+     }
+ 
+diff --git a/src/below_aston.c b/src/below_aston.c
+index 38f3a06..9c92506 100644
+--- a/src/below_aston.c
++++ b/src/below_aston.c
+@@ -32,7 +32,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/below_aston2.c b/src/below_aston2.c
+index 6b6a5e4..e80c79f 100644
+--- a/src/below_aston2.c
++++ b/src/below_aston2.c
+@@ -36,7 +36,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/bones.c b/src/bones.c
+index e09f1b1..73bcc87 100644
+--- a/src/bones.c
++++ b/src/bones.c
+@@ -28,7 +28,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/book.c b/src/book.c
+index 3e4701c..cfdddba 100644
+--- a/src/book.c
++++ b/src/book.c
+@@ -15,7 +15,7 @@ int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case 0:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/bran_forest.c b/src/bran_forest.c
+index 3043296..04b42cc 100644
+--- a/src/bran_forest.c
++++ b/src/bran_forest.c
+@@ -29,7 +29,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/brannington.c b/src/brannington.c
+index bdfe6da..c97a90f 100644
+--- a/src/brannington.c
++++ b/src/brannington.c
+@@ -39,7 +39,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/caligar.c b/src/caligar.c
+index 0396835..41bcda5 100644
+--- a/src/caligar.c
++++ b/src/caligar.c
+@@ -34,7 +34,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/cameron.c b/src/cameron.c
+index 6f2d424..2a084a8 100644
+--- a/src/cameron.c
++++ b/src/cameron.c
+@@ -36,7 +36,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/chat.c b/src/chat.c
+index a90f4cb..38d0627 100644
+--- a/src/chat.c
++++ b/src/chat.c
+@@ -93,7 +93,7 @@ static int connect_chat(void) {
+ 
+     addr.sin_family = AF_INET;
+     addr.sin_port = htons(5554);
+-    addr.sin_addr.s_addr = *(unsigned long *)(*he->h_addr_list);
++    memcpy(&addr.sin_addr.s_addr, *he->h_addr_list, sizeof(addr.sin_addr.s_addr));
+ 
+     ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
+ 
+diff --git a/src/clanmaster.c b/src/clanmaster.c
+index 87a688c..e97ccf3 100644
+--- a/src/clanmaster.c
++++ b/src/clanmaster.c
+@@ -41,7 +41,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/clubmaster.c b/src/clubmaster.c
+index bdb07ad..823b500 100644
+--- a/src/clubmaster.c
++++ b/src/clubmaster.c
+@@ -30,7 +30,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/command.c b/src/command.c
+index 8cbc729..582788c 100644
+--- a/src/command.c
++++ b/src/command.c
+@@ -65,7 +65,7 @@ struct gotolist gl[] = {
+     {"hole2", 226, 164, 29},
+     {"smuggle", 103, 107, 26},
+     //{"grim", 210, 247, 31},
+-    {"exkor", 67, 108, 17},
++    {"exk", 67, 108, 17},
+     //{"job", 228, 228, 32},
+     {"tunnel", 250, 250, 33},
+     {"fdemon", 227, 222, 8},
+@@ -92,6 +92,8 @@ int cmdcmp(char *ptr, char *cmd, int minlen) {
+     return 0;
+ }
+ 
++
++
+ int look_values(int cn, char *name) {
+     int coID;
+     char buf[80];
+@@ -987,6 +989,7 @@ static void cmd_help(int cn) {
+         log_char(cn, LOG_SYSTEM, 0, "/staffcode <name> <code>");
+         log_char(cn, LOG_SYSTEM, 0, "/setlevel <lvl>");
+         log_char(cn, LOG_SYSTEM, 0, "/setskill <name> <idx> <val>");
++	log_char(cn, LOG_SYSTEM, 0, "/rescue <name>");
+     }
+ }
+ 
+@@ -1309,8 +1312,8 @@ int command(int cn, char *ptr) // 1=ok, 0=repeat
+     expand_alias(cn, buf, ptr);
+     ptr = buf;
+ 
+-    if (areaID == 23 && char_driver(CDR_STRATEGY_PARSER, CDT_SPECIAL, cn, (int)(ptr), 0) == 2) return 1;
+-    if (areaID == 24 && char_driver(CDR_STRATEGY_PARSER, CDT_SPECIAL, cn, (int)(ptr), 0) == 2) return 1;
++    if (areaID == 23 && char_driver(CDR_STRATEGY_PARSER, CDT_SPECIAL, cn, (intptr_t)(ptr), 0) == 2) return 1;
++    if (areaID == 24 && char_driver(CDR_STRATEGY_PARSER, CDT_SPECIAL, cn, (intptr_t)(ptr), 0) == 2) return 1;
+ 
+     if (*ptr != '#' && *ptr != '/') {
+         if (underwater(cn)) {
+@@ -1777,6 +1780,15 @@ int command(int cn, char *ptr) // 1=ok, 0=repeat
+         return cmd_unlockname(cn, ptr);
+     }
+ 
++#if 0 // TODO(64bit-port): cmd_rescue() is not defined anywhere yet, re-enable once it exists
++    if ((len = cmdcmp(ptr, "rescue", 6)) && (ch[cn].flags & (CF_GOD))) {
++        ptr += len;
++        while (isspace(*ptr)) ptr++;
++
++        return cmd_rescue(cn, ptr);
++    }
++#endif
++
+     if ((len = cmdcmp(ptr, "leave", 0))) {
+         int nr;
+ 
+diff --git a/src/container.c b/src/container.c
+index 097feb4..c483577 100644
+--- a/src/container.c
++++ b/src/container.c
+@@ -201,7 +201,7 @@ int init_container(void) {
+ 
+     con = xcalloc(sizeof(struct container) * MAXCONTAINER, IM_BASE);
+     if (!con) return 0;
+-    xlog("Allocated containers: %.2fM (%d*%d)", sizeof(struct container) * MAXCONTAINER / 1024.0 / 1024.0, sizeof(struct container), MAXCONTAINER);
++    xlog("Allocated containers: %.2fM (%d*%d)", sizeof(struct container) * MAXCONTAINER / 1024.0 / 1024.0, (int)(sizeof(struct container)), MAXCONTAINER);
+     mem_usage += sizeof(struct container) * MAXCONTAINER;
+ 
+     // add containers to free list
+diff --git a/src/create.c b/src/create.c
+index aaf3d82..485c924 100644
+--- a/src/create.c
++++ b/src/create.c
+@@ -52,7 +52,7 @@ void protect(void *mem, unsigned int size) {
+     void *ptr;
+     unsigned int len, off;
+ 
+-    ptr = (void *)((unsigned int)(((unsigned char *)(mem) + PAGESIZE - 1)) & (~(PAGESIZE - 1)));
++    ptr = (void *)((uintptr_t)(((unsigned char *)(mem) + PAGESIZE - 1)) & ~(uintptr_t)(PAGESIZE - 1));
+     off = (char *)(ptr) - (char *)(mem);
+     len = (size - off) & (~(PAGESIZE - 1));
+ 
+@@ -1320,22 +1320,19 @@ void copy_char(struct character *dst, struct character *src) {
+     dst->prev = prev;
+ }
+ 
+-static struct item *fitem;
++static unsigned int fitem;
+ 
+ // get new item from free list
+ int alloc_item(void) {
+     int in;
+-    struct item *tmp;
+ 
+-    tmp = fitem;
+-    if (!tmp) {
++    in = fitem;
++    if (!in) {
+         elog("alloc_item: MAXITEM reached!");
+         return 0;
+     }
+ 
+-    fitem = tmp->next;
+-
+-    in = tmp - it;
++    fitem = it[in].next;
+ 
+     if (it[in].flags & IF_USED) {
+         elog("alloc_item: got used item!");
+@@ -1370,7 +1367,7 @@ void free_item(int in) {
+     it[in].flags = 0;
+ 
+     it[in].next = fitem;
+-    fitem = it + in;
++    fitem = in;
+ 
+     used_items--;
+ }
+@@ -1427,27 +1424,27 @@ int init_create(void) {
+ 
+     map = xcalloc(sizeof(struct map) * MAXMAP * MAXMAP, IM_BASE);
+     if (!map) return 0;
+-    xlog("Allocated map: %.2fM (%d*%d)", sizeof(struct map) * MAXMAP * MAXMAP / 1024.0 / 1024.0, sizeof(struct map), MAXMAP * MAXMAP);
++    xlog("Allocated map: %.2fM (%d*%d)", sizeof(struct map) * MAXMAP * MAXMAP / 1024.0 / 1024.0, (int)(sizeof(struct map)), MAXMAP * MAXMAP);
+     mem_usage += sizeof(struct map) * MAXMAP * MAXMAP;
+ 
+     it = xcalloc(sizeof(struct item) * MAXITEM, IM_BASE);
+     if (!it) return 0;
+-    xlog("Allocated items: %.2fM (%d*%d)", sizeof(struct item) * MAXITEM / 1024.0 / 1024.0, sizeof(struct item), MAXITEM);
++    xlog("Allocated items: %.2fM (%d*%d)", sizeof(struct item) * MAXITEM / 1024.0 / 1024.0, (int)(sizeof(struct item)), MAXITEM);
+     mem_usage += sizeof(struct item) * MAXITEM;
+ 
+     ch = xcalloc(sizeof(struct character) * MAXCHARS, IM_BASE);
+     if (!ch) return 0;
+-    xlog("Allocated characters: %.2fM (%d*%d)", sizeof(struct character) * MAXCHARS / 1024.0 / 1024.0, sizeof(struct character), MAXCHARS);
++    xlog("Allocated characters: %.2fM (%d*%d)", sizeof(struct character) * MAXCHARS / 1024.0 / 1024.0, (int)(sizeof(struct character)), MAXCHARS);
+     mem_usage += sizeof(struct item) * MAXCHARS;
+ 
+     it_temp = xcalloc(sizeof(struct it_temp) * MAXTITEM, IM_BASE);
+     if (!it_temp) return 0;
+-    xlog("Allocated item templates: %.2fM (%d*%d)", sizeof(struct it_temp) * MAXTITEM / 1024.0 / 1024.0, sizeof(struct it_temp), MAXTITEM);
++    xlog("Allocated item templates: %.2fM (%d*%d)", sizeof(struct it_temp) * MAXTITEM / 1024.0 / 1024.0, (int)(sizeof(struct it_temp)), MAXTITEM);
+     mem_usage += sizeof(struct it_temp) * MAXTITEM;
+ 
+     ch_temp = xcalloc(sizeof(struct ch_temp) * MAXTCHARS, IM_BASE);
+     if (!ch_temp) return 0;
+-    xlog("Allocated character templates: %.2fM (%d*%d)", sizeof(struct ch_temp) * MAXTCHARS / 1024.0 / 1024.0, sizeof(struct ch_temp), MAXTCHARS);
++    xlog("Allocated character templates: %.2fM (%d*%d)", sizeof(struct ch_temp) * MAXTCHARS / 1024.0 / 1024.0, (int)(sizeof(struct ch_temp)), MAXTCHARS);
+     mem_usage += sizeof(struct ch_temp) * MAXTCHARS;
+ 
+     // add characters to free list
+diff --git a/src/create_account.c b/src/create_account.c
+index f9bbe81..8e8f5f1 100644
+--- a/src/create_account.c
++++ b/src/create_account.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <time.h>
+ #include <getopt.h>
+ #include <mysql/mysql.h>
+diff --git a/src/create_character.c b/src/create_character.c
+index bc4969c..4b93e4a 100644
+--- a/src/create_character.c
++++ b/src/create_character.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <time.h>
+ #include <string.h>
+ #include <getopt.h>
+diff --git a/src/database.c b/src/database.c
+index 32162fc..4dab7cd 100644
+--- a/src/database.c
++++ b/src/database.c
+@@ -7,10 +7,13 @@
+ #include <signal.h>
+ #include <mysql/mysql.h>
+ #include <mysql/mysqld_error.h>
++#include <mysql/errmsg.h>
+ #include <pthread.h>
+ #include <ctype.h>
+ #include <zlib.h>
+ #include <math.h>
++#include <stddef.h>
++#include <stdlib.h>
+ 
+ #include "server.h"
+ #include "log.h"
+@@ -196,12 +199,14 @@ static int start_db_thread(void) {
+ }
+ 
+ static void wait_db_thread(void) {
++    void *ret = NULL;
+     int exit_status;
+ 
+     xlog("Waiting for database thread to finish");
+     db_thread_quit = 1;
+ 
+-    pthread_join(db_tid, (void **)&exit_status);
++    pthread_join(db_tid, &ret);
++    exit_status = (int)(intptr_t)ret;
+ 
+     xlog("Database thread finished with exit code %d", exit_status);
+ 
+@@ -265,6 +270,43 @@ int init_database(void) {
+ 
+ #define MAXDRDATA (1024 * 64)
+ 
++// ---------- on-disk character layout ----------
++// struct character contains pointers (dat, msg, msg_last, arg, next, prev), which are
++// 4 bytes in the original 32-bit server and 8 bytes on 64-bit. The database keeps the
++// 32-bit layout: the pointer slots are stored as zeros, everything else is copied in
++// three blocks whose internal layout is the same on both architectures.
++
++#define CHAR_SEG1_LEN (offsetof(struct character, store) + sizeof(((struct character *)0)->store))
++#define CHAR_SEG2_LEN (offsetof(struct character, resty) + sizeof(((struct character *)0)->resty) - offsetof(struct character, group))
++#define CHAR_SEG3_LEN (offsetof(struct character, dummy) + sizeof(((struct character *)0)->dummy) - offsetof(struct character, ef))
++
++#define DISK_SEG1_OFF 0
++#define DISK_SEG2_OFF (CHAR_SEG1_LEN + 4 * 4) // after dat, msg, msg_last, arg
++#define DISK_SEG3_OFF (DISK_SEG2_OFF + CHAR_SEG2_LEN + 2 * 4) // after next, prev
++
++_Static_assert(CHAR_SEG1_LEN == 812, "struct character changed: update the disk layout");
++_Static_assert(DISK_SEG3_OFF + CHAR_SEG3_LEN == DISK_CHAR_SIZE, "struct character changed: update the disk layout");
++
++void char_to_disk(unsigned char *dst, struct character *src) {
++    bzero(dst, DISK_CHAR_SIZE);
++    memcpy(dst + DISK_SEG1_OFF, (unsigned char *)src, CHAR_SEG1_LEN);
++    memcpy(dst + DISK_SEG2_OFF, (unsigned char *)src + offsetof(struct character, group), CHAR_SEG2_LEN);
++    memcpy(dst + DISK_SEG3_OFF, (unsigned char *)src + offsetof(struct character, ef), CHAR_SEG3_LEN);
++}
++
++// len is the stored length; shorter (older) records are zero-filled
++void char_from_disk(struct character *dst, unsigned char *src, int len) {
++    unsigned char tmp[DISK_CHAR_SIZE];
++
++    bzero(tmp, sizeof(tmp));
++    if (len > 0) memcpy(tmp, src, min(len, DISK_CHAR_SIZE));
++
++    bzero(dst, sizeof(struct character));
++    memcpy((unsigned char *)dst, tmp + DISK_SEG1_OFF, CHAR_SEG1_LEN);
++    memcpy((unsigned char *)dst + offsetof(struct character, group), tmp + DISK_SEG2_OFF, CHAR_SEG2_LEN);
++    memcpy((unsigned char *)dst + offsetof(struct character, ef), tmp + DISK_SEG3_OFF, CHAR_SEG3_LEN);
++}
++
+ // save character cn to database
+ // will mark cn as logged out if area is not zero
+ 
+@@ -377,7 +419,7 @@ void save_depot(int sID, struct depot_ppd *dat, int cID, int leaving) {
+ // save character cn to database
+ // will mark cn as logged out if area is not zero
+ int save_char(int cn, int area) {
+-    unsigned char cdata[sizeof(struct character)], idata[sizeof(struct item) * (INVENTORYSIZE + 1)], ddata[MAXDRDATA];
++    unsigned char cdata[DISK_CHAR_SIZE], idata[sizeof(struct item) * (INVENTORYSIZE + 1)], ddata[MAXDRDATA];
+     unsigned char cbuf[sizeof(cdata) * 2], ibuf[sizeof(idata) * 2], dbuf[sizeof(ddata) * 2];
+     unsigned char buf[sizeof(cbuf) + sizeof(ibuf) + sizeof(dbuf) + 256];
+     int n, in, ilen = 0, dlen = 0, xilen = 0, xdlen = 0;
+@@ -385,7 +427,7 @@ int save_char(int cn, int area) {
+     struct data *dat;
+ 
+     // character data
+-    memcpy(cdata, ch + cn, sizeof(struct character));
++    char_to_disk(cdata, ch + cn);
+ 
+     // items
+     itmp = (void *)(idata);
+@@ -423,7 +465,7 @@ int save_char(int cn, int area) {
+         dlen += dat->size;
+     }
+ 
+-    mysql_real_escape_string(&mysql, cbuf, cdata, sizeof(struct character));
++    mysql_real_escape_string(&mysql, cbuf, cdata, DISK_CHAR_SIZE);
+     ilen = compress_escape_string(&mysql, ibuf, idata, ilen, &xilen);
+     dlen = compress_escape_string(&mysql, dbuf, ddata, dlen, &xdlen);
+ 
+@@ -1494,7 +1536,11 @@ void tick_login(void) {
+         }
+ 
+         // character data
+-        copy_char(ch + cn, (void *)login.chr);
++        {
++            struct character tmpc;
++            char_from_disk(&tmpc, (void *)login.chr, login.chr_len);
++            copy_char(ch + cn, &tmpc);
++        }
+         ch[cn].serial = sercn++;
+         ch[cn].ef[0] = ch[cn].ef[1] = ch[cn].ef[2] = ch[cn].ef[3] = 0;
+ 
+@@ -1784,9 +1830,9 @@ static int load_char_pwd(char *pass, int sID, int logout_time, int *ptimeleft) {
+     }
+ 
+     // update summary: unique logins
+-    tm = *localtime((time_t *)&login_time);
++    tm = *localtime(&(time_t){login_time});
+     day1 = tm.tm_mday;
+-    tm = *localtime((time_t *)&time_now);
++    tm = *localtime(&(time_t){time_now});
+     day2 = tm.tm_mday;
+     if (day1 != day2) db_summary("unique_logins", 0);
+ 
+@@ -1886,7 +1932,7 @@ void update_global_online(void) {
+     if (mysql_query_con(&mysql, buf))
+         elog("update cur_on failed: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+ 
+-    tm = *localtime((time_t *)&time_now);
++    tm = *localtime(&(time_t){time_now});
+     sprintf(date, "D%02d%02d%02d", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday);
+ 
+     // read PCU
+@@ -2109,6 +2155,7 @@ static void load_char(char *name, char *password) {
+         login.itm = xmalloc(*(unsigned int *)(row[2] + 4), IM_DATABASE);
+         login.ppd = xmalloc(*(unsigned int *)(row[7] + 4), IM_DATABASE);
+ 
++        login.chr_len = len[1];
+         if (row[1]) memcpy(login.chr, row[1], len[1]);
+         else bzero(login.chr, sizeof(struct character));
+         login.itm_len = uncompress_string(login.itm, row[2], *(unsigned int *)(row[2] + 4));
+@@ -2460,7 +2507,7 @@ void db_read_clanlog(char *query) {
+         if (clan_serial(cnr) == serial && get_clan_name(cnr)) strcpy(clan_name, get_clan_name(cnr));
+         else sprintf(clan_name, "Former clan %d", cnr);
+ 
+-        tm = localtime((time_t *)&date);
++        tm = localtime(&(time_t){date});
+ 
+         cnt++;
+         if (cnt > 50) {
+@@ -2583,10 +2630,10 @@ void db_rescue_char(char *IDstring) {
+     int ID;
+     MYSQL_RES *result;
+     MYSQL_ROW row;
+-    unsigned char cbuf[sizeof(struct character) * 2];
++    unsigned char cbuf[DISK_CHAR_SIZE * 2 + 1], cdata[DISK_CHAR_SIZE];
+     char buf[256 + sizeof(cbuf)];
+     int current_area, allowed_area, mirror, current_mirror, sID, time_dead;
+-    struct character *tmp;
++    struct character tmpc, *tmp = &tmpc;
+     unsigned long *len;
+ 
+     ID = atoi(IDstring);
+@@ -2632,7 +2679,7 @@ void db_rescue_char(char *IDstring) {
+ 
+     len = mysql_fetch_lengths(result);
+ 
+-    if (len[0] != sizeof(struct character)) {
++    if (len[0] != DISK_CHAR_SIZE) {
+         mysql_free_result_cnt(result);
+         mysql_query_con(&mysql, "unlock tables");
+         xlog("rescue: char size wrong");
+@@ -2644,7 +2691,7 @@ void db_rescue_char(char *IDstring) {
+     mirror = atoi(row[3]);
+     current_mirror = atoi(row[4]);
+     sID = atoi(row[5]);
+-    tmp = (void *)(row[0]);
++    char_from_disk(tmp, (void *)row[0], len[0]);
+ 
+     if (current_area) {
+         sprintf(buf, "select alive_time from area where ID=%d and mirror=%d", current_area, current_mirror);
+@@ -2700,7 +2747,8 @@ void db_rescue_char(char *IDstring) {
+         return;
+     }
+ 
+-    mysql_real_escape_string(&mysql, cbuf, (void *)tmp, sizeof(struct character));
++    char_to_disk(cdata, tmp);
++    mysql_real_escape_string(&mysql, cbuf, cdata, DISK_CHAR_SIZE);
+     sprintf(buf, "update chars set current_area=%d,allowed_area=%d,current_mirror=%d,chr='%s' where ID=%d",
+             current_area,
+             allowed_area,
+@@ -2829,7 +2877,7 @@ void db_stat_update(void) {
+ 
+     lastticker = ticker;
+ 
+-    tm = *localtime((time_t *)&time_now);
++    tm = *localtime(&(time_t){time_now});
+ 
+     if (summary_query_hour != tm.tm_hour) {
+         summary_query_hour = tm.tm_hour;
+@@ -3355,7 +3403,7 @@ void db_readnotes(int masterID, int victimID) {
+         if (row[1]) date = atoi(row[1]);
+         else date = 0;
+ 
+-        tm = localtime((time_t *)&date);
++        tm = localtime(&(time_t){date});
+ 
+         switch (kind) {
+         case NOTE_WARN:
+@@ -3408,7 +3456,7 @@ void db_karmalog(int masterID) {
+         if (row[1]) date = atoi(row[1]);
+         else date = 0;
+ 
+-        tm = localtime((time_t *)&date);
++        tm = localtime(&(time_t){date});
+ 
+         switch (kind) {
+         case NOTE_WARN:
+@@ -3460,7 +3508,7 @@ void db_plr_notes(int victimID, int sID) {
+         if (row[1]) date = atoi(row[1]);
+         else date = 0;
+ 
+-        tm = localtime((time_t *)&date);
++        tm = localtime(&(time_t){date});
+ 
+         switch (kind) {
+         case NOTE_WARN:
+@@ -3594,7 +3642,7 @@ void db_summary(char *key, int sID) {
+         }
+     }
+ 
+-    tm = *localtime((time_t *)&time_now);
++    tm = *localtime(&(time_t){time_now});
+ 
+     sprintf(date, "D%02d%02d%02d", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday);
+ 
+diff --git a/src/database.h b/src/database.h
+index ab24e23..ec5c5f0 100644
+--- a/src/database.h
++++ b/src/database.h
+@@ -55,3 +55,10 @@ struct depot_ppd;
+ void save_depot(int sID, struct depot_ppd *dat, int cID, int leaving);
+ int load_depot_for_char(int cID, int sID);
+ void release_depot(int sID, int cID);
++
++// characters are stored in the database in the original 32-bit layout (1028 bytes),
++// so 32-bit and 64-bit servers can share one database. use these to convert.
++#define DISK_CHAR_SIZE 1028
++struct character;
++void char_to_disk(unsigned char *dst, struct character *src);
++void char_from_disk(struct character *dst, unsigned char *src, int len);
+diff --git a/src/drdata.h b/src/drdata.h
+index ceeb4b1..2016082 100644
+--- a/src/drdata.h
++++ b/src/drdata.h
+@@ -9,6 +9,7 @@
+ // 1 ... 127
+ #define DEV_ID_DB 1 // ID of Daniel Brockhaus
+ #define DEV_ID_MR 2 // ID of Markus Roeder
++#define DEV_ID_AR 3 // ID Of Armistance
+ 
+ // use this macro to build the drdata IDs
+ #define MAKE_DRD(dev_id, nr) (((dev_id) << 24) | (nr))
+@@ -179,6 +180,12 @@
+ #define DRD_STDNPCDRIVER MAKE_DRD(DEV_ID_DB, 161)
+ #define DRD_ARKHATA_PPD MAKE_DRD(DEV_ID_DB, 162 | PERSISTENT_PLAYER_DATA)
+ 
++#define DRD_FORESTBOREAS MAKE_DRD(DEV_ID_AR, 163)
++#define DRD_BOREAS_PPD MAKE_DRD(DEV_ID_AR, 164 | PERSISTENT_PLAYER_DATA)
++#define DRD_MINOA_PPD MAKE_DRD(DEV_ID_AR, 165 | PERSISTENT_PLAYER_DATA)
++#define DRD_BLAKEDRIVER MAKE_DRD(DEV_ID_AR, 166)
++
++
+ #define DRD_LAB2_UNDEAD MAKE_DRD(DEV_ID_MR, 1)
+ #define DRD_LAB2_DEAMON MAKE_DRD(DEV_ID_MR, 2)
+ #define DRD_LAB2_PLAYER MAKE_DRD(DEV_ID_MR, 3)
+@@ -193,6 +200,8 @@
+ #define DRD_SALTMINE_WORKER MAKE_DRD(DEV_ID_MR, 12)
+ #define DRD_SALTMINE_PPD MAKE_DRD(DEV_ID_MR, 13 | PERSISTENT_PLAYER_DATA)
+ 
++
++
+ void *set_data(int cn, int ID, int size); // create buffer of size at "position" ID of cn
+ int del_data(int cn, int ID); // remove data block ID from cn
+ void *get_data(int cn, int ID, int size); // get the block ID from cn, return NULL on error
+diff --git a/src/drvlib.h b/src/drvlib.h
+index 9f34a59..d95425b 100644
+--- a/src/drvlib.h
++++ b/src/drvlib.h
+@@ -119,12 +119,12 @@
+ #define CDR_TEUFELRAT 117 // teufelheim rat driver
+ #define CDR_CLANVAULT 118
+ 
+-#define CDR_CALIGARGLORI 119
+-#define CDR_CALIGARARQUIN 120
+-#define CDR_CALIGARSMITH 121
+-#define CDR_CALIGARHOMDEN 122
+-#define CDR_CALIGARGUARD2 123
+-#define CDR_CALIGARSKELLY 124
++#define CDR_CALIGARGLORI 119 // caligar
++#define CDR_CALIGARARQUIN 120 // caligar
++#define CDR_CALIGARSMITH 121 // caligar
++#define CDR_CALIGARHOMDEN 122 // caligar
++#define CDR_CALIGARGUARD2 123 // caligar
++#define CDR_CALIGARSKELLY 124 // caligar
+ #define CDR_CALIGARGUARD 125 // !!! was 118 !!!
+ 
+ #define CDR_ROUVEN 130 // imperial vault
+@@ -151,6 +151,10 @@
+ #define CDR_ARKHATAPRISON 151 // arkhata
+ #define CDR_KRENACH 152 // arkhata
+ 
++#define CDR_FORESTBOREAS 153 // forest quest giver
++#define CDR_BLAKE 154 // minoa quest giver
++
++
+ #define CDR_MONK_WORKER 186 // monk nomads plain (the ones to protect)
+ #define CDR_MONK_GOVIDA 187 // monk nomads plain (end of salt mine quest)
+ #define CDR_MONK_GATAMA 188 // monk nomads plain (start of salt mine quest)
+@@ -166,6 +170,8 @@
+ #define CDR_LAB2UNDEAD 198 // lab2: undead
+ #define CDR_LABGNOMEDRIVER 199 // lab1: torch gnome
+ 
++
++
+ // item drivers
+ #define IDR_POTION 1 // healing/mana potion
+ #define IDR_DOOR 2 // door (closable, lockable)
+@@ -325,6 +331,7 @@
+ #define IDR_GATEKEEPER 149
+ #define IDR_SIGN 150 // generic sign
+ #define IDR_ARKHATA 151 //
++#define IDR_MINOASTACK 152 // base: stackables
+ 
+ #define IDR_DOUBLE_DOOR 187 // double door driver (in base.c)
+ #define IDR_SALTMINE_ITEM 188 // nomads plain (saltmine) items
+diff --git a/src/edemon.c b/src/edemon.c
+index bef5c60..f7e8bca 100644
+--- a/src/edemon.c
++++ b/src/edemon.c
+@@ -30,7 +30,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/effect.c b/src/effect.c
+index 98df192..24b8f29 100644
+--- a/src/effect.c
++++ b/src/effect.c
+@@ -1297,7 +1297,7 @@ int init_effect(void) {
+ 
+     ef = xcalloc(sizeof(struct effect) * MAXEFFECT, IM_BASE);
+     if (!ef) return 0;
+-    xlog("Allocated effects: %.2fM (%d*%d)", sizeof(struct effect) * MAXEFFECT / 1024.0 / 1024.0, sizeof(struct effect), MAXEFFECT);
++    xlog("Allocated effects: %.2fM (%d*%d)", sizeof(struct effect) * MAXEFFECT / 1024.0 / 1024.0, (int)(sizeof(struct effect)), MAXEFFECT);
+     mem_usage += sizeof(struct effect) * MAXEFFECT;
+ 
+     for (n = 1; n < MAXEFFECT; n++) {
+diff --git a/src/exkordon.c b/src/exkordon.c
+index d9c4bf0..7cf4299 100644
+--- a/src/exkordon.c
++++ b/src/exkordon.c
+@@ -38,7 +38,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/fdemon.c b/src/fdemon.c
+index b7fa384..7264622 100644
+--- a/src/fdemon.c
++++ b/src/fdemon.c
+@@ -41,7 +41,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/forest.c b/src/forest.c
+index 8a8d0b5..0bb86a0 100644
+--- a/src/forest.c
++++ b/src/forest.c
+@@ -1,810 +1,1011 @@
+-/*
+- * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+- */
+-
+-#include <stdlib.h>
+-#include <string.h>
+-#include <ctype.h>
+-
+-#include "server.h"
+-#include "notify.h"
+-#include "direction.h"
+-#include "do.h"
+-#include "drdata.h"
+-#include "see.h"
+-#include "talk.h"
+-#include "tool.h"
+-#include "date.h"
+-#include "drvlib.h"
+-#include "libload.h"
+-#include "item_id.h"
+-#include "database.h"
+-#include "aston.h"
+-#include "sector.h"
+-#include "questlog.h"
+-#include "statistics.h"
+-
+-// library helper functions needed for init
+-int ch_driver(int nr, int cn, int ret, int lastact); // character driver (decides next action)
+-int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+-int ch_died_driver(int nr, int cn, int co); // called when a character dies
+-int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+-
+-// EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
+-    switch (type) {
+-    case CDT_DRIVER:
+-        return ch_driver(nr, obj, ret, lastact);
+-    case CDT_ITEM:
+-        return it_driver(nr, obj, ret);
+-    case CDT_DEAD:
+-        return ch_died_driver(nr, obj, ret);
+-    case CDT_RESPAWN:
+-        return ch_respawn_driver(nr, obj);
+-    default:
+-        return 0;
+-    }
+-}
+-
+-//-----------------------
+-
+-struct qa {
+-    char *word[20];
+-    char *answer;
+-    int answer_code;
+-};
+-
+-struct qa qa[] = {
+-    {{"how", "are", "you", NULL}, "I'm fine!", 0},
+-    {{"hello", NULL}, "Hello, %s!", 0},
+-    {{"hi", NULL}, "Hi, %s!", 0},
+-    {{"greetings", NULL}, "Greetings, %s!", 0},
+-    {{"hail", NULL}, "And hail to you, %s!", 0},
+-    {{"what's", "up", NULL}, "Everything that isn't nailed down.", 0},
+-    {{"what", "is", "up", NULL}, "Everything that isn't nailed down.", 0},
+-    {{"imp", NULL}, "A nice little guy. He's got a peculiar sense of humor, but he's very helpful.", 0},
+-    {{"repeat", NULL}, NULL, 2}};
+-
+-void lowerstrcpy(char *dst, char *src) {
+-    while (*src) *dst++ = tolower(*src++);
+-    *dst = 0;
+-}
+-
+-int analyse_text_driver(int cn, int type, char *text, int co) {
+-    char word[256];
+-    char wordlist[20][256];
+-    int n, w, q;
+-
+-    // ignore game messages
+-    if (type == LOG_SYSTEM || type == LOG_INFO) return 0;
+-
+-    // ignore our own talk
+-    if (cn == co) return 0;
+-
+-    if (!(ch[co].flags & (CF_PLAYER | CF_PLAYERLIKE))) return 0;
+-
+-    if (!char_see_char(cn, co)) return 0;
+-
+-    while (isalpha(*text)) text++;
+-    while (isspace(*text)) text++;
+-    while (isalpha(*text)) text++;
+-    if (*text == ':') text++;
+-    while (isspace(*text)) text++;
+-    if (*text == '"') text++;
+-
+-    n = w = 0;
+-    while (*text) {
+-        switch (*text) {
+-        case ' ':
+-        case ',':
+-        case ':':
+-        case '?':
+-        case '!':
+-        case '"':
+-        case '.':
+-            if (n) {
+-                word[n] = 0;
+-                lowerstrcpy(wordlist[w], word);
+-                if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
+-                }
+-            }
+-            n = 0;
+-            text++;
+-            break;
+-        default:
+-            word[n++] = *text++;
+-            if (n > 250) return 0;
+-            break;
+-        }
+-    }
+-
+-    if (w) {
+-        for (q = 0; q < sizeof(qa) / sizeof(struct qa); q++) {
+-            for (n = 0; n < w && qa[q].word[n]; n++) {
+-                if (strcmp(wordlist[n], qa[q].word[n])) break;
+-            }
+-            if (n == w && !qa[q].word[n]) {
+-                if (qa[q].answer) say(cn, qa[q].answer, ch[co].name, ch[cn].name);
+-                else return qa[q].answer_code;
+-
+-                return 1;
+-            }
+-        }
+-    }
+-
+-    return 0;
+-}
+-
+-struct imp_driver_data {
+-    int last_talk;
+-    int current_victim;
+-    int mode;
+-    int backtime;
+-};
+-
+-// note: the ppd is borrowed from area3 - the missions interact...
+-void imp_driver(int cn, int ret, int lastact) {
+-    struct imp_driver_data *dat;
+-    struct area3_ppd *ppd;
+-    int co, in, talkdir = 0, didsay = 0;
+-    struct msg *msg, *next;
+-
+-    dat = set_data(cn, DRD_IMPDRIVER, sizeof(struct imp_driver_data));
+-    if (!dat) return; // oops...
+-
+-    // loop through our messages
+-    for (msg = ch[cn].msg; msg; msg = next) {
+-        next = msg->next;
+-
+-        // did we see someone?
+-        if (msg->type == NT_CHAR) {
+-
+-            co = msg->dat1;
+-
+-            // dont talk to other NPCs
+-            if (!(ch[co].flags & CF_PLAYER)) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to players without connection
+-            if (ch[co].driver == CDR_LOSTCON) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // only talk every ten seconds
+-            if (ticker < dat->last_talk + TICKS * 5) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone we cant see, and dont talk to ourself
+-            if (!char_see_char(cn, co) || cn == co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone far away
+-            if (char_dist(cn, co) > 20) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // get current status with player
+-            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-
+-            if (ppd) {
+-                switch (ppd->imp_state) {
+-                case 0:
+-                    say(cn, "A human. Now this is interesting. What could a human be doing here?");
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    break;
+-                case 1:
+-                    say(cn, "Should I tell him about the treasure? Ah, let's wait and see.");
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    break;
+-                case 2:
+-                    break;
+-                case 3:
+-                    say(cn, "Nicely done, %s. Thou might not be bright, but at least thou knowest how to fight.", ch[co].name);
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    ppd->imp_kills = 0;
+-                    questlog_done(co, 22);
+-                    break;
+-                case 4:
+-                    say(cn, "Now do be a dear and run back to William.");
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    ppd->william_state = 3;
+-                    break;
+-                case 5:
+-                    if (questlog_isdone(co, 23)) {
+-                        ppd->imp_state = 11;
+-                        break;
+-                    }
+-                    break;
+-                case 6:
+-                    say(cn, "Hullo human! There is more to be done here I know thine worth. Find him who is old and in need of thy help.");
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    break;
+-                case 7:
+-                    if (ppd->hermit_state > 3) ppd->imp_state++; // fall thru...
+-                    else break;
+-                case 8:
+-                    if (ppd->hermit_state == 4 && (!(in = has_item(co, IID_HARDKILL)) || it[in].drdata[37] < 38)) {
+-                        if (in) say(cn, "Listen, human, for this might save thy life: The spider queen is beyond the strength of thine holy weapon. Thou needst find another stone circle. Find the skeleton ruin and go eastward.");
+-                        else say(cn, "Listen, human, for this might save thy life: Thou needst a holy weapon, otherwise thy task will remain unfulfilled.");
+-                        didsay = 1;
+-                    }
+-                    ppd->imp_state++;
+-                    break;
+-                case 9:
+-                    if (ppd->hermit_state > 4) ppd->imp_state++; // fall thru...
+-                    else break;
+-                case 10:
+-                    say(cn, "Thou art truly worthy, dear human called %s. Now, I shall tell thee how to find the treasure. Find the southernmost stone where the single skeleton lurks. Dig a hole and thou shalt find the key to a treasure.", ch[co].name);
+-                    ppd->imp_state++;
+-                    didsay = 1;
+-                    break;
+-                case 11:
+-                    break;
+-                }
+-                if (didsay) {
+-                    dat->last_talk = ticker;
+-                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
+-                    dat->current_victim = co;
+-                    dat->mode = 1;
+-                    dat->backtime = ticker + TICKS * 8;
+-                }
+-            }
+-        }
+-
+-        // got an item?
+-        if (msg->type == NT_GIVE) {
+-            co = msg->dat1;
+-
+-            if ((in = ch[cn].citem)) { // we still have it
+-                // let it vanish, then
+-                destroy_item(ch[cn].citem);
+-                ch[cn].citem = 0;
+-            }
+-        }
+-
+-        if (msg->type == NT_SEEHIT) {
+-            co = msg->dat2;
+-            if (co && (ch[co].flags & CF_PLAYER) && ch[co].hp < ch[co].value[1][V_HP] * POWERSCALE / 2 && !RANDOM(4) && !has_spell(co, IDR_HEAL)) {
+-                if (ch[cn].flags & CF_INVISIBLE) {
+-                    ch[cn].flags &= ~CF_INVISIBLE;
+-                    set_sector(ch[cn].x, ch[cn].y);
+-                }
+-                dat->mode = 1;
+-                dat->backtime = ticker + TICKS * 3;
+-                say(cn, "Ooh. Don't die, dear human.");
+-                if (do_heal(cn, co)) {
+-                    remove_message(cn, msg);
+-                    return;
+-                }
+-            }
+-        }
+-
+-        remove_message(cn, msg);
+-    }
+-
+-    // do something. whenever possible, call do_idle with as high a tick count
+-    // as reasonable when doing nothing.
+-
+-    if (dat->mode == 1 && ticker > dat->backtime) dat->mode = 0;
+-
+-    if (dat->mode == 0) {
+-        if (!(ch[cn].flags & CF_INVISIBLE)) {
+-            ch[cn].flags |= CF_INVISIBLE;
+-            set_sector(ch[cn].x, ch[cn].y);
+-        }
+-    } else if (dat->mode == 1) {
+-        if ((ch[cn].flags & CF_INVISIBLE)) {
+-            ch[cn].flags &= ~CF_INVISIBLE;
+-            set_sector(ch[cn].x, ch[cn].y);
+-        }
+-    }
+-
+-    if (talkdir) turn(cn, talkdir);
+-
+-    if (spell_self_driver(cn)) return;
+-
+-    if (dat->last_talk + TICKS * 30 < ticker) {
+-        if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
+-    }
+-
+-    do_idle(cn, TICKS);
+-}
+-
+-struct william_driver_data {
+-    int last_talk;
+-    int current_victim;
+-};
+-
+-// note: the ppd is borrowed from area3 - the missions interact...
+-void william_driver(int cn, int ret, int lastact) {
+-    struct imp_driver_data *dat;
+-    struct area3_ppd *ppd;
+-    int co, in, talkdir = 0, didsay = 0;
+-    struct msg *msg, *next;
+-
+-    dat = set_data(cn, DRD_WILLIAMDRIVER, sizeof(struct william_driver_data));
+-    if (!dat) return; // oops...
+-
+-    // loop through our messages
+-    for (msg = ch[cn].msg; msg; msg = next) {
+-        next = msg->next;
+-
+-        // did we see someone?
+-        if (msg->type == NT_CHAR) {
+-
+-            co = msg->dat1;
+-
+-            // dont talk to other NPCs
+-            if (!(ch[co].flags & CF_PLAYER)) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to players without connection
+-            if (ch[co].driver == CDR_LOSTCON) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // only talk every ten seconds
+-            if (ticker < dat->last_talk + TICKS * 5) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone we cant see, and dont talk to ourself
+-            if (!char_see_char(cn, co) || cn == co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone far away
+-            if (char_dist(cn, co) > 10) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // get current status with player
+-            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-
+-            if (ppd) {
+-                switch (ppd->william_state) {
+-                case 0:
+-                    say(cn, "Greetings, %s. So nice of thee to visit. I am called %s.", ch[co].name, ch[cn].name);
+-                    if (questlog_isdone(co, 22)) {
+-                        ppd->william_state = 3;
+-                        break;
+-                    }
+-                    questlog_open(co, 22);
+-                    ppd->william_state++;
+-                    didsay = 1;
+-                    break;
+-                case 1:
+-                    say(cn, "The \260c4imp\260c0 asked me to tell you to go east and then northeast and hunt some bears.");
+-                    ppd->william_state++;
+-                    didsay = 1;
+-                    break;
+-                case 2:
+-                    break; // waiting for imp
+-                case 3:
+-                    if (questlog_isdone(co, 23)) {
+-                        ppd->william_state = 7;
+-                        break;
+-                    }
+-                    say(cn, "Ah, hello %s. The \260c4imp\260c0 told me thou hast done him a favor. That's nice of thee.", ch[co].name);
+-                    questlog_open(co, 23);
+-                    ppd->william_state++;
+-                    didsay = 1;
+-                    break;
+-                case 4:
+-                    say(cn, "Now if I may be so bold as to make a request of my own? It might sound strange to thee, friend, but I can make a nice stew from praying mantisses. I'd pay thee handsomely if thou couldst hunt one of them down and bring it to me.");
+-                    ppd->william_state++;
+-                    didsay = 1;
+-                    break;
+-                case 5:
+-                    say(cn, "They live in the northern corner of the forest, close to a large clearing. Thou needst go east, then north and then north-west to get there.");
+-                    ppd->william_state++;
+-                    didsay = 1;
+-                    break;
+-                case 6:
+-                    break; // waiting for mantiss
+-                case 7:
+-                    break; // quest done
+-                }
+-                if (didsay) {
+-                    dat->last_talk = ticker;
+-                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
+-                    dat->current_victim = co;
+-                }
+-            }
+-        }
+-
+-        // talk back
+-        if (msg->type == NT_TEXT) {
+-            co = msg->dat3;
+-
+-            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
+-
+-            if (dat->current_victim && dat->current_victim != co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            switch ((didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co))) {
+-            case 2:
+-                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-                if (ppd && ppd->william_state <= 2) {
+-                    dat->last_talk = 0;
+-                    ppd->william_state = 0;
+-                }
+-                if (ppd && ppd->william_state >= 3 && ppd->william_state <= 6) {
+-                    dat->last_talk = 0;
+-                    ppd->william_state = 3;
+-                }
+-                break;
+-            }
+-            if (didsay) {
+-                talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
+-                dat->current_victim = co;
+-            }
+-        }
+-
+-        // got an item?
+-        if (msg->type == NT_GIVE) {
+-            co = msg->dat1;
+-
+-            if ((in = ch[cn].citem)) { // we still have it
+-                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-
+-                if (it[in].ID == IID_AREA16_MANTIS && ppd && ppd->william_state == 6) {
+-                    int tmp;
+-                    destroy_item(in);
+-                    ch[cn].citem = 0;
+-
+-                    ppd->william_state = 7;
+-                    ppd->imp_state = 6;
+-                    say(cn, "Ah. I thank thee, %s. This will make a nice stew. Here, take these 20 gold coins.", ch[co].name);
+-                    tmp = questlog_done(co, 23);
+-                    destroy_item_byID(co, IID_AREA16_MANTIS);
+-                    if (tmp == 1) {
+-                        ch[co].gold += 2000;
+-                        stats_update(co, 0, 2000);
+-                        ch[co].flags |= CF_ITEMS;
+-                    }
+-                } else {
+-                    if (!give_char_item(co, ch[cn].citem)) destroy_item(ch[cn].citem);
+-                    ch[cn].citem = 0;
+-                }
+-            }
+-        }
+-
+-        remove_message(cn, msg);
+-    }
+-
+-    // do something. whenever possible, call do_idle with as high a tick count
+-    // as reasonable when doing nothing.
+-
+-    if (talkdir) turn(cn, talkdir);
+-
+-    if (dat->last_talk + TICKS * 30 < ticker) {
+-        if (hour >= 20 || hour < 6) {
+-            if (secure_move_driver(cn, 176, 120, DX_RIGHT, ret, lastact)) return;
+-        } else {
+-            if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
+-        }
+-    }
+-
+-    do_idle(cn, TICKS);
+-}
+-
+-struct hermit_driver_data {
+-    int last_talk;
+-    int current_victim;
+-};
+-
+-// note: the ppd is borrowed from area3 - the missions interact...
+-void hermit_driver(int cn, int ret, int lastact) {
+-    struct imp_driver_data *dat;
+-    struct area3_ppd *ppd;
+-    int co, in, talkdir = 0, didsay = 0;
+-    struct msg *msg, *next;
+-
+-    dat = set_data(cn, DRD_HERMITDRIVER, sizeof(struct hermit_driver_data));
+-    if (!dat) return; // oops...
+-
+-    // loop through our messages
+-    for (msg = ch[cn].msg; msg; msg = next) {
+-        next = msg->next;
+-
+-        // did we see someone?
+-        if (msg->type == NT_CHAR) {
+-
+-            co = msg->dat1;
+-
+-            // dont talk to other NPCs
+-            if (!(ch[co].flags & CF_PLAYER)) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to players without connection
+-            if (ch[co].driver == CDR_LOSTCON) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // only talk every ten seconds
+-            if (ticker < dat->last_talk + TICKS * 5) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone we cant see, and dont talk to ourself
+-            if (!char_see_char(cn, co) || cn == co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // dont talk to someone far away
+-            if (char_dist(cn, co) > 10) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            // get current status with player
+-            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-
+-            if (ppd) {
+-                switch (ppd->hermit_state) {
+-                case 0:
+-                    say(cn, "My greetings to thee, %s. 'Tis most fortunate to see such a formidable hero as thyself. Be aware that I am in dire need of thy help.", ch[co].name);
+-                    questlog_open(co, 24);
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    break;
+-                case 1:
+-                    say(cn, "Not long ago, some foul demons invaded this once so peaceful forest. They did not linger for long, but after they left the spiders in the western part of the forest started to grow and grow and grow.");
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    break;
+-                case 2:
+-                    say(cn, "They did not only grow in size, but also in aggressiveness. Before, they used to feed on other insects, but now they lust human blood. Therefore I lay this quest upon thee, %s, to go to their lair and slay their queen.", ch[co].name);
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    break;
+-                case 3:
+-                    say(cn, "Be wary, and prepare thyself well, for the queen can only be slain by a holy weapon of sufficient strength. Now go, %s, and do what needs be done. Thou canst reach their lair by going south and turning north-west at the old ruin.", ch[co].name);
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    break;
+-                case 4:
+-                    break;
+-                case 5:
+-                    say(cn, "I thank thee, %s, for thy brave deed. Forever shall I keep the memory of thy courage in my heart.", ch[co].name);
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    questlog_done(co, 24);
+-                    break;
+-                case 6:
+-                    say(cn, "I know not why these demons have come, nor whence they came from. But I ask thee, %s, fight them whereever they show their ugly hides.", ch[co].name);
+-                    ppd->hermit_state++;
+-                    didsay = 1;
+-                    break;
+-                case 7:
+-                    break;
+-                }
+-                if (didsay) {
+-                    dat->last_talk = ticker;
+-                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
+-                    dat->current_victim = co;
+-                }
+-            }
+-        }
+-
+-        // talk back
+-        if (msg->type == NT_TEXT) {
+-            co = msg->dat3;
+-
+-            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
+-
+-            if (dat->current_victim && dat->current_victim != co) {
+-                remove_message(cn, msg);
+-                continue;
+-            }
+-
+-            switch ((didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co))) {
+-            case 2:
+-                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-                if (ppd && ppd->hermit_state <= 4) {
+-                    dat->last_talk = 0;
+-                    ppd->hermit_state = 0;
+-                }
+-                break;
+-            }
+-            if (didsay) {
+-                talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
+-                dat->current_victim = co;
+-            }
+-        }
+-
+-        // got an item?
+-        if (msg->type == NT_GIVE) {
+-            co = msg->dat1;
+-
+-            if ((in = ch[cn].citem)) { // we still have it
+-                // let it vanish, then
+-                destroy_item(ch[cn].citem);
+-                ch[cn].citem = 0;
+-            }
+-        }
+-
+-        remove_message(cn, msg);
+-    }
+-
+-    // do something. whenever possible, call do_idle with as high a tick count
+-    // as reasonable when doing nothing.
+-
+-    if (talkdir) turn(cn, talkdir);
+-
+-    if (dat->last_talk + TICKS * 30 < ticker) {
+-        if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
+-    }
+-
+-    do_idle(cn, TICKS);
+-}
+-
+-void monster_dead(int cn, int co) {
+-    struct area3_ppd *ppd;
+-    int bit = 0, in;
+-
+-    if (!co) return;
+-    if (!(ch[co].flags & CF_PLAYER)) return;
+-
+-    if ((ch[cn].sprite == 306) && (ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd))) && ppd->imp_state == 2) {
+-        ppd->imp_kills++;
+-        if (ppd->imp_kills > 20) ppd->imp_state = 3;
+-    }
+-
+-    if ((ch[cn].flags & CF_HARDKILL) && (ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd))) && ppd->hermit_state == 4) {
+-        ppd->hermit_state = 5;
+-        log_char(co, LOG_SYSTEM, 0, "Thou hast slain the spider queen.");
+-    }
+-
+-    if (ch[co].x >= 182 && ch[co].y >= 185 && ch[co].x <= 192 && ch[co].y <= 192) bit = 8;
+-
+-    if (bit && (in = ch[co].item[WN_RHAND]) && it[in].driver == 0 && !(it[in].drdata[36] & bit)) {
+-        it[in].ID = IID_HARDKILL;
+-        it[in].drdata[37] += 6;
+-        it[in].drdata[36] |= bit;
+-        it[in].flags |= IF_QUEST | IF_FORCEUPDATE;
+-        ch[co].flags |= CF_ITEMS;
+-        log_char(co, LOG_SYSTEM, 0, "Your %s starts to glow.", it[in].name);
+-    }
+-}
+-
+-void chest(int in, int cn) {
+-    int in2;
+-    struct area3_ppd *ppd;
+-
+-    if (!cn) return;
+-
+-    if (ch[cn].citem) {
+-        log_char(cn, LOG_SYSTEM, 0, "Please empty your hand (mouse cursor) first.");
+-        return;
+-    }
+-
+-    if (it[in].drdata[0] == 0) {
+-        if (!has_item(cn, IID_AREA16_ROBBERKEY)) {
+-            log_char(cn, LOG_SYSTEM, 0, "The chest is locked and you don't have the right key.");
+-            return;
+-        }
+-
+-        ppd = set_data(cn, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-        if (!ppd || (ppd->imp_flags & 1) || !(in2 = create_money_item(9733))) {
+-            log_char(cn, LOG_SYSTEM, 0, "The chest is empty.");
+-            return;
+-        }
+-        ppd->imp_flags |= 1;
+-    } else {
+-        if (!has_item(cn, IID_AREA16_SKELLYKEY)) {
+-            log_char(cn, LOG_SYSTEM, 0, "The chest is locked and you don't have the right key.");
+-            return;
+-        }
+-
+-        ppd = set_data(cn, DRD_AREA3_PPD, sizeof(struct area3_ppd));
+-        if (!ppd || (ppd->imp_flags & 2) || !(in2 = create_money_item(17587))) {
+-            log_char(cn, LOG_SYSTEM, 0, "The chest is empty.");
+-            return;
+-        }
+-        ppd->imp_flags |= 2;
+-    }
+-
+-    if (ch[cn].flags & CF_PLAYER) dlog(cn, in2, "took from forest chest");
+-    ch[cn].citem = in2;
+-    it[in2].carried = cn;
+-    ch[cn].flags |= CF_ITEMS;
+-
+-    log_char(cn, LOG_SYSTEM, 0, "You found a nice sum of money!");
+-}
+-
+-int ch_driver(int nr, int cn, int ret, int lastact) {
+-    switch (nr) {
+-    case CDR_FORESTIMP:
+-        imp_driver(cn, ret, lastact);
+-        return 1;
+-    case CDR_FORESTMONSTER:
+-        char_driver(CDR_SIMPLEBADDY, CDT_DRIVER, cn, ret, lastact);
+-        return 1;
+-    case CDR_FORESTWILLIAM:
+-        william_driver(cn, ret, lastact);
+-        return 1;
+-    case CDR_FORESTHERMIT:
+-        hermit_driver(cn, ret, lastact);
+-        return 1;
+-    default:
+-        return 0;
+-    }
+-}
+-
+-int it_driver(int nr, int in, int cn) {
+-    switch (nr) {
+-    case IDR_FORESTCHEST:
+-        chest(in, cn);
+-        return 1;
+-
+-    default:
+-        return 0;
+-    }
+-}
+-
+-int ch_died_driver(int nr, int cn, int co) {
+-    switch (nr) {
+-    case CDR_FORESTIMP:
+-        return 1;
+-    case CDR_FORESTMONSTER:
+-        monster_dead(cn, co);
+-        return 1;
+-    default:
+-        return 0;
+-    }
+-}
+-
+-int ch_respawn_driver(int nr, int cn) {
+-    switch (nr) {
+-    case CDR_FORESTIMP:
+-        return 1;
+-    case CDR_FORESTMONSTER:
+-        return 1;
+-    default:
+-        return 0;
+-    }
+-}
++/*
++ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++ */
++
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++
++#include "server.h"
++#include "notify.h"
++#include "direction.h"
++#include "do.h"
++#include "drdata.h"
++#include "see.h"
++#include "talk.h"
++#include "tool.h"
++#include "date.h"
++#include "drvlib.h"
++#include "libload.h"
++#include "item_id.h"
++#include "database.h"
++#include "aston.h"
++#include "sector.h"
++#include "questlog.h"
++#include "statistics.h"
++
++// library helper functions needed for init
++int ch_driver(int nr, int cn, int ret, int lastact); // character driver (decides next action)
++int it_driver(int nr, int in, int cn); // item driver (special cases for use)
++int ch_died_driver(int nr, int cn, int co); // called when a character dies
++int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
++
++// EXPORTED - character/item driver
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
++    switch (type) {
++    case CDT_DRIVER:
++        return ch_driver(nr, obj, ret, lastact);
++    case CDT_ITEM:
++        return it_driver(nr, obj, ret);
++    case CDT_DEAD:
++        return ch_died_driver(nr, obj, ret);
++    case CDT_RESPAWN:
++        return ch_respawn_driver(nr, obj);
++    default:
++        return 0;
++    }
++}
++
++//-----------------------
++
++struct qa {
++    char *word[20];
++    char *answer;
++    int answer_code;
++};
++
++struct qa qa[] = {
++    {{"how", "are", "you", NULL}, "I'm fine!", 0},
++    {{"hello", NULL}, "Hello, %s!", 0},
++    {{"hi", NULL}, "Hi, %s!", 0},
++    {{"greetings", NULL}, "Greetings, %s!", 0},
++    {{"hail", NULL}, "And hail to you, %s!", 0},
++    {{"what's", "up", NULL}, "Everything that isn't nailed down.", 0},
++    {{"what", "is", "up", NULL}, "Everything that isn't nailed down.", 0},
++    {{"imp", NULL}, "A nice little guy. He's got a peculiar sense of humor, but he's very helpful.", 0},
++    {{"repeat", NULL}, NULL, 2}};
++
++void lowerstrcpy(char *dst, char *src) {
++    while (*src) *dst++ = tolower(*src++);
++    *dst = 0;
++}
++
++int analyse_text_driver(int cn, int type, char *text, int co) {
++    char word[256];
++    char wordlist[20][256];
++    int n, w, q;
++
++    // ignore game messages
++    if (type == LOG_SYSTEM || type == LOG_INFO) return 0;
++
++    // ignore our own talk
++    if (cn == co) return 0;
++
++    if (!(ch[co].flags & (CF_PLAYER | CF_PLAYERLIKE))) return 0;
++
++    if (!char_see_char(cn, co)) return 0;
++
++    while (isalpha(*text)) text++;
++    while (isspace(*text)) text++;
++    while (isalpha(*text)) text++;
++    if (*text == ':') text++;
++    while (isspace(*text)) text++;
++    if (*text == '"') text++;
++
++    n = w = 0;
++    while (*text) {
++        switch (*text) {
++        case ' ':
++        case ',':
++        case ':':
++        case '?':
++        case '!':
++        case '"':
++        case '.':
++            if (n) {
++                word[n] = 0;
++                lowerstrcpy(wordlist[w], word);
++                if (strcasecmp(wordlist[w], ch[cn].name)) {
++                    if (w < 20) w++;
++                }
++            }
++            n = 0;
++            text++;
++            break;
++        default:
++            word[n++] = *text++;
++            if (n > 250) return 0;
++            break;
++        }
++    }
++
++    if (w) {
++        for (q = 0; q < sizeof(qa) / sizeof(struct qa); q++) {
++            for (n = 0; n < w && qa[q].word[n]; n++) {
++                if (strcmp(wordlist[n], qa[q].word[n])) break;
++            }
++            if (n == w && !qa[q].word[n]) {
++                if (qa[q].answer) say(cn, qa[q].answer, ch[co].name, ch[cn].name);
++                else return qa[q].answer_code;
++
++                return 1;
++            }
++        }
++    }
++
++    return 0;
++}
++
++struct imp_driver_data {
++    int last_talk;
++    int current_victim;
++    int mode;
++    int backtime;
++};
++
++// note: the ppd is borrowed from area3 - the missions interact...
++void imp_driver(int cn, int ret, int lastact) {
++    struct imp_driver_data *dat;
++    struct area3_ppd *ppd;
++    int co, in, talkdir = 0, didsay = 0;
++    struct msg *msg, *next;
++
++    dat = set_data(cn, DRD_IMPDRIVER, sizeof(struct imp_driver_data));
++    if (!dat) return; // oops...
++
++    // loop through our messages
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        // did we see someone?
++        if (msg->type == NT_CHAR) {
++
++            co = msg->dat1;
++
++            // dont talk to other NPCs
++            if (!(ch[co].flags & CF_PLAYER)) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to players without connection
++            if (ch[co].driver == CDR_LOSTCON) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // only talk every ten seconds
++            if (ticker < dat->last_talk + TICKS * 5) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone we cant see, and dont talk to ourself
++            if (!char_see_char(cn, co) || cn == co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone far away
++            if (char_dist(cn, co) > 20) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // get current status with player
++            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++
++            if (ppd) {
++                switch (ppd->imp_state) {
++                case 0:
++                    say(cn, "A human. Now this is interesting. What could a human be doing here?");
++                    ppd->imp_state++;
++                    didsay = 1;
++                    break;
++                case 1:
++                    say(cn, "Should I tell him about the treasure? Ah, let's wait and see.");
++                    ppd->imp_state++;
++                    didsay = 1;
++                    break;
++                case 2:
++                    break;
++                case 3:
++                    say(cn, "Nicely done, %s. Thou might not be bright, but at least thou knowest how to fight.", ch[co].name);
++                    ppd->imp_state++;
++                    didsay = 1;
++                    ppd->imp_kills = 0;
++                    questlog_done(co, 22);
++                    break;
++                case 4:
++                    say(cn, "Now do be a dear and run back to William.");
++                    ppd->imp_state++;
++                    didsay = 1;
++                    ppd->william_state = 3;
++                    break;
++                case 5:
++                    if (questlog_isdone(co, 23)) {
++                        ppd->imp_state = 11;
++                        break;
++                    }
++                    break;
++                case 6:
++                    say(cn, "Hullo human! There is more to be done here I know thine worth. Find him who is old and in need of thy help.");
++                    ppd->imp_state++;
++                    didsay = 1;
++                    break;
++                case 7:
++                    if (ppd->hermit_state > 3) ppd->imp_state++; // fall thru...
++                    else break;
++                case 8:
++                    if (ppd->hermit_state == 4 && (!(in = has_item(co, IID_HARDKILL)) || it[in].drdata[37] < 38)) {
++                        if (in) say(cn, "Listen, human, for this might save thy life: The spider queen is beyond the strength of thine holy weapon. Thou needst find another stone circle. Find the skeleton ruin and go eastward.");
++                        else say(cn, "Listen, human, for this might save thy life: Thou needst a holy weapon, otherwise thy task will remain unfulfilled.");
++                        didsay = 1;
++                    }
++                    ppd->imp_state++;
++                    break;
++                case 9:
++                    if (ppd->hermit_state > 4) ppd->imp_state++; // fall thru...
++                    else break;
++                case 10:
++                    say(cn, "Thou art truly worthy, dear human called %s. Now, I shall tell thee how to find the treasure. Find the southernmost stone where the single skeleton lurks. Dig a hole and thou shalt find the key to a treasure.", ch[co].name);
++                    ppd->imp_state++;
++                    didsay = 1;
++                    break;
++                case 11:
++                    break;
++                }
++                if (didsay) {
++                    dat->last_talk = ticker;
++                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                    dat->current_victim = co;
++                    dat->mode = 1;
++                    dat->backtime = ticker + TICKS * 8;
++                }
++            }
++        }
++
++        // got an item?
++        if (msg->type == NT_GIVE) {
++            co = msg->dat1;
++
++            if ((in = ch[cn].citem)) { // we still have it
++                // let it vanish, then
++                destroy_item(ch[cn].citem);
++                ch[cn].citem = 0;
++            }
++        }
++
++        if (msg->type == NT_SEEHIT) {
++            co = msg->dat2;
++            if (co && (ch[co].flags & CF_PLAYER) && ch[co].hp < ch[co].value[1][V_HP] * POWERSCALE / 2 && !RANDOM(4) && !has_spell(co, IDR_HEAL)) {
++                if (ch[cn].flags & CF_INVISIBLE) {
++                    ch[cn].flags &= ~CF_INVISIBLE;
++                    set_sector(ch[cn].x, ch[cn].y);
++                }
++                dat->mode = 1;
++                dat->backtime = ticker + TICKS * 3;
++                say(cn, "Ooh. Don't die, dear human.");
++                if (do_heal(cn, co)) {
++                    remove_message(cn, msg);
++                    return;
++                }
++            }
++        }
++
++        remove_message(cn, msg);
++    }
++
++    // do something. whenever possible, call do_idle with as high a tick count
++    // as reasonable when doing nothing.
++
++    if (dat->mode == 1 && ticker > dat->backtime) dat->mode = 0;
++
++    if (dat->mode == 0) {
++        if (!(ch[cn].flags & CF_INVISIBLE)) {
++            ch[cn].flags |= CF_INVISIBLE;
++            set_sector(ch[cn].x, ch[cn].y);
++        }
++    } else if (dat->mode == 1) {
++        if ((ch[cn].flags & CF_INVISIBLE)) {
++            ch[cn].flags &= ~CF_INVISIBLE;
++            set_sector(ch[cn].x, ch[cn].y);
++        }
++    }
++
++    if (talkdir) turn(cn, talkdir);
++
++    if (spell_self_driver(cn)) return;
++
++    if (dat->last_talk + TICKS * 30 < ticker) {
++        if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
++    }
++
++    do_idle(cn, TICKS);
++}
++
++struct william_driver_data {
++    int last_talk;
++    int current_victim;
++};
++
++// note: the ppd is borrowed from area3 - the missions interact...
++void william_driver(int cn, int ret, int lastact) {
++    struct imp_driver_data *dat;
++    struct area3_ppd *ppd;
++    int co, in, talkdir = 0, didsay = 0;
++    struct msg *msg, *next;
++
++    dat = set_data(cn, DRD_WILLIAMDRIVER, sizeof(struct william_driver_data));
++    if (!dat) return; // oops...
++
++    // loop through our messages
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        // did we see someone?
++        if (msg->type == NT_CHAR) {
++
++            co = msg->dat1;
++
++            // dont talk to other NPCs
++            if (!(ch[co].flags & CF_PLAYER)) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to players without connection
++            if (ch[co].driver == CDR_LOSTCON) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // only talk every ten seconds
++            if (ticker < dat->last_talk + TICKS * 5) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone we cant see, and dont talk to ourself
++            if (!char_see_char(cn, co) || cn == co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone far away
++            if (char_dist(cn, co) > 10) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // get current status with player
++            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++
++            if (ppd) {
++                switch (ppd->william_state) {
++                case 0:
++                    say(cn, "Greetings, %s. So nice of thee to visit. I am called %s.", ch[co].name, ch[cn].name);
++                    if (questlog_isdone(co, 22)) {
++                        ppd->william_state = 3;
++                        break;
++                    }
++                    questlog_open(co, 22);
++                    ppd->william_state++;
++                    didsay = 1;
++                    break;
++                case 1:
++                    say(cn, "The \260c4imp\260c0 asked me to tell you to go east and then northeast and hunt some bears.");
++                    ppd->william_state++;
++                    didsay = 1;
++                    break;
++                case 2:
++                    break; // waiting for imp
++                case 3:
++                    if (questlog_isdone(co, 23)) {
++                        ppd->william_state = 7;
++                        break;
++                    }
++                    say(cn, "Ah, hello %s. The \260c4imp\260c0 told me thou hast done him a favor. That's nice of thee.", ch[co].name);
++                    questlog_open(co, 23);
++                    ppd->william_state++;
++                    didsay = 1;
++                    break;
++                case 4:
++                    say(cn, "Now if I may be so bold as to make a request of my own? It might sound strange to thee, friend, but I can make a nice stew from praying mantisses. I'd pay thee handsomely if thou couldst hunt one of them down and bring it to me.");
++                    ppd->william_state++;
++                    didsay = 1;
++                    break;
++                case 5:
++                    say(cn, "They live in the northern corner of the forest, close to a large clearing. Thou needst go east, then north and then north-west to get there.");
++                    ppd->william_state++;
++                    didsay = 1;
++                    break;
++                case 6:
++                    break; // waiting for mantiss
++                case 7:
++                    break; // quest done
++                }
++                if (didsay) {
++                    dat->last_talk = ticker;
++                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                    dat->current_victim = co;
++                }
++            }
++        }
++
++        // talk back
++        if (msg->type == NT_TEXT) {
++            co = msg->dat3;
++
++            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
++
++            if (dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            switch ((didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co))) {
++            case 2:
++                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++                if (ppd && ppd->william_state <= 2) {
++                    dat->last_talk = 0;
++                    ppd->william_state = 0;
++                }
++                if (ppd && ppd->william_state >= 3 && ppd->william_state <= 6) {
++                    dat->last_talk = 0;
++                    ppd->william_state = 3;
++                }
++                break;
++            }
++            if (didsay) {
++                talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                dat->current_victim = co;
++            }
++        }
++
++        // got an item?
++        if (msg->type == NT_GIVE) {
++            co = msg->dat1;
++
++            if ((in = ch[cn].citem)) { // we still have it
++                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++
++                if (it[in].ID == IID_AREA16_MANTIS && ppd && ppd->william_state == 6) {
++                    int tmp;
++                    destroy_item(in);
++                    ch[cn].citem = 0;
++
++                    ppd->william_state = 7;
++                    ppd->imp_state = 6;
++                    say(cn, "Ah. I thank thee, %s. This will make a nice stew. Here, take these 20 gold coins.", ch[co].name);
++                    tmp = questlog_done(co, 23);
++                    destroy_item_byID(co, IID_AREA16_MANTIS);
++                    if (tmp == 1) {
++                        ch[co].gold += 2000;
++                        stats_update(co, 0, 2000);
++                        ch[co].flags |= CF_ITEMS;
++                    }
++                } else {
++                    if (!give_char_item(co, ch[cn].citem)) destroy_item(ch[cn].citem);
++                    ch[cn].citem = 0;
++                }
++            }
++        }
++
++        remove_message(cn, msg);
++    }
++
++    // do something. whenever possible, call do_idle with as high a tick count
++    // as reasonable when doing nothing.
++
++    if (talkdir) turn(cn, talkdir);
++
++    if (dat->last_talk + TICKS * 30 < ticker) {
++        if (hour >= 20 || hour < 6) {
++            if (secure_move_driver(cn, 176, 120, DX_RIGHT, ret, lastact)) return;
++        } else {
++            if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
++        }
++    }
++
++    do_idle(cn, TICKS);
++}
++
++struct hermit_driver_data {
++    int last_talk;
++    int current_victim;
++};
++
++// note: the ppd is borrowed from area3 - the missions interact...
++void hermit_driver(int cn, int ret, int lastact) {
++    struct imp_driver_data *dat;
++    struct area3_ppd *ppd;
++    int co, in, talkdir = 0, didsay = 0;
++    struct msg *msg, *next;
++
++    dat = set_data(cn, DRD_HERMITDRIVER, sizeof(struct hermit_driver_data));
++    if (!dat) return; // oops...
++
++    // loop through our messages
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        // did we see someone?
++        if (msg->type == NT_CHAR) {
++
++            co = msg->dat1;
++
++            // dont talk to other NPCs
++            if (!(ch[co].flags & CF_PLAYER)) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to players without connection
++            if (ch[co].driver == CDR_LOSTCON) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // only talk every ten seconds
++            if (ticker < dat->last_talk + TICKS * 5) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone we cant see, and dont talk to ourself
++            if (!char_see_char(cn, co) || cn == co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone far away
++            if (char_dist(cn, co) > 10) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // get current status with player
++            ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++
++            if (ppd) {
++                switch (ppd->hermit_state) {
++                case 0:
++                    say(cn, "My greetings to thee, %s. 'Tis most fortunate to see such a formidable hero as thyself. Be aware that I am in dire need of thy help.", ch[co].name);
++                    questlog_open(co, 24);
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    break;
++                case 1:
++                    say(cn, "Not long ago, some foul demons invaded this once so peaceful forest. They did not linger for long, but after they left the spiders in the western part of the forest started to grow and grow and grow.");
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    break;
++                case 2:
++                    say(cn, "They did not only grow in size, but also in aggressiveness. Before, they used to feed on other insects, but now they lust human blood. Therefore I lay this quest upon thee, %s, to go to their lair and slay their queen.", ch[co].name);
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    break;
++                case 3:
++                    say(cn, "Be wary, and prepare thyself well, for the queen can only be slain by a holy weapon of sufficient strength. Now go, %s, and do what needs be done. Thou canst reach their lair by going south and turning north-west at the old ruin.", ch[co].name);
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    break;
++                case 4:
++                    break;
++                case 5:
++                    say(cn, "I thank thee, %s, for thy brave deed. Forever shall I keep the memory of thy courage in my heart.", ch[co].name);
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    questlog_done(co, 24);
++                    break;
++                case 6:
++                    say(cn, "I know not why these demons have come, nor whence they came from. But I ask thee, %s, fight them whereever they show their ugly hides.", ch[co].name);
++                    ppd->hermit_state++;
++                    didsay = 1;
++                    break;
++                case 7:
++                    break;
++                }
++                if (didsay) {
++                    dat->last_talk = ticker;
++                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                    dat->current_victim = co;
++                }
++            }
++        }
++
++        // talk back
++        if (msg->type == NT_TEXT) {
++            co = msg->dat3;
++
++            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
++
++            if (dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            switch ((didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co))) {
++            case 2:
++                ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++                if (ppd && ppd->hermit_state <= 4) {
++                    dat->last_talk = 0;
++                    ppd->hermit_state = 0;
++                }
++                break;
++            }
++            if (didsay) {
++                talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                dat->current_victim = co;
++            }
++        }
++
++        // got an item?
++        if (msg->type == NT_GIVE) {
++            co = msg->dat1;
++
++            if ((in = ch[cn].citem)) { // we still have it
++                // let it vanish, then
++                destroy_item(ch[cn].citem);
++                ch[cn].citem = 0;
++            }
++        }
++
++        remove_message(cn, msg);
++    }
++
++    // do something. whenever possible, call do_idle with as high a tick count
++    // as reasonable when doing nothing.
++
++    if (talkdir) turn(cn, talkdir);
++
++    if (dat->last_talk + TICKS * 30 < ticker) {
++        if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
++    }
++
++    do_idle(cn, TICKS);
++}
++
++/* -------- Boreas quest data and helpers -------- */
++
++struct boreas_driver_data {
++    int last_talk;
++    int current_victim;
++};
++
++struct boreas_ppd {
++    int boreas_state;
++    int boreas_kills;
++};
++
++static void boreas_reset_robbers(struct boreas_ppd *ppd) {
++   ppd->boreas_kills = 0;
++}
++
++void boreas_driver(int cn, int ret, int lastact) {
++    struct boreas_driver_data *dat;
++    struct boreas_ppd *ppd;
++    int co, in, tmp, talkdir = 0, didsay = 0;
++    struct msg *msg, *next;
++
++    dat = set_data(cn, DRD_FORESTBOREAS, sizeof(struct boreas_driver_data));
++    if (!dat) return; // oops...
++
++    // loop through our messages
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        // did we see someone?
++        if (msg->type == NT_CHAR) {
++
++            co = msg->dat1;
++
++            // dont talk to other NPCs
++            if (!(ch[co].flags & CF_PLAYER)) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to players without connection
++            if (ch[co].driver == CDR_LOSTCON) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // only talk every ten seconds
++            if (ticker < dat->last_talk + TICKS * 5) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone we cant see, and dont talk to ourself
++            if (!char_see_char(cn, co) || cn == co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone far away
++            if (char_dist(cn, co) > 10) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // get current status with player
++            ppd = set_data(co, DRD_BOREAS_PPD, sizeof(struct boreas_ppd));
++
++            if (ppd) {
++                switch (ppd->boreas_state) {
++                case 0:
++                    say(cn, "Greetings, %s. I am Boreas, a scholar that has studied these woods for years.", ch[co].name);
++                    questlog_open(co, 79);
++                    ppd->boreas_state++;
++                    didsay = 1;
++                    break;
++
++                case 1:
++                    say(cn, "Everything has been peaceful save for the occasional wolf or bear that wanders nearby. But lately merchants and travelers have been attacked by a robber band that hath made camp beneath these trees and preyeth upon all who pass.");
++                    ppd->boreas_state++;
++                    didsay = 1;
++                    break;
++
++                case 2:
++                    say(cn, "I ask thee to save all of the travelers. Slay the robbers, leave none standing.");
++                    boreas_reset_robbers(ppd);
++                    ppd->boreas_state++;
++                    didsay = 1;
++                    break;
++
++                case 3:
++                    break; /* waiting for all 24 robbers killed */
++
++                case 4:
++                    say(cn, "Thou hast broken the robber camp! Well done, %s. Now everybody may pass without worry of being attacked.", ch[co].name);
++                    tmp = questlog_done(co, 79);
++                    if (tmp == 1) {
++                        ch[co].gold += 20000;
++                        stats_update(co, 0, 20000);
++                        ch[co].flags |= CF_ITEMS;
++                    }
++
++                    ppd->boreas_state++;
++                    didsay = 1;
++                    break;
++
++                case 5:
++                    didsay = 1;
++                    break;
++                }
++                
++                if (didsay) {
++                    dat->last_talk = ticker;
++                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                    dat->current_victim = co;
++                }
++            }
++        }
++
++        // talk back
++        if (msg->type == NT_TEXT) {
++            co = msg->dat3;
++
++            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
++
++            if (dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++    switch ((didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co))) {
++            case 2:
++                ppd = set_data(co, DRD_BOREAS_PPD, sizeof(struct boreas_ppd));
++                if (ppd && ppd->boreas_state <= 3) {
++                    dat->last_talk = 0;
++                    ppd->boreas_state = 0;
++                }
++                if (ppd && ppd->boreas_state == 4) {
++                    dat->last_talk = 0;
++                    ppd->boreas_state = 4;
++                }
++                break;
++            }
++
++            if (didsay) {
++                talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                dat->current_victim = co;
++            }
++        }
++
++        if (msg->type == NT_GIVE) {
++            co = msg->dat1;
++
++            if ((in = ch[cn].citem)) {
++                destroy_item(ch[cn].citem);
++                ch[cn].citem = 0;
++            }
++        }
++
++        remove_message(cn, msg);
++    }
++
++    if (talkdir) turn(cn, talkdir);
++
++    if (dat->last_talk + TICKS * 30 < ticker) {
++        if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, DX_RIGHT, ret, lastact)) return;
++    }
++
++    do_idle(cn, TICKS);
++}
++
++void monster_dead(int cn, int co) {
++    struct area3_ppd *ppd;
++    struct boreas_ppd *bppd;
++    int bit = 0, in, left;
++
++    if (!co) return;
++    if (!(ch[co].flags & CF_PLAYER)) return;
++
++    if ((ch[cn].sprite == 306) && (ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd))) && ppd->imp_state == 2) {
++        ppd->imp_kills++;
++        if (ppd->imp_kills > 20) ppd->imp_state = 3;
++    }
++
++    bppd = set_data(co, DRD_BOREAS_PPD, sizeof(struct boreas_ppd));
++    if (bppd && bppd->boreas_state == 3) {
++
++        if (ch[cn].sprite == 312) {
++            bppd->boreas_kills++;
++            left = 24 - bppd->boreas_kills;
++
++            if (bppd->boreas_kills >= 24) {
++                bppd->boreas_state = 4;
++                log_char(co, LOG_SYSTEM, 0,
++                         "Thou hast slain enough robbers. Thou should return to Boreas.");
++            } else {
++                if (left <= 10 || !(left % 5)) {
++                    log_char(co, LOG_SYSTEM, 0,
++                             "%d robbers remaining.", left);
++                }
++            }
++        }
++    }
++
++
++
++    if ((ch[cn].flags & CF_HARDKILL) && (ppd = set_data(co, DRD_AREA3_PPD, sizeof(struct area3_ppd))) && ppd->hermit_state == 4) {
++        ppd->hermit_state = 5;
++        log_char(co, LOG_SYSTEM, 0, "Thou hast slain the spider queen.");
++    }
++
++    if (ch[co].x >= 182 && ch[co].y >= 185 && ch[co].x <= 192 && ch[co].y <= 192) bit = 8;
++
++    if (bit && (in = ch[co].item[WN_RHAND]) && it[in].driver == 0 && !(it[in].drdata[36] & bit)) {
++        it[in].ID = IID_HARDKILL;
++        it[in].drdata[37] += 6;
++        it[in].drdata[36] |= bit;
++        it[in].flags |= IF_QUEST | IF_FORCEUPDATE;
++        ch[co].flags |= CF_ITEMS;
++        log_char(co, LOG_SYSTEM, 0, "Your %s starts to glow.", it[in].name);
++    }
++}
++
++void chest(int in, int cn) {
++    int in2;
++    struct area3_ppd *ppd;
++
++    if (!cn) return;
++
++    if (ch[cn].citem) {
++        log_char(cn, LOG_SYSTEM, 0, "Please empty your hand (mouse cursor) first.");
++        return;
++    }
++
++    if (it[in].drdata[0] == 0) {
++        if (!has_item(cn, IID_AREA16_ROBBERKEY)) {
++            log_char(cn, LOG_SYSTEM, 0, "The chest is locked and you don't have the right key.");
++            return;
++        }
++
++        ppd = set_data(cn, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++        if (!ppd || (ppd->imp_flags & 1) || !(in2 = create_money_item(9733))) {
++            log_char(cn, LOG_SYSTEM, 0, "The chest is empty.");
++            return;
++        }
++        ppd->imp_flags |= 1;
++    } else {
++        if (!has_item(cn, IID_AREA16_SKELLYKEY)) {
++            log_char(cn, LOG_SYSTEM, 0, "The chest is locked and you don't have the right key.");
++            return;
++        }
++
++        ppd = set_data(cn, DRD_AREA3_PPD, sizeof(struct area3_ppd));
++        if (!ppd || (ppd->imp_flags & 2) || !(in2 = create_money_item(17587))) {
++            log_char(cn, LOG_SYSTEM, 0, "The chest is empty.");
++            return;
++        }
++        ppd->imp_flags |= 2;
++    }
++
++    if (ch[cn].flags & CF_PLAYER) dlog(cn, in2, "took from forest chest");
++    ch[cn].citem = in2;
++    it[in2].carried = cn;
++    ch[cn].flags |= CF_ITEMS;
++
++    log_char(cn, LOG_SYSTEM, 0, "You found a nice sum of money!");
++}
++
++int ch_driver(int nr, int cn, int ret, int lastact) {
++    switch (nr) {
++    case CDR_FORESTIMP:
++        imp_driver(cn, ret, lastact);
++        return 1;
++    case CDR_FORESTMONSTER:
++        char_driver(CDR_SIMPLEBADDY, CDT_DRIVER, cn, ret, lastact);
++        return 1;
++    case CDR_FORESTWILLIAM:
++        william_driver(cn, ret, lastact);
++        return 1;
++    case CDR_FORESTHERMIT:
++        hermit_driver(cn, ret, lastact);
++        return 1;
++    case CDR_FORESTBOREAS:
++        boreas_driver(cn, ret, lastact);
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++int it_driver(int nr, int in, int cn) {
++    switch (nr) {
++    case IDR_FORESTCHEST:
++        chest(in, cn);
++        return 1;
++
++    default:
++        return 0;
++    }
++}
++
++int ch_died_driver(int nr, int cn, int co) {
++    switch (nr) {
++    case CDR_FORESTIMP:
++        return 1;
++    case CDR_FORESTMONSTER:
++        monster_dead(cn, co);
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++int ch_respawn_driver(int nr, int cn) {
++    switch (nr) {
++    case CDR_FORESTIMP:
++        return 1;
++    case CDR_FORESTMONSTER:
++        return 1;
++    default:
++        return 0;
++    }
++}
+diff --git a/src/gatekeeper.c b/src/gatekeeper.c
+index b07bfbc..71eb195 100644
+--- a/src/gatekeeper.c
++++ b/src/gatekeeper.c
+@@ -32,7 +32,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/ice.c b/src/ice.c
+index 907b7cc..b6ce0d9 100644
+--- a/src/ice.c
++++ b/src/ice.c
+@@ -21,7 +21,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/io.c b/src/io.c
+index 6537d46..d48952f 100644
+--- a/src/io.c
++++ b/src/io.c
+@@ -224,10 +224,10 @@ int init_io(void) {
+     player = xcalloc(sizeof(struct player *) * MAXPLAYER, IM_BASE);
+     if (!player) return 0;
+ 
+-    xlog("Allocated players: %.2fM (%d*%d)", sizeof(struct player *) * MAXPLAYER / 1024.0 / 1024.0, sizeof(struct player *), MAXPLAYER);
++    xlog("Allocated players: %.2fM (%d*%d)", sizeof(struct player *) * MAXPLAYER / 1024.0 / 1024.0, (int)(sizeof(struct player *)), MAXPLAYER);
+     mem_usage += sizeof(struct player *) * MAXPLAYER;
+ 
+-    xlog("Size of player data: %d bytes", sizeof(struct player));
++    xlog("Size of player data: %d bytes", (int)(sizeof(struct player)));
+ 
+     sock = socket(PF_INET, SOCK_STREAM, 0);
+     if (sock == -1) return 0;
+diff --git a/src/item_id.h b/src/item_id.h
+index e1d825c..6f40b78 100644
+--- a/src/item_id.h
++++ b/src/item_id.h
+@@ -8,6 +8,10 @@
+ #ifndef DEV_ID_MR
+ #define DEV_ID_MR 0x02 // ID of Markus Roeder
+ #endif
++#ifndef DEV_ID_AR
++#define DEV_ID_AR 0x03 // ID of Armistance
++#endif
++
+ 
+ #ifndef DEV_ID_MAZE1
+ #define DEV_ID_MAZE1 0x03 // ID for generated keys in clan catacombs
+@@ -28,6 +32,7 @@
+ 
+ #define DEV_ID_FIRENA 0x13 // firena and tolight
+ 
++
+ #endif
+ 
+ // use this macro to build the drdata IDs
+@@ -344,6 +349,11 @@
+ #define IID_STAFF_ARIAMULET MAKE_ITEMID(DEV_ID_WHITESTAR, 0x00000F)
+ #define IID_STAFF_BEARHEAD MAKE_ITEMID(DEV_ID_WHITESTAR, 0x000010)
+ 
++#define IID_MINOA_WOLFPELT MAKE_ITEMID(DEV_ID_AR, 0x0000CF)
++#define IID_MINOA_BEARPELT MAKE_ITEMID(DEV_ID_AR, 0x0000D0)
++
++
++
+ /* DRDATA usage:
+ 
+ [39]	doors timer counter			
+diff --git a/src/lab.h b/src/lab.h
+index d73f372..827c82b 100644
+--- a/src/lab.h
++++ b/src/lab.h
+@@ -2,6 +2,8 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
++// saved to the database as-is: keep the 32-bit layout on 64-bit builds
++#pragma pack(push, 4)
+ struct lab_ppd {
+     unsigned long long solved_bits; // max 64 labs
+     unsigned int dummy[8]; // reserved space for logic extensions
+@@ -33,6 +35,7 @@ struct lab_ppd {
+     // lab5/15: hard life (no regenerate)
+     unsigned int lab5_dummy[8]; // reserved for later extensions
+ };
++#pragma pack(pop)
+ 
+ int count_solved_labs(int cn);
+ int teleport_next_lab(int cn, int do_teleport);
+diff --git a/src/lab1.c b/src/lab1.c
+index deee82b..c78624f 100644
+--- a/src/lab1.c
++++ b/src/lab1.c
+@@ -28,7 +28,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/lab2.c b/src/lab2.c
+index 0dd48e6..1a0ccab 100644
+--- a/src/lab2.c
++++ b/src/lab2.c
+@@ -31,7 +31,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/lab3.c b/src/lab3.c
+index c035cb5..29680b2 100644
+--- a/src/lab3.c
++++ b/src/lab3.c
+@@ -35,7 +35,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/lab4.c b/src/lab4.c
+index b382fd0..c38e0bb 100644
+--- a/src/lab4.c
++++ b/src/lab4.c
+@@ -30,7 +30,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/lab5.c b/src/lab5.c
+index 4ab1d0e..4bf058d 100644
+--- a/src/lab5.c
++++ b/src/lab5.c
+@@ -34,7 +34,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/libload.c b/src/libload.c
+index 1d56c53..6bdc48b 100644
+--- a/src/libload.c
++++ b/src/libload.c
+@@ -28,7 +28,7 @@ struct lib {
+     time_t time;
+ 
+     void *handle;
+-    int (*driver)(int type, int nr, int obj, int ret, int last_action);
++    int (*driver)(int type, int nr, int obj, intptr_t ret, int last_action);
+ };
+ 
+ static struct lib *libs = NULL;
+@@ -99,17 +99,17 @@ int init_lib(void) {
+ 
+     libs = xcalloc(sizeof(struct lib) * MAXLIB, IM_BASE);
+     if (!libs) return 0;
+-    xlog("Allocated libs: %.2fM (%d*%d)", sizeof(struct lib) * MAXLIB / 1024.0 / 1024.0, sizeof(struct lib), MAXLIB);
++    xlog("Allocated libs: %.2fM (%d*%d)", sizeof(struct lib) * MAXLIB / 1024.0 / 1024.0, (int)(sizeof(struct lib)), MAXLIB);
+     mem_usage += sizeof(struct lib) * MAXLIB;
+ 
+     fast_chdrv = xcalloc(sizeof(int) * MAXDRV, IM_BASE);
+     if (!fast_chdrv) return 0;
+-    xlog("Allocated fast_chdrvs: %.2fM (%d*%d)", sizeof(int) * MAXDRV / 1024.0 / 1024.0, sizeof(int), MAXDRV);
++    xlog("Allocated fast_chdrvs: %.2fM (%d*%d)", sizeof(int) * MAXDRV / 1024.0 / 1024.0, (int)(sizeof(int)), MAXDRV);
+     mem_usage += sizeof(int) * MAXDRV;
+ 
+     fast_itdrv = xcalloc(sizeof(int) * MAXDRV, IM_BASE);
+     if (!fast_itdrv) return 0;
+-    xlog("Allocated fast_itdrvs: %.2fM (%d*%d)", sizeof(int) * MAXDRV / 1024.0 / 1024.0, sizeof(int), MAXDRV);
++    xlog("Allocated fast_itdrvs: %.2fM (%d*%d)", sizeof(int) * MAXDRV / 1024.0 / 1024.0, (int)(sizeof(int)), MAXDRV);
+     mem_usage += sizeof(int) * MAXDRV;
+ 
+     dir = opendir("runtime/generic");
+@@ -146,7 +146,7 @@ void exit_lib(void) {
+     xfree(libs);
+ }
+ 
+-int char_driver(int nr, int type, int cn, int ret, int last_action) {
++int char_driver(int nr, int type, int cn, intptr_t ret, int last_action) {
+     int n, val = 0;
+ 
+     if (nr == 0) {
+diff --git a/src/libload.h b/src/libload.h
+index 17b786d..eecbecf 100644
+--- a/src/libload.h
++++ b/src/libload.h
+@@ -2,6 +2,8 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
++#include <stdint.h>
++
+ int init_lib(void);
+ void exit_lib(void);
+ 
+@@ -11,5 +13,5 @@ void exit_lib(void);
+ #define CDT_RESPAWN 3
+ #define CDT_SPECIAL 4
+ 
+-int char_driver(int nr, int type, int cn, int ret, int last_action);
++int char_driver(int nr, int type, int cn, intptr_t ret, int last_action);
+ int item_driver(int nr, int in, int cn);
+diff --git a/src/log.c b/src/log.c
+index 73f3812..fb62c31 100644
+--- a/src/log.c
++++ b/src/log.c
+@@ -37,7 +37,7 @@ void ilog(char *format, ...) {
+     vsnprintf(buf, 1024, format, args);
+     va_end(args);
+ 
+-    tm = localtime((time_t *)&time_now);
++    tm = localtime(&(time_t){time_now});
+     fprintf(infofp, "%02d.%02d.%02d %02d:%02d:%02d [%03d-%02d]: %s\n",
+             tm->tm_mday, tm->tm_mon + 1, tm->tm_year - 100, tm->tm_hour, tm->tm_min, tm->tm_sec, areaID, areaM,
+             buf);
+@@ -61,7 +61,7 @@ void elog(char *format, ...) {
+     vsnprintf(buf, 1024, format, args);
+     va_end(args);
+ 
+-    tm = localtime((time_t *)&time_now);
++    tm = localtime(&(time_t){time_now});
+     fprintf(errorfp, "%02d.%02d.%02d %02d:%02d:%02d [%03d-%02d]: %s\n",
+             tm->tm_mday, tm->tm_mon + 1, tm->tm_year - 100, tm->tm_hour, tm->tm_min, tm->tm_sec, areaID, areaM,
+             buf);
+@@ -83,7 +83,7 @@ void xlog(char *format, ...) {
+     vsnprintf(buf, 1024, format, args);
+     va_end(args);
+ 
+-    tm = localtime((time_t *)&time_now);
++    tm = localtime(&(time_t){time_now});
+     fprintf(logfp, "%02d.%02d.%02d %02d:%02d:%02d [%03d-%02d]: %s\n",
+             tm->tm_mday, tm->tm_mon + 1, tm->tm_year - 100, tm->tm_hour, tm->tm_min, tm->tm_sec, areaID, areaM,
+             buf);
+@@ -123,7 +123,7 @@ int init_log(void) {
+     struct tm *tm;
+ 
+     if (demon) {
+-        tm = localtime((time_t *)&time_now);
++        tm = localtime(&(time_t){time_now});
+         logday = tm->tm_mday;
+ 
+         sprintf(buf, "logs/%02d_%02d_%02d.log", tm->tm_year % 100, tm->tm_mon + 1, tm->tm_mday);
+@@ -158,7 +158,7 @@ void exit_log(void) {
+ void reinit_log(void) {
+     struct tm *tm;
+ 
+-    tm = localtime((time_t *)&time_now);
++    tm = localtime(&(time_t){time_now});
+     if (demon && logday != tm->tm_mday) {
+         xlog("switching logfiles - last entry in old log");
+         pthread_mutex_lock(&log_mutex);
+diff --git a/src/log_h_additions.txt b/src/log_h_additions.txt
+new file mode 100644
+index 0000000..09720e9
+--- /dev/null
++++ b/src/log_h_additions.txt
+@@ -0,0 +1,4 @@
++Add these declarations to src/log.h:
++
++void fatal_log(char *format, ...);
++void fatal_log_signal_safe(int sig, const char *phase);
+diff --git a/src/los.c b/src/los.c
+index d390c63..2ab8ca3 100644
+--- a/src/los.c
++++ b/src/los.c
+@@ -18,7 +18,7 @@ static int dodoors = 0, doorx, doory;
+ int init_los(void) {
+     los = xcalloc(sizeof(struct los) * MAXCHARS, IM_BASE);
+     if (!los) return 0;
+-    xlog("Allocated los: %.2fM (%d*%d)", sizeof(struct los) * MAXCHARS / 1024.0 / 1024.0, sizeof(struct los), MAXCHARS);
++    xlog("Allocated los: %.2fM (%d*%d)", sizeof(struct los) * MAXCHARS / 1024.0 / 1024.0, (int)(sizeof(struct los)), MAXCHARS);
+     mem_usage += sizeof(struct los) * MAXCHARS;
+ 
+     return 1;
+diff --git a/src/lostcon.c b/src/lostcon.c
+index 051b33d..9feed30 100644
+--- a/src/lostcon.c
++++ b/src/lostcon.c
+@@ -19,7 +19,7 @@ int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+ int ch_died_driver(int nr, int cn); // called when a character dies
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case 0:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/merchant.c b/src/merchant.c
+index 2143c9a..894198d 100644
+--- a/src/merchant.c
++++ b/src/merchant.c
+@@ -24,7 +24,7 @@ int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case 0:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/military.c b/src/military.c
+index 394b486..0ef2d40 100644
+--- a/src/military.c
++++ b/src/military.c
+@@ -32,7 +32,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/mine.c b/src/mine.c
+index f6fb6d8..17c1e3c 100644
+--- a/src/mine.c
++++ b/src/mine.c
+@@ -34,7 +34,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/minoa.c b/src/minoa.c
+new file mode 100644
+index 0000000..64a9a6c
+--- /dev/null
++++ b/src/minoa.c
+@@ -0,0 +1,602 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++
++#include "server.h"
++#include "log.h"
++#include "notify.h"
++#include "direction.h"
++#include "do.h"
++#include "drdata.h"
++#include "see.h"
++#include "death.h"
++#include "talk.h"
++#include "tool.h"
++#include "date.h"
++#include "create.h"
++#include "spell.h"
++#include "effect.h"
++#include "light.h"
++#include "drvlib.h"
++#include "libload.h"
++#include "item_id.h"
++#include "database.h"
++#include "los.h"
++#include "map.h"
++#include "sector.h"
++#include "minoa.h"
++#include "player.h"
++#include "questlog.h"
++
++
++
++// library helper functions needed for init
++int ch_driver(int nr, int cn, int ret, int lastact); // character driver (decides next action)
++int it_driver(int nr, int in, int cn); // item driver (special cases for use)
++int ch_died_driver(int nr, int cn, int co); // called when a character dies
++int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
++
++int blake_give(int cn, int co, int in, struct minoa_ppd *ppd);
++void minoastack_driver(int in, int cn);
++
++// EXPORTED - character/item driver
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
++    switch (type) {
++    case CDT_DRIVER:
++        return ch_driver(nr, obj, ret, lastact);
++    case CDT_ITEM:
++        return it_driver(nr, obj, ret);
++    case CDT_DEAD:
++        return ch_died_driver(nr, obj, ret);
++    case CDT_RESPAWN:
++        return ch_respawn_driver(nr, obj);
++    default:
++        return 0;
++    }
++}
++
++//-----------------------
++
++struct qa {
++    char *word[20];
++    char *answer;
++    int answer_code;
++};
++
++struct qa qa[] = {
++    {{"how", "are", "you", NULL}, "I'm fine!", 0},
++    {{"hello", NULL}, "Hello, %s!", 0},
++    {{"hi", NULL}, "Hi, %s!", 0},
++    {{"greetings", NULL}, "Greetings, %s!", 0},
++    {{"hail", NULL}, "And hail to you, %s!", 0},
++    {{"what's", "up", NULL}, "Everything that isn't nailed down.", 0},
++    {{"what", "is", "up", NULL}, "Everything that isn't nailed down.", 0},
++    {{"repeat", NULL}, NULL, 2},
++    {{"restart", NULL}, NULL, 2},
++    {{"please", "repeat", NULL}, NULL, 2},
++    {{"please", "restart", NULL}, NULL, 2},
++};
++
++void lowerstrcpy(char *dst, char *src) {
++    while (*src) *dst++ = tolower(*src++);
++    *dst = 0;
++}
++
++int analyse_text_driver(int cn, int type, char *text, int co) {
++    char word[256];
++    char wordlist[20][256];
++    int n, w, q;
++
++    // ignore game messages
++    if (type == LOG_SYSTEM || type == LOG_INFO) return 0;
++
++    // ignore our own talk
++    if (cn == co) return 0;
++
++    if (!(ch[co].flags & CF_PLAYER)) return 0;
++
++    if (char_dist(cn, co) > 12) return 0;
++
++    if (!char_see_char(cn, co)) return 0;
++
++    while (isalpha(*text)) text++;
++    while (isspace(*text)) text++;
++    while (isalpha(*text)) text++;
++    if (*text == ':') text++;
++    while (isspace(*text)) text++;
++    if (*text == '"') text++;
++
++    n = w = 0;
++    while (*text) {
++        switch (*text) {
++        case ' ':
++        case ',':
++        case ':':
++        case '?':
++        case '!':
++        case '"':
++        case '.':
++            if (n) {
++                word[n] = 0;
++                lowerstrcpy(wordlist[w], word);
++                if (strcasecmp(wordlist[w], ch[cn].name)) {
++                    if (w < 20) w++;
++                }
++            }
++            n = 0;
++            text++;
++            break;
++        default:
++            word[n++] = *text++;
++            if (n > 250) return 0;
++            break;
++        }
++    }
++
++    if (w) {
++        for (q = 0; q < sizeof(qa) / sizeof(struct qa); q++) {
++            for (n = 0; n < w && qa[q].word[n]; n++) {
++                if (strcmp(wordlist[n], qa[q].word[n])) break;
++            }
++            if (n == w && !qa[q].word[n]) {
++                if (qa[q].answer) say(cn, qa[q].answer, ch[co].name, ch[cn].name);
++                else return qa[q].answer_code;
++
++                return 1;
++            }
++        }
++    }
++
++    return 0;
++}
++
++
++
++struct blake_driver_data {
++    int last_talk;
++    int current_victim;
++};
++
++void minoastack_driver(int in, int cn) {
++    return;
++}
++
++
++void blake_driver(int cn, int ret, int lastact) {
++    struct blake_driver_data* dat;
++    struct minoa_ppd* ppd;
++    int co, in, talkdir = 0, didsay = 0;
++    struct msg* msg, * next;
++
++    dat = set_data(cn, DRD_BLAKEDRIVER, sizeof(struct blake_driver_data));
++    if (!dat) return; // oops...
++
++    // loop through our messages
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        // did we see someone?
++        if (msg->type == NT_CHAR) {
++
++            co = msg->dat1;
++
++            // dont talk to other NPCs
++            if (!(ch[co].flags & CF_PLAYER)) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to players without connection
++            if (ch[co].driver == CDR_LOSTCON) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // only talk every ten seconds
++            if (ticker < dat->last_talk + TICKS * 5) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            if (ticker < dat->last_talk + TICKS * 10 && dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone we cant see, and dont talk to ourself
++            if (!char_see_char(cn, co) || cn == co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // dont talk to someone far away
++            if (char_dist(cn, co) > 20) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            // get current status with player
++            ppd = set_data(co, DRD_MINOA_PPD, sizeof(struct minoa_ppd));
++            if (ppd) {
++                switch (ppd->blake_state) {
++                case 0:
++                    say(cn, "Hey there! You look like a strong adventurer. Maybe you can help me.");
++                    questlog_open(co, 80);
++                    ppd->blake_state = 1;
++                    ppd->blake_bear_pelts = 0;
++                    ppd->blake_wolf_pelts = 0;
++                    didsay = 1;
++                    break;
++                case 1:
++                    say(cn, "There have been a lot of mean animals around lately. I think it has something to do with that weird tower.");
++                    ppd->blake_state = 2;
++                    didsay = 1;
++                    break;
++                case 2:
++                    say(cn, "Can you help us out? The guards are exhausted from keeping us safe, and they need some rest.");
++                    ppd->blake_state = 3;
++                    didsay = 1;
++                    break;
++                case 3:
++                    say(cn, "Please bring me 10 wolf pelts and 10 bear pelts. I can use them to sew warm clothes for everyone.");
++                    ppd->blake_state = 4;
++                    didsay = 1;
++                    break;
++                case 4:
++                    break; // pause for item hand in
++                case 5: {
++                    int wolf_left = 10 - ppd->blake_wolf_pelts;
++                    int bear_left = 10 - ppd->blake_bear_pelts;
++
++                    if (wolf_left <= 0 && bear_left <= 0) {
++                        ppd->blake_state = 6;
++                        break;
++                    }
++
++                    if (wolf_left <= 0) {
++                        say(cn, "I have enough wolf pelts now. I still need %d bear pelts.", bear_left);
++                    } else if (bear_left <= 0) {
++                        say(cn, "I have enough bear pelts now. I still need %d wolf pelts.", wolf_left);
++                    } else {
++                        say(cn, "I still need %d wolf pelts and %d bear pelts.", wolf_left, bear_left);
++                    }
++
++                    ppd->blake_state = 4;
++                    didsay = 1;
++                    break;
++                }
++                case 6:
++                    say(cn, "Thank you! Now I can make warm clothes for everyone.");
++                    ppd->blake_state = 7;
++                    didsay = 1;
++                    break;
++                case 7:
++                    say(cn, "I hope to be of more help to the village now. Maybe somebody inside the church needs help.");
++                    ppd->blake_state = 8;
++                    didsay = 1;
++                    break;
++                case 8:
++                    say(cn, "I'm sure there is much more to do.");
++                    ppd->blake_state = 9;
++                    didsay = 1;
++                    break;
++                case 9:
++                    break;
++                }
++
++
++                if (didsay) {
++                    dat->last_talk = ticker;
++                    dat->current_victim = co;
++                    talkdir = offset2dx(ch[cn].x, ch[cn].y, ch[co].x, ch[co].y);
++                }
++            }
++        }
++
++        if (msg->type == NT_TEXT) {
++            co = msg->dat3;
++
++            if (ticker > dat->last_talk + TICKS * 10 && dat->current_victim) dat->current_victim = 0;
++
++            if (dat->current_victim && dat->current_victim != co) {
++                remove_message(cn, msg);
++                continue;
++            }
++
++            didsay = analyse_text_driver(cn, msg->dat1, (char *)msg->dat2, co);
++
++            if (didsay == 2) {
++                ppd = set_data(co, DRD_MINOA_PPD, sizeof(struct minoa_ppd));
++                if (ppd && ppd->blake_state <= 3) {
++                    dat->last_talk = 0;
++                    ppd->blake_state = 0;
++                } else if (ppd && ppd->blake_state == 4) {
++                    dat->last_talk = 0;
++                    ppd->blake_state = 3;
++                }
++            }
++            ppd = set_data(co, DRD_MINOA_PPD, sizeof(struct minoa_ppd));
++
++            if (ppd && strstr((char *)msg->dat2, "pelts")) {
++                if (ppd->blake_state == 4) {
++                    say(cn, "I still need %d wolf pelts and %d bear pelts.",
++                        10 - ppd->blake_wolf_pelts,
++                        10 - ppd->blake_bear_pelts);
++                }
++            }
++        }
++
++        if (msg->type == NT_GIVE) {
++            co = msg->dat1;
++
++            if ((in = ch[cn].citem)) {
++                ppd = set_data(co, DRD_MINOA_PPD, sizeof(struct minoa_ppd));
++                if (ppd) {
++                    if (!blake_give(cn, co, in, ppd) && !give_char_item(co, in)) {
++                        destroy_item(in);
++                    }
++                    ch[cn].citem = 0;
++                } else {
++                    destroy_item(in);
++                    ch[cn].citem = 0;
++                }
++            }
++        }
++
++        standard_message_driver(cn, msg, 0, 0);
++        remove_message(cn, msg);
++    }
++
++    if (talkdir) turn(cn, talkdir);
++
++    if (spell_self_driver(cn)) return;
++    if (regenerate_driver(cn)) return;
++
++    do_idle(cn, TICKS);
++}
++
++
++
++
++
++
++void fireball_machine(int in, int cn) {
++    int dx, dy, power, fn, frequency;
++
++    power = it[in].drdata[2];
++    frequency = it[in].drdata[3];
++
++    if (frequency && !cn) call_item(IDR_FIREBALL, in, 0, ticker + frequency);
++
++    if (it[in].sprite == 50041) {
++        dx = 0;
++        dy = -1;
++    } else if (it[in].sprite == 50000) {
++        dx = -1;
++        dy = 0;
++    } else {
++        dx = 0;
++        dy = 1;
++    }
++
++    fn = create_fireball(0,
++                         it[in].x + dx, it[in].y + dy,
++                         it[in].x + dx * 16, it[in].y + dy * 16,
++                         power);
++
++    notify_area(it[in].x, it[in].y, NT_SPELL, 0, V_FIRE, fn);
++}
++
++
++int blake_give(int cn, int co, int in, struct minoa_ppd *ppd) {
++    int wolf_left, bear_left;
++
++    if (ppd->blake_state < 4) {
++        say(cn, "I don't need this.");
++        return 0;
++    }
++
++    if (it[in].ID == IID_MINOA_WOLFPELT) {
++        if (ppd->blake_wolf_pelts >= 10) {
++            destroy_item(in);
++
++            if (ppd->blake_bear_pelts < 10) {
++                say(cn, "I already have enough wolf pelts. I still need %d bear pelts.",
++                    10 - ppd->blake_bear_pelts);
++            } else {
++                say(cn, "I already have enough wolf pelts.");
++            }
++            return 1;
++        }
++
++        ppd->blake_wolf_pelts++;
++        destroy_item(in);
++
++    } else if (it[in].ID == IID_MINOA_BEARPELT) {
++        if (ppd->blake_bear_pelts >= 10) {
++            destroy_item(in);
++
++            if (ppd->blake_wolf_pelts < 10) {
++                say(cn, "I already have enough bear pelts. I still need %d wolf pelts.",
++                    10 - ppd->blake_wolf_pelts);
++            } else {
++                say(cn, "I already have enough bear pelts.");
++            }
++            return 1;
++        }
++
++        ppd->blake_bear_pelts++;
++        destroy_item(in);
++
++    } else {
++        say(cn, "That isn't one of the pelts I need.");
++        return 0;
++    }
++
++    wolf_left = 10 - ppd->blake_wolf_pelts;
++    bear_left = 10 - ppd->blake_bear_pelts;
++
++ // final turn in
++if (wolf_left <= 0 && bear_left <= 0) {
++        questlog_done(co, 80);
++        ppd->blake_state = 6;
++        return 1;
++    }
++
++// progress update
++    ppd->blake_state = 5;
++    return 1;
++}
++
++
++void burn_char(int cn) {
++    int fn, n;
++
++    // dont add effect twice
++    for (n = 0; n < 4; n++) {
++        if (!(fn = ch[cn].ef[n])) continue;
++        if (ef[fn].type != EF_BURN) continue;
++        return;
++    }
++
++    create_show_effect(EF_BURN, cn, ticker, ticker + TICKS * 60, 250, 1);
++    hurt(cn, 20 * POWERSCALE, 0, 1, 50, 75);
++}
++
++void extinguish_driver(int in, int cn) {
++    int fn, n;
++
++    if (!cn) return;
++
++    // is he on fire?
++    for (n = 0; n < 4; n++) {
++        if (!(fn = ch[cn].ef[n])) continue;
++        if (ef[fn].type != EF_BURN) continue;
++        break;
++    }
++    if (n == 4) {
++        log_char(cn, LOG_SYSTEM, 0, "Ahh. Sweet and refreshing.");
++        return;
++    }
++
++    remove_effect(fn);
++    free_effect(fn);
++
++    log_char(cn, LOG_SYSTEM, 0, "You extinguish the flames.");
++}
++
++void flamethrow_driver(int in, int cn) {
++    int fire, dir, co, x, y, m;
++        
++    if (cn) return;
++
++    fire = it[in].drdata[0];
++
++    if (fire) {
++        it[in].drdata[0]--;
++
++        if (!it[in].drdata[2]) {
++            it[in].sprite++;
++            it[in].drdata[2] = 1;
++
++            remove_item_light(in);
++            it[in].mod_index[4] = V_LIGHT;
++            it[in].mod_value[4] = 250;
++            add_item_light(in);
++        }
++
++        dir = it[in].drdata[1];
++
++        if (dir < DX_RIGHT || dir > DX_RIGHTUP) {
++            elog("flamethrow_driver: bad dir=%d item=%d pos=%d,%d",
++                 dir, in, it[in].x, it[in].y);
++            return;
++        }
++
++        dx2offset(dir, &x, &y, NULL);
++
++        x = it[in].x + x;
++        y = it[in].y + y;
++        if (x > 0 && x < MAXMAP && y > 0 && y < MAXMAP) {
++            m = x + y * MAXMAP;
++            if ((co = map[m].ch)) burn_char(co);
++        }
++
++        dx2offset(dir, &x, &y, NULL);
++        x = it[in].x + x * 2;
++        y = it[in].y + y * 2;
++        if (x > 0 && x < MAXMAP && y > 0 && y < MAXMAP) {
++            m = x + y * MAXMAP;
++            if ((co = map[m].ch)) burn_char(co);
++        }
++
++        call_item(it[in].driver, in, 0, ticker + 1);
++    } else {
++        it[in].sprite--;
++        it[in].drdata[0] = TICKS;
++        it[in].drdata[2] = 0;
++
++        remove_item_light(in);
++        it[in].mod_index[4] = 0;
++        it[in].mod_value[4] = 0;
++        add_item_light(in);
++
++        if (it[in].drdata[3]) {
++            call_item(it[in].driver, in, 0, ticker + TICKS * it[in].drdata[3]);
++        }
++    }
++}
++
++
++int it_driver(int nr, int in, int cn) {
++    switch (nr) {
++        
++    case IDR_FIREBALL:
++        fireball_machine(in, cn);
++        return 1;
++    case IDR_FLAMETHROW:
++        flamethrow_driver(in, cn);
++        return 1;
++    case IDR_EXTINGUISH:
++        extinguish_driver(in, cn);
++        return 1;
++    case IDR_MINOASTACK:
++        minoastack_driver(in, cn);
++        return 1;
++        
++    default:
++        return 0;
++    }
++}
++
++int ch_driver(int nr, int cn, int ret, int lastact) {
++    switch (nr) {
++    case CDR_BLAKE:
++        blake_driver(cn, ret, lastact);
++        return 1;
++
++    default:
++        return 0;
++    }
++}
++
++
++int ch_died_driver(int nr, int cn, int co) {
++    switch (nr) {
++    
++    default:
++        return 0;
++    }
++}
++
++
++int ch_respawn_driver(int nr, int cn) {
++    switch (nr) {
++
++    default:
++        return 0;
++    }
++}
++
++
+diff --git a/src/minoa.h b/src/minoa.h
+new file mode 100644
+index 0000000..b47fc37
+--- /dev/null
++++ b/src/minoa.h
+@@ -0,0 +1,19 @@
++struct minoa_ppd {
++    int commander_state;
++    int commander_bits;
++    int scribe_state;
++    int harry_state;
++    int herald_state;
++    int jason_state;
++    int pathew_state;
++    int curator_state;
++    int dean_state;
++    int crystal_state;
++    int blake_state;
++    int blake_wolf_pelts;
++    int blake_bear_pelts;
++    int mark_state;
++    int prior_state;
++    int sarah_state;
++    int gerrard_state;
++};
+\ No newline at end of file
+diff --git a/src/nomad.c b/src/nomad.c
+index 3037c10..9800709 100644
+--- a/src/nomad.c
++++ b/src/nomad.c
+@@ -33,7 +33,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/notify.c b/src/notify.c
+index 8bdbe2c..d8c0105 100644
+--- a/src/notify.c
++++ b/src/notify.c
+@@ -51,7 +51,7 @@ struct msg *alloc_msg(void) {
+ 
+ void free_msg(struct msg *msg) {
+     if (!msg->type) {
+-        elog("trying to free already free notify msg. message=%p (%d %d %d %d)", msg, msg->type, msg->dat1, msg->dat2, msg->dat3);
++        elog("trying to free already free notify msg. message=%p (%d %lld %lld %lld)", msg, msg->type, (long long)msg->dat1, (long long)msg->dat2, (long long)msg->dat3);
+         btrace("free_msg");
+         return;
+     }
+@@ -67,12 +67,12 @@ void free_msg(struct msg *msg) {
+ 
+ void add_msg(int cn, struct msg *msg) {
+     if (cn < 1 || cn >= MAXCHARS) {
+-        elog("illegal add_msg: cn=%d, type=%d, dat=%d,%d,%d", cn, msg->type, msg->dat1, msg->dat2, msg->dat3);
++        elog("illegal add_msg: cn=%d, type=%d, dat=%lld,%lld,%lld", cn, msg->type, (long long)msg->dat1, (long long)msg->dat2, (long long)msg->dat3);
+         btrace("add_msg");
+         return;
+     }
+     if (!ch[cn].flags) {
+-        elog("illegal add_msg: ch[%d].flags=0, type=%d, dat=%d,%d,%d", cn, msg->type, msg->dat1, msg->dat2, msg->dat3);
++        elog("illegal add_msg: ch[%d].flags=0, type=%d, dat=%lld,%lld,%lld", cn, msg->type, (long long)msg->dat1, (long long)msg->dat2, (long long)msg->dat3);
+         btrace("add_msg");
+         return;
+     }
+@@ -89,7 +89,7 @@ void del_msg(int cn, struct msg *msg) {
+     struct msg *prev, *next;
+ 
+     if (!msg->type) {
+-        elog("trying to free already free notify msg. char=%s (%d), message=%p (%d %d %d %d)", ch[cn].name, cn, msg, msg->type, msg->dat1, msg->dat2, msg->dat3);
++        elog("trying to free already free notify msg. char=%s (%d), message=%p (%d %lld %lld %lld)", ch[cn].name, cn, msg, msg->type, (long long)msg->dat1, (long long)msg->dat2, (long long)msg->dat3);
+         btrace("del_msg");
+         return;
+     }
+@@ -104,7 +104,7 @@ void del_msg(int cn, struct msg *msg) {
+     else next->prev = prev;
+ }
+ 
+-void notify_char(int cn, int type, int dat1, int dat2, int dat3) {
++void notify_char(int cn, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3) {
+     struct msg *msg;
+ 
+     msg = alloc_msg();
+@@ -117,7 +117,7 @@ void notify_char(int cn, int type, int dat1, int dat2, int dat3) {
+     add_msg(cn, msg);
+ }
+ 
+-void notify_area(int xc, int yc, int type, int dat1, int dat2, int dat3) {
++void notify_area(int xc, int yc, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3) {
+     int x, y, xs, xe, ys, ye, cn;
+     unsigned long long prof;
+ 
+@@ -141,7 +141,7 @@ void notify_area(int xc, int yc, int type, int dat1, int dat2, int dat3) {
+     prof_stop(18, prof);
+ }
+ 
+-void notify_area_shout(int xc, int yc, int type, int dat1, int dat2, int dat3) {
++void notify_area_shout(int xc, int yc, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3) {
+     int x, y, xs, xe, ys, ye, cn;
+     unsigned long long prof;
+ 
+@@ -183,7 +183,7 @@ void remove_message(int cn, struct msg *msg) {
+     free_msg(msg);
+ }
+ 
+-void notify_all(int type, int dat1, int dat2, int dat3) {
++void notify_all(int type, intptr_t dat1, intptr_t dat2, intptr_t dat3) {
+     int cn;
+ 
+     for (cn = getfirst_char(); cn; cn = getnext_char(cn))
+diff --git a/src/notify.h b/src/notify.h
+index e867519..8b805e0 100644
+--- a/src/notify.h
++++ b/src/notify.h
+@@ -34,8 +34,12 @@
+ #define NTID_SALTMINE_USEITEM 15 // saltmine message to use the ladder item
+ #define NTID_GLADIATOR 16 // arkhata arena
+ 
++#include <stdint.h>
++
+ struct msg {
+-    int type, dat1, dat2, dat3;
++    // dat1..dat3 are pointer-sized: NT_TEXT passes a char * in dat2
++    int type;
++    intptr_t dat1, dat2, dat3;
+ 
+     struct msg *next, *prev;
+ };
+@@ -43,9 +47,9 @@ struct msg {
+ extern int used_msgs;
+ 
+ int init_notify(void);
+-void notify_char(int cn, int type, int dat1, int dat2, int dat3);
+-void notify_area(int xc, int yc, int type, int dat1, int dat2, int dat3);
++void notify_char(int cn, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3);
++void notify_area(int xc, int yc, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3);
+ void purge_messages(int cn);
+ void remove_message(int cn, struct msg *msg);
+-void notify_all(int type, int dat1, int dat2, int dat3);
+-void notify_area_shout(int xc, int yc, int type, int dat1, int dat2, int dat3);
++void notify_all(int type, intptr_t dat1, intptr_t dat2, intptr_t dat3);
++void notify_area_shout(int xc, int yc, int type, intptr_t dat1, intptr_t dat2, intptr_t dat3);
+diff --git a/src/palace.c b/src/palace.c
+index 5191af7..a26bd54 100644
+--- a/src/palace.c
++++ b/src/palace.c
+@@ -36,7 +36,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/path.c b/src/path.c
+index 6413b60..4ffb15e 100644
+--- a/src/path.c
++++ b/src/path.c
+@@ -318,12 +318,12 @@ int pathnodes(void) {
+ int init_path(void) {
+     nmap = xcalloc(MAXMAP * MAXMAP * sizeof(struct node *), IM_BASE);
+     if (!nmap) return 0;
+-    xlog("Allocated nmap: %.2fM (%d*%d)", sizeof(struct node *) * MAXMAP * MAXMAP / 1024.0 / 1024.0, sizeof(struct node *), MAXMAP * MAXMAP);
++    xlog("Allocated nmap: %.2fM (%d*%d)", sizeof(struct node *) * MAXMAP * MAXMAP / 1024.0 / 1024.0, (int)(sizeof(struct node *)), MAXMAP * MAXMAP);
+     mem_usage += sizeof(struct node *) * MAXMAP * MAXMAP;
+ 
+     nodes = xcalloc(sizeof(struct node) * MAXNODE, IM_BASE);
+     if (!nodes) return 0;
+-    xlog("Allocated nodes: %.2fM (%d*%d)", sizeof(struct node) * MAXNODE / 1024.0 / 1024.0, sizeof(struct node), MAXNODE);
++    xlog("Allocated nodes: %.2fM (%d*%d)", sizeof(struct node) * MAXNODE / 1024.0 / 1024.0, (int)(sizeof(struct node)), MAXNODE);
+     mem_usage += sizeof(struct node) * MAXNODE;
+ 
+     return 1;
+diff --git a/src/pents.c b/src/pents.c
+index 218ea22..9d2bc62 100644
+--- a/src/pents.c
++++ b/src/pents.c
+@@ -28,7 +28,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/professor.c b/src/professor.c
+index 541bd4a..c0c103c 100644
+--- a/src/professor.c
++++ b/src/professor.c
+@@ -23,7 +23,7 @@ int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case 0:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/questlog.c b/src/questlog.c
+index 105d91d..88dd67b 100644
+--- a/src/questlog.c
++++ b/src/questlog.c
+@@ -59,7 +59,7 @@ struct questlog questlog[] = {
+     {"Slay the Swampbeast", 23, 30, "Clara", "Swamp", 22500, 0}, //21,
+     {"Impish Bear Hunt", 20, 27, "William/Imp", "Forest", 12500, 0}, //22,
+     {"Praying Mantis Stew", 20, 27, "William", "Forest", 15000, 0}, //23,
+-    {"The Spider Queen", 25, 30, "Hermit", "Forest", 25000, 0}, //24,
++    {"The Spider Queen", 25, 30, "Hermit", "Forest", 25000, 0}, //24
+     {"Earning the Lockpick", 25, 30, "Guildmaster", "Exkordon", 0, QLF_XREPEAT}, //25, exp awarded in driver, amount depends on robbers killed. range: 5000 to 20000
+     {"Extortion", 25, 30, "Guildmaster", "Exkordon", 0, QLF_XREPEAT}, //26, exp awarded in driver, 5000 or 10000
+     {"Price Fix Exposed", 25, 30, "Guildmaster", "Exkordon", 15000, QLF_XREPEAT}, //27,
+@@ -116,6 +116,9 @@ struct questlog questlog[] = {
+     {"The Traitors", 60, 70, "Clerk", "Arkhata", 120000, 0}, //76,
+     {"The Blue Harpy", 58, 68, "Hunter", "Arkhata", 60000, 0}, //77,
+     {"The Mysterious Language", 60, 65, "Johnatan", "Arkhata", 60000, 0}, //78,
++
++    {"Forest Robbers", 20, 30, "Boreas", "Forest", 25000, QLF_REPEATABLE}, //79
++    {"Warm Clothes", 70, 120, "Blake", "Minoa", 600000, 0} //80
+ };
+ 
+ void questlog_open(int cn, int qnr) {
+diff --git a/src/questlog.h b/src/questlog.h
+index 7639d34..92d7e3c 100644
+--- a/src/questlog.h
++++ b/src/questlog.h
+@@ -2,7 +2,7 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
+-#define MAXQUEST 100
++#define MAXQUEST 250
+ #define QF_OPEN 1
+ #define QF_DONE 2
+ 
+diff --git a/src/random.c b/src/random.c
+index f796215..8d829ba 100644
+--- a/src/random.c
++++ b/src/random.c
+@@ -181,7 +181,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/rdtsc.S b/src/rdtsc.S
+deleted file mode 100644
+index 89847f7..0000000
+--- a/src/rdtsc.S
++++ /dev/null
+@@ -1,13 +0,0 @@
+-	.file	"rdtsc.c"
+-	.version	"01.01"
+-gcc2_compiled.:
+-.text
+-	.align 4
+-.globl rdtsc
+-	.type	 rdtsc,@function
+-rdtsc:
+-	rdtsc
+-	ret
+-.Lfe1:
+-	.size	 rdtsc,.Lfe1-rdtsc
+-	.ident	"GCC: (GNU) egcs-2.91.66 19990314/Linux (egcs-1.1.2 release)"
+diff --git a/src/rdtsc.c b/src/rdtsc.c
+new file mode 100644
+index 0000000..bba44ee
+--- /dev/null
++++ b/src/rdtsc.c
+@@ -0,0 +1,15 @@
++/*
++ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++ */
++
++// CPU cycle counter, used for profiling. Replaces the old 32-bit-only rdtsc.S.
++
++#ifdef _MSC_VER
++#include <intrin.h>
++#else
++#include <x86intrin.h>
++#endif
++
++unsigned long long rdtsc(void) {
++    return __rdtsc();
++}
+diff --git a/src/saltmine.c b/src/saltmine.c
+index 1000938..0271db8 100644
+--- a/src/saltmine.c
++++ b/src/saltmine.c
+@@ -27,7 +27,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/sector.c b/src/sector.c
+index a409b5f..986f1d7 100644
+--- a/src/sector.c
++++ b/src/sector.c
+@@ -41,20 +41,20 @@ int init_sector(void) {
+ 
+     for (n = 0; n < 8; n++) {
+         sector[n] = xcalloc(MAXMAP * MAXMAP / ((1 << n) * (1 << n)) * sizeof(int), IM_BASE);
+-        xlog("Allocated sector %d: %.2fM (%d*%d)", n, MAXMAP * MAXMAP / ((1 << n) * (1 << n)) * sizeof(int) / 1024.0 / 1024.0, sizeof(int), MAXMAP * MAXMAP / ((1 << n) * (1 << n)));
++        xlog("Allocated sector %d: %.2fM (%d*%d)", n, MAXMAP * MAXMAP / ((1 << n) * (1 << n)) * sizeof(int) / 1024.0 / 1024.0, (int)(sizeof(int)), MAXMAP * MAXMAP / ((1 << n) * (1 << n)));
+         mem_usage += MAXMAP * MAXMAP / ((1 << n) * (1 << n)) * sizeof(int);
+     }
+ 
+     char_sector = xcalloc(MAXMAP * MAXMAP / 64 * sizeof(int), IM_BASE);
+-    xlog("Allocated char sector: %.2fM (%d*%d)", MAXMAP * MAXMAP / 64 * sizeof(int) / 1024.0 / 1024.0, sizeof(int), MAXMAP * MAXMAP / 64);
++    xlog("Allocated char sector: %.2fM (%d*%d)", MAXMAP * MAXMAP / 64 * sizeof(int) / 1024.0 / 1024.0, (int)(sizeof(int)), MAXMAP * MAXMAP / 64);
+     mem_usage += MAXMAP * MAXMAP / 64 * sizeof(int);
+ 
+     sound_sector = xcalloc(MAXMAP * MAXMAP * sizeof(int), IM_BASE);
+-    xlog("Allocated sound sector: %.2fM (%d*%d)", MAXMAP * MAXMAP * sizeof(int) / 1024.0 / 1024.0, sizeof(int), MAXMAP * MAXMAP);
++    xlog("Allocated sound sector: %.2fM (%d*%d)", MAXMAP * MAXMAP * sizeof(int) / 1024.0 / 1024.0, (int)(sizeof(int)), MAXMAP * MAXMAP);
+     mem_usage += MAXMAP * MAXMAP * sizeof(int);
+ 
+     shout_sector = xcalloc(MAXMAP * MAXMAP * sizeof(int), IM_BASE);
+-    xlog("Allocated shout sector: %.2fM (%d*%d)", MAXMAP * MAXMAP * sizeof(int) / 1024.0 / 1024.0, sizeof(int), MAXMAP * MAXMAP);
++    xlog("Allocated shout sector: %.2fM (%d*%d)", MAXMAP * MAXMAP * sizeof(int) / 1024.0 / 1024.0, (int)(sizeof(int)), MAXMAP * MAXMAP);
+     mem_usage += MAXMAP * MAXMAP * sizeof(int);
+ 
+     return 1;
+@@ -292,7 +292,7 @@ void init_sound_sector(void) {
+ 
+     sec2_cnt = nr;
+     sec2 = xcalloc(sizeof(struct sector2) * sec2_cnt, IM_BASE);
+-    xlog("Allocated sector2: %.2fM (%d*%d)", sec2_cnt * sizeof(struct sector2) / 1024.0 / 1024.0, sizeof(struct sector2), sec2_cnt);
++    xlog("Allocated sector2: %.2fM (%d*%d)", sec2_cnt * sizeof(struct sector2) / 1024.0 / 1024.0, (int)(sizeof(struct sector2)), sec2_cnt);
+     mem_usage += sec2_cnt * sizeof(struct sector2);
+ 
+     for (n = 0; n < MAXDOOR; n++) {
+diff --git a/src/server.c b/src/server.c
+index dd29caf..3b01605 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -4,13 +4,21 @@
+ 
+ #define __USE_BSD_SIGNAL
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <signal.h>
+ #include <string.h>
+ #include <zlib.h>
+-#include <malloc.h>
+ #include <time.h>
+ 
++#ifdef _WIN32
++#include <windows.h>
++#include <winsock2.h>
++#else
++#include <malloc.h>
++#include <unistd.h>
++#endif
++
+ #include "server.h"
+ #include "player.h"
+ #include "io.h"
+@@ -93,6 +101,7 @@ void tick_char(void);
+ void *end_of_data_ptr;
+ 
+ void showmem(void) {
++#ifndef _WIN32
+     struct mallinfo mi;
+     extern int db_store, used_queries;
+ 
+@@ -117,8 +126,22 @@ void showmem(void) {
+     xlog("malloc/sbrk    : %.3fM", mi.arena / 1024.0 / 1024.0);
+     xlog("malloc/total   : %.3fM", (mi.arena + mi.hblkhd) / 1024.0 / 1024.0);
+     xlog("malloc/unused  : %.3fM in %d blocks", (mi.fordblks) / 1024.0 / 1024.0, mi.ordblks);
+-    xlog("brk has grown  : %.3fM", ((int)(sbrk(0)) - (int)(end_of_data_ptr)) / (1024.0 * 1024.0));
++    xlog("brk has grown  : %.3fM", ((char *)sbrk(0) - (char *)end_of_data_ptr) / (1024.0 * 1024.0));
++    xlog("------------------------------------");
++#else
++    xlog("-------- Memory usage info: --------");
++    xlog("Used characters: %5d/%5d (%4.1f%%)", used_chars, MAXCHARS, 100.0 / MAXCHARS * used_chars);
++    xlog("Used items     : %5d/%5d (%4.1f%%)", used_items, MAXITEM, 100.0 / MAXITEM * used_items);
++    xlog("Used effects   : %5d/%5d (%4.1f%%)", used_effects, MAXEFFECT, 100.0 / MAXEFFECT * used_effects);
++    xlog("Used containers: %5d/%5d (%4.1f%%)", used_containers, MAXCONTAINER, 100.0 / MAXCONTAINER * used_containers);
++    xlog("Used t-chars   : %5d/%5d (%4.1f%%)", used_tchars, MAXTCHARS, 100.0 / MAXTCHARS * used_tchars);
++    xlog("Used t-items   : %5d/%5d (%4.1f%%)", used_titems, MAXTITEM, 100.0 / MAXTITEM * used_titems);
++    xlog("Used timers    : %5d", used_timers);
++    xlog("Used notifies  : %5d", used_msgs);
++    xlog("server used    : %.3fM", mem_usage / 1024.0 / 1024.0);
++    xlog("Windows memory detail not implemented yet.");
+     xlog("------------------------------------");
++#endif
+     list_mem();
+ }
+ 
+@@ -137,12 +160,19 @@ void show(char *ptr, int size) {
+ }
+ 
+ int main(int argc, char *args[]) {
+-    int n, c;
++    int n;
++#ifndef _WIN32
++    int c;
++#endif
+     unsigned long long prof, start, end;
+ 
++#ifndef _WIN32
+     end_of_data_ptr = sbrk(0);
++#else
++    end_of_data_ptr = NULL;
++#endif
+ 
+-    time_now = time(NULL);
++    time_now = (int)time(NULL);
+ 
+     printf("\n");
+     printf("   ********************************************\n");
+@@ -157,6 +187,7 @@ int main(int argc, char *args[]) {
+     // load serverkey from file first so it can be overwritten by config
+     config_file(".serverkey", 1);
+ 
++   #ifndef _WIN32
+     if (argc > 1) {
+         while (1) {
+             c = getopt(argc, args, "a:m:i:w:dhcs:f:e");
+@@ -194,6 +225,7 @@ int main(int argc, char *args[]) {
+             }
+         }
+     }
++#endif
+ 
+     if (!areaID) areaID = 1;
+     if (!areaM) areaM = 1;
+@@ -314,6 +346,7 @@ int main(int argc, char *args[]) {
+ 
+     printf("serverID=%d, areaID=%d, areaM=%d, maxchars=%d, maxitem=%d, maxeffect=%d\n\n", serverID, areaID, areaM, maxchars, maxitem, maxeffect);
+ 
++#ifndef _WIN32
+     if (demon) {
+         char buf[80];
+ 
+@@ -326,22 +359,23 @@ int main(int argc, char *args[]) {
+         setsid();
+         nologin = 1;
+     }
++#endif
+ 
++    #ifndef _WIN32
+     // ignore the silly pipe errors:
+     signal(SIGPIPE, SIG_IGN);
+-
+     // ignore sighup - just to be safe
+     signal(SIGHUP, SIG_IGN);
+-
+     // shutdown gracefully if possible:
+     signal(SIGQUIT, sig_leave);
+-    signal(SIGINT, sig_leave);
+-    signal(SIGTERM, sig_leave);
+-
+     // show profile info on CTRL-Z
+     signal(SIGTSTP, sig_showprof);
++#endif
+ 
+-    // init random number generator
++    signal(SIGINT, sig_leave);
++    signal(SIGTERM, sig_leave);
++    
++        // init random number generator
+     srand(time_now);
+ 
+     if (!init_mem()) exit(1);
+@@ -374,7 +408,7 @@ int main(int argc, char *args[]) {
+         start = rdtsc();
+         lock_server();
+ 
+-        time_now = time(NULL);
++        time_now = (int)time(NULL);
+         prof = prof_start(26);
+         tick_date();
+         prof_stop(26, prof);
+@@ -419,7 +453,7 @@ int main(int argc, char *args[]) {
+         prof_stop(8, prof);
+ 
+         end = rdtsc();
+-        cycles = end - start;
++        cycles = (int)(end - start);
+ 
+         if ((ticker & 2047) == 0) {
+             prof = prof_start(27);
+@@ -558,9 +592,9 @@ static unsigned char task_stack[MAXDEPTH];
+ static int depth = 0;
+ 
+ int init_prof(void) {
+-    bzero(proftab, sizeof(proftab));
++    memset(proftab, 0, sizeof(proftab));
+ #ifdef BIGPROF
+-    bzero(prof, sizeof(prof));
++    memset(prof, 0, sizeof(prof));
+ #endif
+ 
+     return 1;
+@@ -617,9 +651,9 @@ void prof_update(void) {
+     int n;
+ 
+     for (n = 0; n < 100; n++) {
+-        proftab[n].cycles = proftab[n].cycles * 0.999;
+-    }
+-    server_idle = 10000.0 / proftab[0].cycles * proftab[1].cycles;
++        proftab[n].cycles = (unsigned long long)(proftab[n].cycles * 0.999);
++     }
++    server_idle = (int)(10000.0 / proftab[0].cycles * proftab[1].cycles);
+ }
+ 
+ void prof_reset(void) {
+@@ -694,7 +728,7 @@ void show_prof(void) {
+         printf("%llu calls, %llu cycles, %.2f%%\n", prof[n].calls, prof[n].cycles, 100.0 / total * prof[n].cycles);
+     }
+ 
+-    bzero(prof, sizeof(prof));
++    memset(prof, 0, sizeof(prof));
+     maxprof = 0;
+ #endif
+ 
+diff --git a/src/server.h b/src/server.h
+index b8fc1f6..cbaa4a1 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -2,6 +2,9 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
++#include <stdint.h>
++#include <stdlib.h>
++
+ #define TICKS 24
+ #define TICK (1000000ull / TICKS)
+ 
+@@ -166,6 +169,9 @@ extern struct map *map;
+ 
+ #define IT_DR_SIZE 40
+ 
++// struct item is stored verbatim in the database (inventory, depots), so it must keep
++// the same layout on 32-bit and 64-bit builds: 4-byte packing and no pointers.
++#pragma pack(push, 4)
+ struct item {
+     unsigned long long flags;
+ 
+@@ -206,9 +212,10 @@ struct item {
+ 
+     int dummy[4]; // reserve for future extensions
+ 
+-    // server management of free list
+-    struct item *next;
++    // server management of free list (index into it[], 0 = end of list)
++    unsigned int next;
+ };
++#pragma pack(pop)
+ 
+ extern struct item *it;
+ 
+diff --git a/src/sewers.c b/src/sewers.c
+index fc7015c..3cd9233 100644
+--- a/src/sewers.c
++++ b/src/sewers.c
+@@ -22,7 +22,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/shrike.c b/src/shrike.c
+index 7d3f549..11bc8f5 100644
+--- a/src/shrike.c
++++ b/src/shrike.c
+@@ -29,7 +29,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/sidestory.c b/src/sidestory.c
+index ad30bcc..f3a7757 100644
+--- a/src/sidestory.c
++++ b/src/sidestory.c
+@@ -27,7 +27,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/simple_baddy.c b/src/simple_baddy.c
+index 944fd29..af7141c 100644
+--- a/src/simple_baddy.c
++++ b/src/simple_baddy.c
+@@ -26,7 +26,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/store.c b/src/store.c
+index 3d38bc1..43609c9 100644
+--- a/src/store.c
++++ b/src/store.c
+@@ -324,7 +324,7 @@ void player_store(int cn, int nr, int flag, int fast) {
+ int init_store(void) {
+     store = xcalloc(sizeof(struct store *) * MAXSTORE, IM_BASE);
+     if (!store) return 0;
+-    xlog("Allocated store: %.2fM (%d*%d)", sizeof(struct store *) * MAXSTORE / 1024.0 / 1024.0, sizeof(struct store *), MAXSTORE);
++    xlog("Allocated store: %.2fM (%d*%d)", sizeof(struct store *) * MAXSTORE / 1024.0 / 1024.0, (int)(sizeof(struct store *)), MAXSTORE);
+     mem_usage += sizeof(struct store *) * MAXSTORE;
+ 
+     return 1;
+diff --git a/src/strategy.c b/src/strategy.c
+index 26bd935..078311d 100644
+--- a/src/strategy.c
++++ b/src/strategy.c
+@@ -37,7 +37,7 @@ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ int special_driver(int nr, int cn, char *ptr);
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/swamp.c b/src/swamp.c
+index fe35a62..17cec20 100644
+--- a/src/swamp.c
++++ b/src/swamp.c
+@@ -34,7 +34,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/talk.c b/src/talk.c
+index c898c8e..1294f53 100644
+--- a/src/talk.c
++++ b/src/talk.c
+@@ -47,7 +47,7 @@ int log_char(int cn, int type, int dat1, char *format, ...) {
+         nr = ch[cn].player;
+         if (!log_player(nr, type, "%s", buf)) return 0;
+     } else {
+-        notify_char(cn, NT_TEXT, type, (int)xstrdup(buf, IM_TALK), dat1);
++        notify_char(cn, NT_TEXT, type, (intptr_t)xstrdup(buf, IM_TALK), dat1);
+     }
+ 
+     return len;
+diff --git a/src/task.c b/src/task.c
+index 5a79602..63a8585 100644
+--- a/src/task.c
++++ b/src/task.c
+@@ -2,6 +2,7 @@
+  * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+  */
+ 
++#include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <mysql/mysql.h>
+@@ -128,7 +129,8 @@ int set_task(struct task_data *set, int (*proc)(void *, struct character *)) {
+     MYSQL_ROW row;
+     unsigned long *len;
+     int cn;
+-    char data[sizeof(struct character) * 2];
++    char data[DISK_CHAR_SIZE * 2 + 1];
++    unsigned char cdata[DISK_CHAR_SIZE];
+     char buf[sizeof(data) + 256];
+     struct character tmp;
+ 
+@@ -185,8 +187,7 @@ int set_task(struct task_data *set, int (*proc)(void *, struct character *)) {
+ 
+     len = mysql_fetch_lengths(result);
+ 
+-    bzero(&tmp, sizeof(tmp));
+-    memcpy(&tmp, row[0], min(len[0], sizeof(struct character)));
++    char_from_disk(&tmp, (void *)row[0], len[0]);
+ 
+     mysql_free_result_cnt(result);
+ 
+@@ -194,7 +195,8 @@ int set_task(struct task_data *set, int (*proc)(void *, struct character *)) {
+ 
+         xlog("set task: for ID=%d, task=%d", set->uID, set->tasknr);
+ 
+-        mysql_real_escape_string(&mysql, data, (void *)&tmp, sizeof(struct character));
++        char_to_disk(cdata, &tmp);
++        mysql_real_escape_string(&mysql, data, (void *)cdata, DISK_CHAR_SIZE);
+ 
+         sprintf(buf, "update chars set chr='%s',clan=%d,clan_rank=%d,experience=%d where ID=%d",
+                 data,
+diff --git a/src/transport.c b/src/transport.c
+index 815f79f..9a566ca 100644
+--- a/src/transport.c
++++ b/src/transport.c
+@@ -22,7 +22,7 @@ int it_driver(int nr, int in, int cn); // item driver (special cases for use)
+ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case 0:
+         return ch_driver(nr, obj, ret, lastact);
+@@ -68,6 +68,7 @@ static struct trans trans[] =
+         {"Grimroot", 210, 246, 31}, //23
+         {"Caligar", 230, 62, 36}, //24
+         {"Arkhata", 28, 20, 37}, //25
++        {"Minoa Outpost", 194, 56, 39} //26
+ };
+ 
+ void transport_driver(int in, int cn) {
+diff --git a/src/tunnel.c b/src/tunnel.c
+index 8eab549..f9c3955 100644
+--- a/src/tunnel.c
++++ b/src/tunnel.c
+@@ -26,7 +26,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);
+diff --git a/src/warped.c b/src/warped.c
+index b069dd4..f454381 100644
+--- a/src/warped.c
++++ b/src/warped.c
+@@ -33,7 +33,7 @@ int ch_died_driver(int nr, int cn, int co); // called when a character dies
+ int ch_respawn_driver(int nr, int cn); // called when an NPC is about to respawn
+ 
+ // EXPORTED - character/item driver
+-int driver(int type, int nr, int obj, int ret, int lastact) {
++int driver(int type, int nr, int obj, intptr_t ret, int lastact) {
+     switch (type) {
+     case CDT_DRIVER:
+         return ch_driver(nr, obj, ret, lastact);

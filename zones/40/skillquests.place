@@ -1,0 +1,66 @@
+# =====================================================================
+# skillquests.place - zone 40 additions for the skilling quests (read after thornwood.map, 1024 version)
+# at="x,y" keeps the map tile and adds the item or character. NPC templates are in thornwood.chr,
+# quests in zones\generic\skillquests.cfg.
+# =====================================================================
+
+# ---- quest givers and the task board
+at="518,470"
+ch=z40_garrick
+at="536,510"
+ch=z40_torvald
+at="505,511"
+ch=z40_reeve
+at="475,511"
+ch=z40_edda
+at="487,510"
+ch=z40_fenn
+at="494,545"
+ch=z40_wyn
+
+# ---- the grove west of the village (around 466-487,506-521): woodcutting supplies, workbench, trees
+at="473,509"
+it=sk_woodcutting_supplies
+at="485,510"
+it=sk_workbench
+
+at="466,506"
+it=sk_tree_normal
+at="470,507"
+it=sk_tree_normal
+at="468,509"
+it=sk_tree_normal
+at="466,512"
+it=sk_tree_normal
+at="470,513"
+it=sk_tree_normal
+at="468,516"
+it=sk_tree_normal
+
+at="476,517"
+it=sk_tree_oak
+at="480,519"
+it=sk_tree_oak
+at="484,517"
+it=sk_tree_oak
+at="474,521"
+it=sk_tree_oak
+
+at="464,518"
+it=sk_tree_willow
+at="467,520"
+it=sk_tree_willow
+
+# ---- more flax next to the field at 486-488,544-546
+at="490,544"
+it=sk_flax_plant
+at="490,546"
+it=sk_flax_plant
+at="492,544"
+it=sk_flax_plant
+at="492,546"
+it=sk_flax_plant
+at="486,548"
+it=sk_flax_plant
+at="488,548"
+it=sk_flax_plant

@@ -1,0 +1,76 @@
+fire_snail:
+name="Fire Snail"
+description="A new inhabitant."
+sprite=700
+
+flag=CF_ALIVE
+flag=CF_RESPAWN
+
+V_HP=120
+V_ENDURANCE=100
+V_MANA=120
+
+V_WIS=120
+V_INT=120
+V_AGI=120
+V_STR=120
+
+V_HAND=120
+V_DAGGER=0
+V_STAFF=0
+V_SWORD=0
+V_TWOHAND=0
+
+# fighting skills
+V_ATTACK=120
+V_PARRY=120
+V_WARCRY=0
+V_TACTICS=0
+V_SURROUND=0
+V_SPEEDSKILL=30
+
+# misc skills
+V_PERCEPT=120
+V_STEALTH=0
+V_BLESS=50
+V_HEAL=80
+V_MAGICSHIELD=80
+V_FLASH=0
+V_FIRE=150
+
+V_REGENERATE=30
+V_MEDITATE=30
+V_IMMUNITY=120
+
+V_HAND=120
+V_ATTACK=120
+V_PARRY=120
+V_BLESS=50
+V_IMMUNITY=120
+
+
+spell=weapon_spell_med
+spell=armor_spell_high
+
+driver=7
+arg="aggressive=1;helper=0;scavenger=7;startdist=0;chardist=12;stopdist=20;"
+group=2
+class=15
+;
+
+
+female_mercenary:
+name="New NPC"
+description="A new inhabitant."
+sprite=711
+driver=7
+arg="aggressive=0;helper=0;scavenger=0;"
+flag=CF_RESPAWN
+respawn=60
+V_HP=15
+V_ENDURANCE=10
+V_MANA=10
+V_STR=10
+V_HAND=10
+V_ATTACK=10
+;

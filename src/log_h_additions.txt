@@ -1,0 +1,4 @@
+Add these declarations to src/log.h:
+
+void fatal_log(char *format, ...);
+void fatal_log_signal_safe(int sig, const char *phase);

@@ -1,0 +1,1126 @@
+diff --git a/Makefile.win b/Makefile.win
+index 5e07a97..2ff3ffb 100644
+--- a/Makefile.win
++++ b/Makefile.win
+@@ -40,7 +40,7 @@ OBJS=.wobj/server.o .wobj/io.o .wobj/libload.o .wobj/tool.o .wobj/sleep.o \
+ .wobj/respawn.o .wobj/poison.o .wobj/swear.o .wobj/lab.o \
+ .wobj/consistency.o .wobj/btrace.o .wobj/club.o .wobj/balance.o \
+ .wobj/questlog.o .wobj/badip.o .wobj/escape.o .wobj/argon.o \
+-.wobj/config.o .wobj/version.o
++.wobj/config.o .wobj/skillreg.o .wobj/version.o
+ 
+ DLLS= \
+ runtime/generic/base.dll \
+diff --git a/src/act.c b/src/act.c
+index eb11e09..c0d552c 100644
+--- a/src/act.c
++++ b/src/act.c
+@@ -30,6 +30,7 @@
+ #include "player.h"
+ #include "clan.h"
+ #include "act.h"
++#include "skillreg.h"
+ 
+ void hurt_equipment(int cn, int divi);
+ 
+@@ -73,6 +74,7 @@ static int act_idle(int cn) {
+                 if (!(val = ch[cn].value[0][V_REGENERATE])) val = 7;
+                 ch[cn].hp = min(ch[cn].value[0][V_HP] * POWERSCALE, ch[cn].hp + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
++                if ((ch[cn].flags & CF_PLAYER) && RANDOM(TICKS) < ch[cn].act1) skill_used(cn, skill_for_value(V_REGENERATE)); // about once per second
+             }
+ 
+             if (ch[cn].endurance < ch[cn].value[0][V_ENDURANCE] * POWERSCALE) {
+@@ -85,6 +87,7 @@ static int act_idle(int cn) {
+                 if (!(val = ch[cn].value[0][V_MEDITATE])) val = 7;
+                 ch[cn].mana = min(ch[cn].value[0][V_MANA] * POWERSCALE, ch[cn].mana + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
++                if ((ch[cn].flags & CF_PLAYER) && RANDOM(TICKS) < ch[cn].act1) skill_used(cn, skill_for_value(V_MEDITATE)); // about once per second
+             }
+         }
+     }
+@@ -170,6 +173,8 @@ static int act_walk(int cn) {
+         }
+     }
+ 
++    if ((ch[cn].flags & CF_PLAYER) && ch[cn].speed_mode == SM_STEALTH) skill_used(cn, skill_for_value(V_STEALTH));
++
+     reduce_rage(cn);
+     if (has_spell(cn, IDR_FLASH)) hurt_equipment(cn, 1);
+ 
+@@ -368,7 +373,13 @@ static int sub_attack(int cn, int co, int vcn, int vco, int direct) {
+                         chance,
+                         dam / 1000.0);
+ 
++    // skill XP: the attacker's weapon skill gets XP for the damage done (in hurt()),
++    // the defender gets Parry XP for every attack that misses
++    if (!dam && (ch[co].flags & CF_PLAYER)) skill_used(co, skill_for_value(V_PARRY));
++
++    skill_xp_context = skill_weapon_id(cn);
+     hurt(co, dam / ATTACK_DIV, cn, ATTACK_DIV, 75, 90);
++    skill_xp_context = -1;
+ 
+     return dam;
+ }
+@@ -441,6 +452,7 @@ static int act_attack(int cn) {
+     if (!ch[cn].flags) return 0; // sub_attack might kill cn or co
+ 
+     if (ch[cn].value[0][V_SURROUND]) {
++        skill_used(cn, skill_for_value(V_SURROUND));
+         if (ch[cn].dir == DX_LEFT || ch[cn].dir == DX_RIGHT) {
+             sub_surround(cn, 0, 1);
+             if (!ch[cn].flags) return 0; // sub_attack might kill cn or co
+@@ -587,7 +599,9 @@ static int act_firering(int cn) {
+ 
+             dam = fireball_damage(cn, co, spellpower(cn, V_FIRE));
+             if (showspell) say(cn, "damage=%.2f", dam / 1000.0);
++            skill_xp_context = skill_for_value(V_FIRE);
+             hurt(co, dam, cn, 10, 50, 80);
++            skill_xp_context = -1;
+         }
+     }
+ 
+@@ -905,7 +919,9 @@ static void warcry_someone(int cn, int co, int pwr) {
+ 
+     dam = warcry_damage(cn, co, pwr);
+ 
++    skill_xp_context = skill_for_value(V_WARCRY);
+     hurt(co, dam, cn, 1, 0, 0);
++    skill_xp_context = -1;
+ 
+     if (ch[co].flags) {
+         notify_char(co, NT_GOTHIT, cn, 0, 0);
+@@ -1235,6 +1251,12 @@ static void check_endurance(int cn) {
+     }
+ }
+ 
++// skill XP for a successful skill use (spells, warcry); ret is the action's result
++static int skill_use(int cn, int v, int ret) {
++    if (ret) skill_used(cn, skill_for_value(v));
++    return ret;
++}
++
+ static int act(int cn) {
+     if (cn < 1 || cn >= MAXCHARS) {
+         elog("act(): character number %d is out of bounds", cn);
+@@ -1278,21 +1300,21 @@ static int act(int cn) {
+     case AC_ATTACK3:
+         return act_attack(cn);
+     case AC_FIREBALL1:
+-        return act_fireball(cn);
++        return skill_use(cn, V_FIRE, act_fireball(cn));
+     case AC_FIREBALL2:
+         return act_ok(cn);
+     case AC_MAGICSHIELD:
+-        return act_magicshield(cn);
++        return skill_use(cn, V_MAGICSHIELD, act_magicshield(cn));
+     case AC_HEAL_SELF:
+-        return act_heal(cn, 0);
++        return skill_use(cn, V_HEAL, act_heal(cn, 0));
+     case AC_HEAL1:
+-        return act_heal(cn, 1);
++        return skill_use(cn, V_HEAL, act_heal(cn, 1));
+     case AC_HEAL2:
+         return act_ok(cn);
+     case AC_BLESS_SELF:
+-        return act_bless(cn, 0);
++        return skill_use(cn, V_BLESS, act_bless(cn, 0));
+     case AC_BLESS1:
+-        return act_bless(cn, 1);
++        return skill_use(cn, V_BLESS, act_bless(cn, 1));
+     case AC_BLESS2:
+         return act_ok(cn);
+     case AC_DIE:
+@@ -1300,23 +1322,23 @@ static int act(int cn) {
+     case AC_USE:
+         return act_use(cn);
+     case AC_FREEZE:
+-        return act_freeze(cn);
++        return skill_use(cn, V_FREEZE, act_freeze(cn));
+     case AC_BALL1:
+-        return act_ball(cn);
++        return skill_use(cn, V_FLASH, act_ball(cn));
+     case AC_BALL2:
+         return act_ok(cn);
+     case AC_FLASH:
+-        return act_flash(cn);
++        return skill_use(cn, V_FLASH, act_flash(cn));
+     case AC_GIVE:
+         return act_give(cn);
+     case AC_WARCRY:
+-        return act_warcry(cn);
++        return skill_use(cn, V_WARCRY, act_warcry(cn));
+     case AC_EARTHRAIN:
+         return act_earthrain(cn);
+     case AC_EARTHMUD:
+         return act_earthmud(cn);
+     case AC_FIRERING:
+-        return act_firering(cn);
++        return skill_use(cn, V_FIRE, act_firering(cn));
+ 
+     default:
+         elog("act(): unknown action %d for character %s (%d)", ch[cn].action, ch[cn].name, cn);
+diff --git a/src/command.c b/src/command.c
+index 582788c..95490dc 100644
+--- a/src/command.c
++++ b/src/command.c
+@@ -22,6 +22,7 @@
+ #include "clan.h"
+ #include "lookup.h"
+ #include "command.h"
++#include "skillreg.h"
+ #include "task.h"
+ #include "drdata.h"
+ #include "act.h"
+@@ -1410,6 +1411,28 @@ int command(int cn, char *ptr) // 1=ok, 0=repeat
+         return 1;
+     }
+ 
++    if ((len = cmdcmp(ptr, "skills", 6))) { // /skills [group]
++        ptr += len;
++        while (isspace(*ptr)) ptr++;
++        skills_show(cn, ptr);
++        return 1;
++    }
++    if ((len = cmdcmp(ptr, "skillxp", 7)) && (ch[cn].flags & CF_GOD)) { // /skillxp <key> <xp>, for testing
++        char key[64];
++        int id, n;
++
++        ptr += len;
++        while (isspace(*ptr)) ptr++;
++        for (n = 0; n < 63 && *ptr && !isspace(*ptr); n++) key[n] = *ptr++;
++        key[n] = 0;
++        if ((id = skill_lookup_key(key)) == -1) {
++            log_char(cn, LOG_SYSTEM, 0, "Unknown skill \"%s\". Use the key from skills.cfg, e.g. MINING.", key);
++            return 1;
++        }
++        if (!add_skill_xp(cn, id, atoi(ptr))) log_char(cn, LOG_SYSTEM, 0, "No XP added.");
++        else log_char(cn, LOG_SYSTEM, 0, "%s is level %d (%u XP).", skilldef[id].name, skill_get_level(cn, id), skill_get_xp(cn, id));
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "exp", 3)) && (ch[cn].flags & CF_GOD)) {
+         ptr += len;
+         cmd_exp(cn, ptr);
+diff --git a/src/create.c b/src/create.c
+index 2668d99..781cdd3 100644
+--- a/src/create.c
++++ b/src/create.c
+@@ -30,6 +30,7 @@
+ #include "drvlib.h"
+ #include "area.h"
+ #include "create.h"
++#include "skillreg.h"
+ #include "respawn.h"
+ #include "balance.h"
+ #include "map.h"
+@@ -495,6 +496,7 @@ struct ch_temp {
+     int balanced;
+     int hpboost;
+     int manaboost;
++    unsigned char sk_level[MAXSKILLS]; // SK_<key>= levels of skills without a value[] slot
+ } *ch_temp;
+ 
+ static int add_item(struct it_temp *itt) {
+@@ -806,6 +808,14 @@ static int process_char(char *ptr) {
+                 return 0;
+             }
+             cht.ch.flags |= (1ull << tmp);
++        } else if (!strncasecmp(name, "SK_", 3)) { // skill from zones/generic/skills.cfg
++            if ((tmp = skill_lookup_key(name)) == -1) {
++                elog("Error in line %d: Unknown skill \"%s\" (not in skills.cfg).", line, name);
++                return 0;
++            }
++            wn = max(0, min(SKILL_MAXLEVEL, atoi(value)));
++            if (skilldef[tmp].value >= 0) cht.ch.value[1][skilldef[tmp].value] = wn;
++            else cht.sk_level[tmp] = wn;
+         } else if ((tmp = lookup_V(name)) != -1) {
+             cht.ch.value[1][tmp] = atoi(value);
+         } else if ((wn = lookup_WN(name)) != -1) {
+@@ -937,6 +947,10 @@ int create_char_nr(int ctmp, int tmpa) {
+     ch[n].exp = ch[n].exp_used = calc_exp(n);
+     ch[n].level = exp2level(ch[n].exp);
+ 
++    for (m = 0; m < MAXSKILLS; m++) {
++        if (ch_temp[ctmp].sk_level[m]) skill_set_level(n, m, ch_temp[ctmp].sk_level[m]);
++    }
++
+     ch[n].value[1][V_HP] += ch_temp[ctmp].hpboost;
+     ch[n].value[1][V_MANA] += ch_temp[ctmp].manaboost;
+ 
+@@ -1479,6 +1493,7 @@ int init_create(void) {
+ 
+     used_chars = used_items = used_tchars = used_titems = 0;
+ 
++    if (!skills_load()) return 0; // before the .chr files, they use SK_ names
+     if (!create_items()) return 0;
+     if (!create_characters()) return 0;
+     if (!create_map()) return 0;
+diff --git a/src/create_character.c b/src/create_character.c
+index 5f1346f..c23360d 100644
+--- a/src/create_character.c
++++ b/src/create_character.c
+@@ -47,8 +47,8 @@ int create_char(int user_ID, char *new_user, char *class) {
+ 
+     if (class[2] == 'G') flag |= CF_GOD;
+ 
+-    if (class[1] == 'W') flag |= CF_WARRIOR;
+-    else flag |= CF_MAGE;
++    // classless: the class letter is ignored, everyone gets both class flags (Seyan'Du)
++    flag |= CF_WARRIOR | CF_MAGE;
+ 
+     if (class[0] == 'M') flag |= CF_MALE;
+     else flag |= CF_FEMALE;
+diff --git a/src/database.c b/src/database.c
+index 6a1fbdd..304da5d 100644
+--- a/src/database.c
++++ b/src/database.c
+@@ -28,6 +28,7 @@
+ #include "lookup.h"
+ #include "chat.h"
+ #include "database.h"
++#include "skillreg.h"
+ #include "task.h"
+ #include "skill.h"
+ #include "talk.h"
+@@ -1498,16 +1499,11 @@ void tick_login(void) {
+     flags = *(unsigned long long *)(login.chr);
+ 
+     if (!(flags & CF_USED)) { // character marked as unused, new account
+-        if ((flags & (CF_WARRIOR | CF_MAGE)) == (CF_WARRIOR | CF_MAGE)) {
+-            if (flags & CF_MALE) cn = create_char("seyan_m", 0);
+-            else cn = create_char("seyan_f", 0);
+-        } else if (flags & CF_WARRIOR) {
+-            if (flags & CF_MALE) cn = create_char("new_warrior_m", 0);
+-            else cn = create_char("new_warrior_f", 0);
+-        } else {
+-            if (flags & CF_MALE) cn = create_char("new_mage_m", 0);
+-            else cn = create_char("new_mage_f", 0);
+-        }
++        // classless: every new character starts from the same template and gets both
++        // class flags (Seyan'Du), so every existing class check allows everything
++        flags |= CF_WARRIOR | CF_MAGE;
++        if (flags & CF_MALE) cn = create_char("new_player_m", 0);
++        else cn = create_char("new_player_f", 0);
+         if (!cn) {
+             elog("tick_login: create newbie failed");
+             xfree(login.chr);
+@@ -1716,6 +1712,9 @@ void tick_login(void) {
+     check_prof_max(cn);
+     check_can_wear_item(cn);
+ 
++    skills_init_player(cn); // starting skills, XP in line with levels
++    check_levelup(cn); // combat level from skills
++
+     ch[cn].flags |= CF_ALIVE;
+ 
+     if (!ch[cn].c1 || !ch[cn].c2 || !ch[cn].c3) {
+diff --git a/src/death.c b/src/death.c
+index e8c670a..47e59cb 100644
+--- a/src/death.c
++++ b/src/death.c
+@@ -25,6 +25,7 @@
+ #include "sector.h"
+ #include "area.h"
+ #include "death.h"
++#include "skillreg.h"
+ #include "drvlib.h"
+ #include "military.h"
+ #include "item_id.h"
+@@ -291,7 +292,8 @@ static int transfer_to_restarea(int cn) {
+ 
+ // calculate exp lost due to death
+ int death_loss(int total_exp) {
+-    return total_exp / 25;
++    // skills level by use now and are never lost on death
++    return 0;
+ }
+ 
+ int drop_grave(int in, int x, int y, int isplayer) {
+@@ -449,7 +451,7 @@ int die_char(int cn, int co, int ispk) {
+             }
+ 
+             if (loss) log_char(cn, LOG_SYSTEM, 0, "Thou died and lost some experience points.");
+-            else log_char(cn, LOG_SYSTEM, 0, "Thou died, but since thou art still a Newbie, thou did not lose any experience points.");
++            else log_char(cn, LOG_SYSTEM, 0, "Thou died. Thy skills are not lost.");
+ 
+             ch[cn].exp -= loss;
+ 
+@@ -530,7 +532,7 @@ static int shutdown_save_char(int cn) {
+     }
+ 
+     if (loss) log_char(cn, LOG_SYSTEM, 0, "Thou died and lost some experience points. Because of the coming shutdown, you did not lose your items.");
+-    else log_char(cn, LOG_SYSTEM, 0, "Thou died, but since thou art still a Newbie, thou did not lose any experience points. Because of the coming shutdown, you did not lose your items. Consider yourself lucky.");
++    else log_char(cn, LOG_SYSTEM, 0, "Thou died. Thy skills are not lost. Because of the coming shutdown, you did not lose your items. Consider yourself lucky.");
+ 
+     ch[cn].exp -= loss;
+ 
+@@ -645,6 +647,11 @@ int hurt(int cn, int dam, int cc, int armordiv, int armorper, int shieldper) {
+             dam -= str;
+         }
+ 
++        // skill XP for the attacker: damage actually done, no overkill
++        if (skill_xp_context >= 0 && cc && cc != cn && (ch[cc].flags & CF_PLAYER) && ch[cn].hp > 0) {
++            skill_damage_xp(cc, skill_xp_context, min(dam, ch[cn].hp));
++        }
++
+         ch[cn].hp -= dam;
+ 
+         if (dam >= POWERSCALE && (ch[cn].flags & CF_PLAYER)) {
+diff --git a/src/drdata.h b/src/drdata.h
+index 2016082..16e1451 100644
+--- a/src/drdata.h
++++ b/src/drdata.h
+@@ -10,6 +10,7 @@
+ #define DEV_ID_DB 1 // ID of Daniel Brockhaus
+ #define DEV_ID_MR 2 // ID of Markus Roeder
+ #define DEV_ID_AR 3 // ID Of Armistance
++#define DEV_ID_RB 10 // Astonia rebuild (2026)
+ 
+ // use this macro to build the drdata IDs
+ #define MAKE_DRD(dev_id, nr) (((dev_id) << 24) | (nr))
+@@ -206,3 +207,6 @@ void *set_data(int cn, int ID, int size); // create buffer of size at "position"
+ int del_data(int cn, int ID); // remove data block ID from cn
+ void *get_data(int cn, int ID, int size); // get the block ID from cn, return NULL on error
+ void del_all_data(int cn); // delete ALL datablocks attached to cn
++
++// Astonia rebuild: per-skill XP (skillreg.c)
++#define DRD_SKILL_PPD MAKE_DRD(DEV_ID_RB, 1 | PERSISTENT_PLAYER_DATA)
+diff --git a/src/effect.c b/src/effect.c
+index 24b8f29..1c189b5 100644
+--- a/src/effect.c
++++ b/src/effect.c
+@@ -18,6 +18,7 @@
+ #include "drvlib.h"
+ #include "database.h"
+ #include "effect.h"
++#include "skillreg.h"
+ #include "clan.h"
+ #include "act.h"
+ 
+@@ -277,7 +278,9 @@ static void ef_fireball_set(int fn, int x, int y) {
+             create_fireball(co, ch[co].x, ch[co].y, ch[cn].x, ch[cn].y, ef[fn].strength - 1);
+         }
+         dam = fireball_damage(cn, co, ef[fn].strength);
++        skill_xp_context = skill_for_value(V_FIRE);
+         hurt(co, dam, cn, 10, 60, 85);
++        skill_xp_context = -1;
+     }
+ }
+ 
+@@ -563,7 +566,9 @@ static void add_strike(int xc, int yc, int x, int y, int str, int cn, int cc, in
+         if (ch[cn].flags & CF_EDEMON) { // earth demons dont suffer as much damage
+             dam -= min(dam / 4, (dam * max(0, ch[cn].value[1][V_DEMON] - ch[cc].value[1][V_DEMON])) / 10);
+         }
++        skill_xp_context = skill_for_value(V_FLASH);
+         hurt(cn, dam, cc, 8, 60, 85);
++        skill_xp_context = -1;
+     }
+ }
+ 
+diff --git a/src/skill.c b/src/skill.c
+index 0e44f28..c7a9329 100644
+--- a/src/skill.c
++++ b/src/skill.c
+@@ -7,6 +7,8 @@
+ #include "database.h"
+ #include "tool.h"
+ #include "skill.h"
++#include "talk.h"
++#include "skillreg.h"
+ 
+ struct skill skill[V_MAX] = {
+     //  Bases          Cost W M (0=not raisable, 1=skill, 2=attribute, 3=power)
+@@ -97,6 +99,12 @@ int raise_value(int cn, int v) {
+ 
+     if (v < 0 || v >= V_MAX) return 0;
+ 
++    // skills improve by use now, there is no exp pool to spend
++    if (ch[cn].flags & CF_PLAYER) {
++        log_char(cn, LOG_SYSTEM, 0, "Skills cannot be bought anymore. They improve when you use them (see /skills).");
++        return 0;
++    }
++
+     if (!skill[v].cost) return 0;
+ 
+     if (!ch[cn].value[1][v]) return 0;
+@@ -150,6 +158,9 @@ int raise_value_exp(int cn, int v) {
+ 
+     if (v < 0 || v >= V_MAX) return 0;
+ 
++    // players: rewards that raised a skill now give the XP for one level
++    if (ch[cn].flags & CF_PLAYER) return skill_add_level(cn, skill_for_value(v));
++
+     if (!skill[v].cost) return 0;
+ 
+     if (!ch[cn].value[1][v]) return 0;
+diff --git a/src/skillreg.c b/src/skillreg.c
+new file mode 100644
+index 0000000..0bd8dff
+--- /dev/null
++++ b/src/skillreg.c
+@@ -0,0 +1,544 @@
++/*
++ * Skill registry: use-based skills (RuneScape-style overhaul).
++ * See skillreg.h and zones/generic/skills.cfg.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <ctype.h>
++
++#include "server.h"
++#include "log.h"
++#include "talk.h"
++#include "drdata.h"
++#include "create.h"
++#include "tool.h"
++#include "skill.h"
++#include "database.h"
++#include "mem.h"
++#include "skillreg.h"
++
++#define SKILLS_CFG "zones/generic/skills.cfg"
++
++struct skilldef skilldef[MAXSKILLS];
++int skill_xp_context = -1;
++
++static int xp_base = 80; // XP from level 1 to 2
++static int xp_growth = 110; // each level needs this percent of the previous step
++static int xp_rate = 100; // global XP rate in percent
++static unsigned int xp_table[SKILL_MAXLEVEL + 2]; // xp_table[l] = total XP needed for level l
++static int value_skill[V_MAX]; // V_* slot -> registry id, -1 = none
++
++static char *group_name[SG_MAX] = {"power", "attribute", "combat", "magic", "gathering", "production", "support"};
++
++static char *V_name[V_MAX] = {
++    "V_HP", "V_ENDURANCE", "V_MANA", "V_WIS", "V_INT", "V_AGI", "V_STR", "V_ARMOR", "V_WEAPON", "V_OFFENSE",
++    "V_DEFENSE", "V_LIGHT", "V_SPEED", "V_DAGGER", "V_HAND", "V_STAFF", "V_SWORD", "V_TWOHAND", "V_ATTACK", "V_PARRY",
++    "V_WARCRY", "V_TACTICS", "V_SURROUND", "V_SPEEDSKILL", "V_BARTER", "V_PERCEPT", "V_STEALTH", "V_BLESS", "V_HEAL", "V_FREEZE",
++    "V_MAGICSHIELD", "V_FLASH", "V_FIRE", "V_REGENERATE", "V_MEDITATE", "V_IMMUNITY", "V_DEMON", "V_DURATION", "V_RAGE", "V_COLD",
++    "V_PROFESSION"};
++
++// bounded string copy, always terminated
++static void scopy(char *dst, const char *src, int size) {
++    int n;
++
++    for (n = 0; n < size - 1 && src[n]; n++) dst[n] = src[n];
++    dst[n] = 0;
++}
++
++static void build_xp_table(void) {
++    double step = xp_base, total = 0;
++    int l;
++
++    xp_table[0] = xp_table[1] = 0;
++    for (l = 2; l <= SKILL_MAXLEVEL + 1; l++) {
++        total += step;
++        if (total > 4000000000.0) total = 4000000000.0;
++        xp_table[l] = (unsigned int)total;
++        step = step * xp_growth / 100.0;
++    }
++}
++
++unsigned int skill_xp_for_level(int level) {
++    if (level < 1) return 0;
++    if (level > SKILL_MAXLEVEL + 1) level = SKILL_MAXLEVEL + 1;
++    return xp_table[level];
++}
++
++int skill_level_for_xp(unsigned int xp) {
++    int lo = 1, hi = SKILL_MAXLEVEL, mid;
++
++    while (lo < hi) { // highest level whose XP requirement is <= xp
++        mid = (lo + hi + 1) / 2;
++        if (xp_table[mid] <= xp) lo = mid;
++        else hi = mid - 1;
++    }
++    return lo;
++}
++
++int skill_lookup_key(char *key) {
++    int n;
++
++    if (!strncasecmp(key, "SK_", 3)) key += 3;
++
++    for (n = 0; n < MAXSKILLS; n++)
++        if (skilldef[n].used && !strcasecmp(skilldef[n].key, key)) return n;
++    return -1;
++}
++
++int skill_for_value(int v) {
++    if (v < 0 || v >= V_MAX) return -1;
++    return value_skill[v];
++}
++
++static int lookup_value_name(char *name) {
++    int n;
++
++    for (n = 0; n < V_MAX; n++)
++        if (V_name[n] && !strcasecmp(V_name[n], name)) return n;
++    return -1;
++}
++
++static int lookup_group(char *name) {
++    int n;
++
++    for (n = 0; n < SG_MAX; n++)
++        if (!strcasecmp(group_name[n], name)) return n;
++    return -1;
++}
++
++// reads "name=value" (value may be quoted), "name:" (block start) or ";" (block end).
++// returns pointer after the line, or NULL at end of text
++static char *cfg_line(char *ptr, char *name, char *value, int *line) {
++    int len;
++
++    *name = *value = 0;
++
++    while (*ptr && isspace(*ptr)) {
++        if (*ptr == '\n') (*line)++;
++        ptr++;
++    }
++    if (!*ptr) return NULL;
++
++    if (*ptr == '#') { // comment
++        while (*ptr && *ptr != '\n') ptr++;
++        strcpy(name, "#");
++        return ptr;
++    }
++    if (*ptr == ';') {
++        strcpy(value, ";");
++        return ptr + 1;
++    }
++
++    for (len = 0; *ptr && (isalnum(*ptr) || *ptr == '_') && len < 63; len++) *name++ = *ptr++;
++    *name = 0;
++
++    while (*ptr == ' ' || *ptr == '\t') ptr++;
++
++    if (*ptr == ':') {
++        strcpy(value, ":");
++        return ptr + 1;
++    }
++    if (*ptr != '=') {
++        strcpy(value, "!");
++        return ptr;
++    }
++    ptr++;
++    while (*ptr == ' ' || *ptr == '\t') ptr++;
++
++    if (*ptr == '"') {
++        ptr++;
++        for (len = 0; *ptr && *ptr != '"' && *ptr != '\n' && len < 255; len++) *value++ = *ptr++;
++        if (*ptr == '"') ptr++;
++    } else {
++        for (len = 0; *ptr && !isspace(*ptr) && *ptr != '#' && len < 255; len++) *value++ = *ptr++;
++    }
++    *value = 0;
++
++    while (*ptr && *ptr != '\n') { // allow trailing comments
++        if (*ptr == '#') {
++            while (*ptr && *ptr != '\n') ptr++;
++            break;
++        }
++        ptr++;
++    }
++
++    return ptr;
++}
++
++static char *read_file(char *filename) {
++    FILE *fp;
++    long len;
++    char *text;
++
++    if (!(fp = fopen(filename, "rb"))) return NULL;
++    fseek(fp, 0, SEEK_END);
++    len = ftell(fp);
++    fseek(fp, 0, SEEK_SET);
++    if (len < 0 || !(text = xmalloc(len + 1, IM_TEMP))) {
++        fclose(fp);
++        return NULL;
++    }
++    if (fread(text, 1, len, fp) != (size_t)len) {
++        xfree(text);
++        fclose(fp);
++        return NULL;
++    }
++    text[len] = 0;
++    fclose(fp);
++    return text;
++}
++
++static int store_block(struct skilldef *sd, int id, int is_config, int line) {
++    if (is_config) return 1;
++
++    if (id < 0 || id >= MAXSKILLS) {
++        elog("%s line %d: skill %s needs an id from 0 to %d.", SKILLS_CFG, line, sd->key, MAXSKILLS - 1);
++        return 0;
++    }
++    if (skilldef[id].used) {
++        elog("%s line %d: skill id %d used twice (%s and %s).", SKILLS_CFG, line, id, skilldef[id].key, sd->key);
++        return 0;
++    }
++    if (skill_lookup_key(sd->key) != -1) {
++        elog("%s line %d: skill key %s used twice.", SKILLS_CFG, line, sd->key);
++        return 0;
++    }
++    if (!sd->name[0]) strcpy(sd->name, sd->key);
++    if (sd->max < 1) sd->max = 99;
++    if (sd->max > SKILL_MAXLEVEL) sd->max = SKILL_MAXLEVEL;
++    if (sd->value >= 0) {
++        if (value_skill[sd->value] != -1) {
++            elog("%s line %d: value %s mirrored by two skills.", SKILLS_CFG, line, V_name[sd->value]);
++            return 0;
++        }
++        value_skill[sd->value] = id;
++    }
++    sd->used = 1;
++    skilldef[id] = *sd;
++    return 1;
++}
++
++int skills_load(void) {
++    char *text, *ptr, name[64], value[256];
++    struct skilldef sd;
++    int line = 1, inblock = 0, is_config = 0, id = -1, n, m, tmp;
++
++    bzero(skilldef, sizeof(skilldef));
++    for (n = 0; n < V_MAX; n++) value_skill[n] = -1;
++
++    if (!(text = read_file(SKILLS_CFG))) {
++        elog("Could not read %s. The skill system needs it.", SKILLS_CFG);
++        return 0;
++    }
++
++    ptr = text;
++    while ((ptr = cfg_line(ptr, name, value, &line))) {
++        if (name[0] == '#') continue;
++
++        if (value[0] == '!') {
++            elog("%s line %d: syntax error near \"%s\".", SKILLS_CFG, line, name);
++            xfree(text);
++            return 0;
++        }
++        if (value[0] == ':') {
++            if (inblock) {
++                elog("%s line %d: missing ; before %s:", SKILLS_CFG, line, name);
++                xfree(text);
++                return 0;
++            }
++            inblock = 1;
++            bzero(&sd, sizeof(sd));
++            sd.value = -1;
++            sd.max = 99;
++            sd.rate = 100;
++            id = -1;
++            is_config = !strcasecmp(name, "config");
++            scopy(sd.key, name, sizeof(sd.key));
++            for (n = 0; sd.key[n]; n++) sd.key[n] = toupper(sd.key[n]);
++            continue;
++        }
++        if (value[0] == ';') {
++            if (!inblock) {
++                elog("%s line %d: ; without block.", SKILLS_CFG, line);
++                xfree(text);
++                return 0;
++            }
++            if (!store_block(&sd, id, is_config, line)) {
++                xfree(text);
++                return 0;
++            }
++            inblock = 0;
++            continue;
++        }
++        if (!inblock) {
++            elog("%s line %d: %s outside of a block.", SKILLS_CFG, line, name);
++            xfree(text);
++            return 0;
++        }
++
++        if (is_config) {
++            if (!strcasecmp(name, "xp_base")) xp_base = max(1, atoi(value));
++            else if (!strcasecmp(name, "xp_growth")) xp_growth = max(100, atoi(value));
++            else if (!strcasecmp(name, "rate")) xp_rate = max(0, atoi(value));
++            else {
++                elog("%s line %d: unknown config setting %s.", SKILLS_CFG, line, name);
++                xfree(text);
++                return 0;
++            }
++            continue;
++        }
++
++        if (!strcasecmp(name, "id")) id = atoi(value);
++        else if (!strcasecmp(name, "name")) scopy(sd.name, value, sizeof(sd.name));
++        else if (!strcasecmp(name, "description")) scopy(sd.desc, value, sizeof(sd.desc));
++        else if (!strcasecmp(name, "start")) sd.start = atoi(value);
++        else if (!strcasecmp(name, "max")) sd.max = atoi(value);
++        else if (!strcasecmp(name, "rate")) sd.rate = atoi(value);
++        else if (!strcasecmp(name, "use_xp")) sd.use_xp = atoi(value);
++        else if (!strcasecmp(name, "dmg_xp")) sd.dmg_xp = atoi(value);
++        else if (!strcasecmp(name, "group")) {
++            if ((sd.group = lookup_group(value)) == -1) {
++                elog("%s line %d: unknown group %s.", SKILLS_CFG, line, value);
++                xfree(text);
++                return 0;
++            }
++        } else if (!strcasecmp(name, "value")) {
++            if ((sd.value = lookup_value_name(value)) == -1) {
++                elog("%s line %d: unknown value %s.", SKILLS_CFG, line, value);
++                xfree(text);
++                return 0;
++            }
++        } else if (!strcasecmp(name, "feed")) { // feed=KEY,percent
++            char *comma = strchr(value, ',');
++            if (!comma || sd.nfeed >= MAXSKILLFEED) {
++                elog("%s line %d: feed must be KEY,percent (at most %d per skill).", SKILLS_CFG, line, MAXSKILLFEED);
++                xfree(text);
++                return 0;
++            }
++            *comma = 0;
++            scopy(sd.feed_key[sd.nfeed], value, sizeof(sd.feed_key[0]));
++            sd.feed_pct[sd.nfeed] = atoi(comma + 1);
++            sd.nfeed++;
++        } else {
++            elog("%s line %d: unknown setting %s.", SKILLS_CFG, line, name);
++            xfree(text);
++            return 0;
++        }
++    }
++    xfree(text);
++
++    if (inblock) {
++        elog("%s: missing ; at end of file.", SKILLS_CFG);
++        return 0;
++    }
++
++    // resolve feeds now that every key is known
++    for (n = 0; n < MAXSKILLS; n++) {
++        if (!skilldef[n].used) continue;
++        for (m = 0; m < skilldef[n].nfeed; m++) {
++            if ((tmp = skill_lookup_key(skilldef[n].feed_key[m])) == -1) {
++                elog("%s: skill %s feeds unknown skill %s.", SKILLS_CFG, skilldef[n].key, skilldef[n].feed_key[m]);
++                return 0;
++            }
++            skilldef[n].feed_id[m] = tmp;
++        }
++    }
++
++    build_xp_table();
++
++    for (n = tmp = 0; n < MAXSKILLS; n++)
++        if (skilldef[n].used) tmp++;
++    xlog("Loaded %d skills from %s (level 99 needs %u XP).", tmp, SKILLS_CFG, xp_table[99]);
++
++    return 1;
++}
++
++static struct skill_ppd *get_ppd(int cn) {
++    return set_data(cn, DRD_SKILL_PPD, sizeof(struct skill_ppd));
++}
++
++int skill_get_level(int cn, int id) {
++    struct skill_ppd *ppd;
++
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++    if (skilldef[id].value >= 0) return ch[cn].value[1][skilldef[id].value];
++
++    if (!(ppd = get_ppd(cn))) return 0;
++    if (!ppd->xp[id] && !skilldef[id].start) return 0; // never had it
++    return skill_level_for_xp(ppd->xp[id]);
++}
++
++unsigned int skill_get_xp(int cn, int id) {
++    struct skill_ppd *ppd;
++
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++    if (!(ppd = get_ppd(cn))) return 0;
++    return ppd->xp[id];
++}
++
++// sets level and XP directly (templates, GM commands). no messages.
++void skill_set_level(int cn, int id, int level) {
++    struct skill_ppd *ppd;
++
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return;
++    level = max(0, min(level, skilldef[id].max));
++
++    if (skilldef[id].value >= 0) ch[cn].value[1][skilldef[id].value] = level;
++    if ((ppd = get_ppd(cn))) ppd->xp[id] = skill_xp_for_level(level);
++}
++
++static int add_xp_raw(int cn, int id, int xp, int depth) {
++    struct skill_ppd *ppd;
++    struct skilldef *sd;
++    int oldlevel, newlevel, n;
++    unsigned long long tmp;
++
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++    if (xp <= 0) return 0;
++
++    sd = skilldef + id;
++    if (sd->value >= 0 && !ch[cn].value[1][sd->value]) return 0; // character does not have the skill
++    if (!(ppd = get_ppd(cn))) return 0;
++
++    oldlevel = skill_level_for_xp(ppd->xp[id]);
++    if (sd->value >= 0) oldlevel = max(oldlevel, ch[cn].value[1][sd->value]);
++
++    tmp = (unsigned long long)ppd->xp[id] + xp;
++    if (tmp > 4000000000ull) tmp = 4000000000ull;
++    ppd->xp[id] = (unsigned int)tmp;
++
++    newlevel = min(sd->max, skill_level_for_xp(ppd->xp[id]));
++
++    if (newlevel > oldlevel) {
++        if (sd->value >= 0) ch[cn].value[1][sd->value] = newlevel;
++        log_char(cn, LOG_SYSTEM, 0, "\260c3Congratulations! Your %s level is now %d.", sd->name, newlevel);
++        dlog(cn, 0, "skill %s reached level %d", sd->name, newlevel);
++        if (sd->value >= 0) {
++            update_char(cn);
++            check_levelup(cn);
++        }
++    }
++
++    if (depth == 0) {
++        for (n = 0; n < sd->nfeed; n++) {
++            add_xp_raw(cn, sd->feed_id[n], xp * sd->feed_pct[n] / 100, depth + 1);
++        }
++    }
++
++    return 1;
++}
++
++// the one entry point for skill XP. xp is the base amount before rates.
++int add_skill_xp(int cn, int id, int xp) {
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER)) return 0;
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++
++    xp = (int)((long long)xp * xp_rate / 100 * skilldef[id].rate / 100);
++
++    return add_xp_raw(cn, id, xp, 0);
++}
++
++// raises a skill by exactly one level (quest/item rewards that used to "raise" a skill)
++int skill_add_level(int cn, int id) {
++    struct skill_ppd *ppd;
++    int level;
++    unsigned int need;
++
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER)) return 0;
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++    if (!(ppd = get_ppd(cn))) return 0;
++
++    level = skill_get_level(cn, id);
++    if (level < 1 || level >= skilldef[id].max) return 0;
++
++    need = skill_xp_for_level(level + 1);
++    if (ppd->xp[id] >= need) return 0;
++
++    return add_xp_raw(cn, id, need - ppd->xp[id], 1);
++}
++
++void skill_used(int cn, int id) {
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return;
++    add_skill_xp(cn, id, skilldef[id].use_xp);
++}
++
++// dam is in POWERSCALE units (1000 = one hitpoint)
++void skill_damage_xp(int cn, int id, int dam) {
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return;
++    if (dam <= 0 || !skilldef[id].dmg_xp) return;
++    add_skill_xp(cn, id, max(1, dam * skilldef[id].dmg_xp / POWERSCALE));
++}
++
++// registry id of the weapon skill cn is fighting with
++int skill_weapon_id(int cn) {
++    int in, v = V_HAND, best = -1;
++
++    in = ch[cn].item[WN_RHAND];
++    if (in > 0 && in < MAXITEM && (it[in].flags & IF_WEAPON)) {
++        // same order as get_fight_skill(): the highest matching skill is used
++        if ((it[in].flags & IF_HAND) && ch[cn].value[0][V_HAND] > best) best = ch[cn].value[0][v = V_HAND];
++        if ((it[in].flags & IF_DAGGER) && ch[cn].value[0][V_DAGGER] > best) best = ch[cn].value[0][v = V_DAGGER];
++        if ((it[in].flags & IF_STAFF) && ch[cn].value[0][V_STAFF] > best) best = ch[cn].value[0][v = V_STAFF];
++        if ((it[in].flags & IF_SWORD) && ch[cn].value[0][V_SWORD] > best) best = ch[cn].value[0][v = V_SWORD];
++        if ((it[in].flags & IF_TWOHAND) && ch[cn].value[0][V_TWOHAND] > best) best = ch[cn].value[0][v = V_TWOHAND];
++    }
++    return skill_for_value(v);
++}
++
++// called at every login: gives every player all starting skills and keeps XP in line
++// with levels that were changed by other means (templates, rewards, GM commands).
++void skills_init_player(int cn) {
++    struct skill_ppd *ppd;
++    struct skilldef *sd;
++    int id, level;
++
++    if (!(ch[cn].flags & CF_PLAYER)) return;
++    if (!(ppd = get_ppd(cn))) return;
++
++    for (id = 0; id < MAXSKILLS; id++) {
++        sd = skilldef + id;
++        if (!sd->used) continue;
++
++        if (sd->value >= 0) {
++            level = ch[cn].value[1][sd->value];
++            if (level < sd->start) level = ch[cn].value[1][sd->value] = sd->start;
++        } else {
++            level = skill_level_for_xp(ppd->xp[id]);
++            if (!ppd->xp[id] && !sd->start) continue;
++            level = max(level, sd->start);
++        }
++        if (level > 0 && ppd->xp[id] < skill_xp_for_level(level)) ppd->xp[id] = skill_xp_for_level(level);
++    }
++}
++
++// /skills [filter]: list skills with level and XP
++int skills_show(int cn, char *filter) {
++    struct skill_ppd *ppd;
++    struct skilldef *sd;
++    int g, id, level, cnt = 0;
++    unsigned int xp, next;
++
++    if (!(ppd = get_ppd(cn))) return 0;
++
++    for (g = 0; g < SG_MAX; g++) {
++        if (filter && *filter && strncasecmp(group_name[g], filter, strlen(filter))) continue;
++        log_char(cn, LOG_SYSTEM, 0, "\260c3%c%s:", toupper(group_name[g][0]), group_name[g] + 1);
++        for (id = 0; id < MAXSKILLS; id++) {
++            sd = skilldef + id;
++            if (!sd->used || sd->group != g) continue;
++            if (!(level = skill_get_level(cn, id))) continue;
++            xp = ppd->xp[id];
++            if (level >= sd->max) log_char(cn, LOG_SYSTEM, 0, "  %s %d (%u XP, max)", sd->name, level, xp);
++            else {
++                next = skill_xp_for_level(level + 1);
++                log_char(cn, LOG_SYSTEM, 0, "  %s %d (%u XP, %u to next)", sd->name, level, xp, next > xp ? next - xp : 0);
++            }
++            cnt++;
++        }
++    }
++    log_char(cn, LOG_SYSTEM, 0, "Combat level %d.", ch[cn].level);
++    return cnt;
++}
+diff --git a/src/skillreg.h b/src/skillreg.h
+new file mode 100644
+index 0000000..4aa27a2
+--- /dev/null
++++ b/src/skillreg.h
+@@ -0,0 +1,63 @@
++/*
++ * Skill registry: use-based skills (RuneScape-style overhaul).
++ *
++ * Every skill is defined in zones/generic/skills.cfg. A skill either mirrors its
++ * level into ch.value[1][v] (combat skills, attributes, powers, spells) or lives only
++ * in the skill PPD (gathering/production skills like Mining). XP for all skills is
++ * kept in the persistent player data block DRD_SKILL_PPD.
++ */
++
++#define MAXSKILLS 128 // registry ids 0..127, ids are save indexes: never renumber
++#define SKILL_MAXLEVEL 120 // hard upper bound of the XP table
++
++#define SG_POWER 0
++#define SG_ATTRIBUTE 1
++#define SG_COMBAT 2
++#define SG_MAGIC 3
++#define SG_GATHERING 4
++#define SG_PRODUCTION 5
++#define SG_SUPPORT 6
++#define SG_MAX 7
++
++#define MAXSKILLFEED 8
++
++struct skilldef {
++    int used;
++    char key[32]; // used as SK_<key> in .chr files
++    char name[40];
++    char desc[160];
++    int group; // SG_*
++    int value; // V_* slot this skill mirrors into, -1 = none
++    int start; // level every player starts with (0 = player does not have the skill)
++    int max; // highest level
++    int rate; // XP multiplier in percent
++    int use_xp; // XP per use (spell cast, warcry, mining swing ...)
++    int dmg_xp; // XP per point of damage dealt with this skill
++    int nfeed;
++    int feed_id[MAXSKILLFEED]; // also gives feed_pct percent of gained XP to these skills
++    int feed_pct[MAXSKILLFEED];
++    char feed_key[MAXSKILLFEED][32];
++};
++
++struct skill_ppd {
++    unsigned int xp[MAXSKILLS];
++};
++
++extern struct skilldef skilldef[MAXSKILLS];
++extern int skill_xp_context; // skill that gets damage XP for the next hurt() call, -1 = none
++
++int skills_load(void);
++int skill_lookup_key(char *key);
++int skill_for_value(int v);
++unsigned int skill_xp_for_level(int level);
++int skill_level_for_xp(unsigned int xp);
++int skill_get_level(int cn, int id);
++unsigned int skill_get_xp(int cn, int id);
++void skill_set_level(int cn, int id, int level);
++int add_skill_xp(int cn, int id, int xp);
++int skill_add_level(int cn, int id);
++void skill_used(int cn, int id);
++void skill_damage_xp(int cn, int id, int dam);
++int skill_weapon_id(int cn);
++void skills_init_player(int cn);
++int skills_show(int cn, char *filter);
+diff --git a/src/store.c b/src/store.c
+index 43609c9..ddb30dc 100644
+--- a/src/store.c
++++ b/src/store.c
+@@ -16,6 +16,7 @@
+ #include "drvlib.h"
+ #include "map.h"
+ #include "store.h"
++#include "skillreg.h"
+ #include "database.h"
+ #include "clan.h"
+ #include "prof.h"
+@@ -162,6 +163,8 @@ int sell(int cn, int co, int nr) {
+ 
+     if (!store[s]->ware[nr].always) { store[s]->ware[nr].cnt--; }
+ 
++    skill_used(co, skill_for_value(V_BARTER));
++
+     return price;
+ }
+ 
+@@ -249,6 +252,8 @@ int buy(int cn, int co) {
+     ch[co].flags |= CF_ITEMS;
+     free_item(in);
+ 
++    if (price > 0) skill_used(co, skill_for_value(V_BARTER));
++
+     return price;
+ }
+ 
+diff --git a/src/tool.c b/src/tool.c
+index 62ae6ec..63de920 100644
+--- a/src/tool.c
++++ b/src/tool.c
+@@ -503,12 +503,16 @@ int check_levelup(int cn) {
+     char buf[256];
+     int experience, flag = 0;
+ 
++    // players: skills level by use, so the level is a combat level computed from the
++    // skills themselves (same formula NPCs get their level from). there is no exp pool.
++    if (ch[cn].flags & CF_PLAYER) ch[cn].exp = ch[cn].exp_used = calc_exp(cn);
++
+     experience = max(ch[cn].exp, ch[cn].exp_used);
+ 
+     while (exp2level(experience) > ch[cn].level) {
+         ch[cn].level++;
+         set_sector(ch[cn].x, ch[cn].y);
+-        log_char(cn, LOG_SYSTEM, 0, "Thou gained a level! Thou art level %d now.", ch[cn].level);
++        log_char(cn, LOG_SYSTEM, 0, "Thou gained a level! Thy combat level is %d now.", ch[cn].level);
+ 
+         if (ch[cn].saves < 3) {
+             ch[cn].saves++;

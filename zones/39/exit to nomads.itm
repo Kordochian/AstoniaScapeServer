@@ -1,0 +1,54 @@
+tomb_teleport3:
+name="Ladder"
+description="Going up!."
+sprite=16187
+flag=IF_USE
+driver=10
+arg="6A001F00000001"   # x=106, y=31, a=38, quiet=1
+;
+
+
+Nomads_Entrance:
+name="Cave"
+description="A hole in the ground leading... somewhere."
+sprite=23138
+flag=IF_USE
+driver=10
+arg="0A001000130001"   # x=10, y=16, a=19, quiet=1
+;
+
+
+Ultimate1:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="4C00E400000001"   # x=76, y=228, a=38, quiet=1
+;
+ultimate2:
+name="Ladder"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="31004200000001"   # x=49, y=66, a=38, quiet=1
+;
+
+Leahj_teleport1:
+name="Door"
+description="A very heavy looking door."
+sprite=13150
+flag=IF_USE
+driver=10
+arg="0C000E00000001"   # x=12, y=14, a=38, quiet=1
+;
+
+Leahj_teleport2:
+name="Door"
+description="A very heavy looking door."
+sprite=13150
+flag=IF_USE
+driver=10
+arg="0D000D00260001"   # x=13, y=13, a=38, quiet=1
+;

@@ -1,0 +1,2000 @@
+diff -ruN a/src/command.c b/src/command.c
+--- a/src/command.c	2026-10-13 12:15:52.868122632 +0000
++++ b/src/command.c	2026-10-13 12:15:52.931613740 +0000
+@@ -1420,6 +1420,10 @@
+         skilling_command(cn, "smith", ptr + len);
+         return 1;
+     }
++    if ((len = cmdcmp(ptr, "craft", 5)) || (len = cmdcmp(ptr, "fletch", 6))) { // /craft [item] [count|all], next to a workbench
++        skilling_command(cn, "craft", ptr + len);
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "skills", 6))) { // /skills [group]
+         ptr += len;
+         while (isspace(*ptr)) ptr++;
+diff -ruN a/src/player.c b/src/player.c
+--- a/src/player.c	2026-10-13 12:15:52.869901286 +0000
++++ b/src/player.c	2026-10-13 12:15:52.937240351 +0000
+@@ -56,7 +56,7 @@
+ #include "config.h"
+ #include "skillreg.h"
+ 
+-#define SERVER_PROTOCOL_VERSION 8 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c)
++#define SERVER_PROTOCOL_VERSION 9 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c), 9: workbench window, station texts in SV_CRAFTLIST
+ 
+ #define MAX_IDLE (TICKS * 30)
+ 
+diff -ruN a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 12:15:52.863820957 +0000
++++ b/src/skilling.c	2026-10-13 12:15:52.880496889 +0000
+@@ -1,11 +1,11 @@
+ /*
+- * Gathering and production skills: Mining -> Smithing.
++ * Gathering and production skills: Mining -> Smithing, Woodcutting -> Crafting.
+  * Everything is defined in zones/generic/skilling.cfg, see the header of that file.
+  *
+  * Item drivers (core, not in a DLL, so they work in every area):
+- *   IDR_SKROCK     rock on the map, mine it with a pickaxe
+- *   IDR_SKSTACK    stackable resource (ore, bar), drdata[0..3] = count
+- *   IDR_SKSTATION  furnace, anvil or supply crate
++ *   IDR_SKROCK     gathering spot on the map: rock (pickaxe), tree (axe) or plant
++ *   IDR_SKSTACK    stackable resource (ore, bar, logs, arrows), drdata[0..3] = count
++ *   IDR_SKSTATION  furnace, anvil, workbench or supply crate
+  */
+ 
+ #include <stdio.h>
+@@ -42,14 +42,21 @@
+ #define SKT_SMELT 7
+ #define SKT_SMITH 8
+ #define SKT_SUPPLY 9
+-#define SKT_MAX 9
++#define SKT_TREE 10
++#define SKT_AXE 11
++#define SKT_KNIFE 12
++#define SKT_BENCH 13
++#define SKT_CRAFT 14
++#define SKT_PLANT 15
++#define SKT_MAX 15
+ 
+ #define MAXSKDEF 256
+ #define MAXNEED 4
+-#define STATION_RANGE 3 // /smelt and /smith work this many tiles from a furnace / anvil
+-#define MAXMAKE 100 // most items one /smelt or /smith command makes
++#define STATION_RANGE 3 // /smelt, /smith and /craft work this many tiles from a furnace / anvil / workbench
++#define MAXMAKE 100 // most makes one /smelt, /smith or /craft command does
+ 
+-static char *type_name[] = {"", "resource", "rock", "pickaxe", "hammer", "furnace", "anvil", "smelt", "smith", "supply"};
++static char *type_name[] = {"", "resource", "rock", "pickaxe", "hammer", "furnace", "anvil", "smelt", "smith", "supply",
++                            "tree", "axe", "knife", "bench", "craft", "plant"};
+ 
+ struct skdef {
+     char key[32];
+@@ -60,11 +67,20 @@
+ 
+     int level; // skill level needed
+     int xp; // XP per ore / per item made
+-    int power; // pickaxe power
+-    int ores, respawn, empty_sprite; // rock
++    int power; // tool power
++    int ores, respawn, empty_sprite; // rock, tree, plant
++
++    char skill_key[32]; // rock, tree, plant, recipe: skill it uses (empty = the type's default)
++    int skill; // skill registry id, -1 = none
++    char tool_key[16]; // rock, tree, plant, recipe: tool type it needs (empty = the type's default)
++    int tool; // SKT_* tool type, 0 = none
++    int amount; // recipe: how many of the resource one make gives
++    int chance; // rock, tree, plant: base chance per try in percent
++    char group_key[32];
++    int group; // recipe: resource it is listed under in the client window (default: its first need)
+ 
+     char ore_key[32];
+-    int ore; // rock: resource def it gives
++    int ore; // rock, tree, plant: resource def it gives
+ 
+     char make_key[80];
+     int make_res; // recipe: resource def it makes, or -1
+@@ -79,7 +95,100 @@
+ 
+ static struct skdef skdef[MAXSKDEF];
+ static int nskdef = 0;
+-static int sk_mining = -1, sk_smithing = -1;
++static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
++
++static int is_node(int type) {
++    return type == SKT_ROCK || type == SKT_TREE || type == SKT_PLANT;
++}
++
++static int is_tool(int type) {
++    return type == SKT_PICKAXE || type == SKT_AXE || type == SKT_HAMMER || type == SKT_KNIFE;
++}
++
++static int is_station(int type) {
++    return type == SKT_FURNACE || type == SKT_ANVIL || type == SKT_BENCH || type == SKT_SUPPLY;
++}
++
++static int is_recipe(int type) {
++    return type == SKT_SMELT || type == SKT_SMITH || type == SKT_CRAFT;
++}
++
++// defaults: which skill and tool a gathering spot or recipe type uses
++static char *default_skill(int type) {
++    switch (type) {
++    case SKT_ROCK: return "MINING";
++    case SKT_TREE: return "WOODCUTTING";
++    case SKT_SMELT:
++    case SKT_SMITH: return "SMITHING";
++    case SKT_CRAFT: return "CRAFTING";
++    default: return "none";
++    }
++}
++
++static int default_tool(int type) {
++    switch (type) {
++    case SKT_ROCK: return SKT_PICKAXE;
++    case SKT_TREE: return SKT_AXE;
++    case SKT_SMITH: return SKT_HAMMER;
++    case SKT_CRAFT: return SKT_KNIFE;
++    default: return 0;
++    }
++}
++
++static char *tool_text(int tool) { // "You need ..."
++    switch (tool) {
++    case SKT_PICKAXE: return "a pickaxe";
++    case SKT_AXE: return "an axe";
++    case SKT_HAMMER: return "a hammer";
++    case SKT_KNIFE: return "a knife";
++    default: return "a tool";
++    }
++}
++
++static char *node_verb(int type) {
++    switch (type) {
++    case SKT_ROCK: return "mine";
++    case SKT_TREE: return "cut";
++    default: return "pick";
++    }
++}
++
++static char *node_empty_text(int type) {
++    switch (type) {
++    case SKT_ROCK: return "There is no ore left in this rock.";
++    case SKT_TREE: return "This tree has been cut down. It will grow back.";
++    default: return "There is nothing left to pick here.";
++    }
++}
++
++static char *station_text(int type) { // "You need to stand next to ..."
++    switch (type) {
++    case SKT_FURNACE: return "a furnace";
++    case SKT_ANVIL: return "an anvil";
++    default: return "a workbench";
++    }
++}
++
++static char *station_name(int type) {
++    switch (type) {
++    case SKT_FURNACE: return "furnace";
++    case SKT_ANVIL: return "anvil";
++    default: return "workbench";
++    }
++}
++
++static char *recipe_cmd(int type) {
++    switch (type) {
++    case SKT_SMELT: return "smelt";
++    case SKT_SMITH: return "smith";
++    default: return "craft";
++    }
++}
++
++static char *skill_name(int sk) {
++    if (sk < 0 || sk >= MAXSKILLS || !skilldef[sk].used) return "no";
++    return skilldef[sk].name;
++}
+ 
+ // ---------- config ----------
+ 
+@@ -102,7 +211,7 @@
+ }
+ 
+ static int is_item_type(int type) {
+-    return type == SKT_RESOURCE || type == SKT_ROCK || type == SKT_PICKAXE || type == SKT_HAMMER || type == SKT_FURNACE || type == SKT_ANVIL || type == SKT_SUPPLY;
++    return type == SKT_RESOURCE || is_node(type) || is_tool(type) || is_station(type);
+ }
+ 
+ static void cfgcopy(char *dst, char *src, int size) {
+@@ -144,6 +253,9 @@
+             d->power = 1;
+             d->ores = 1;
+             d->respawn = 30;
++            d->amount = 1;
++            d->chance = 35;
++            d->group = -1;
+             continue;
+         }
+         if (value[0] == ';') {
+@@ -181,10 +293,15 @@
+         else if (!strcasecmp(name, "level")) d->level = atoi(value);
+         else if (!strcasecmp(name, "xp")) d->xp = max(0, atoi(value));
+         else if (!strcasecmp(name, "power")) d->power = max(1, atoi(value));
+-        else if (!strcasecmp(name, "ores")) d->ores = max(1, atoi(value));
++        else if (!strcasecmp(name, "ores") || !strcasecmp(name, "count")) d->ores = max(1, atoi(value));
+         else if (!strcasecmp(name, "respawn")) d->respawn = max(1, atoi(value));
+         else if (!strcasecmp(name, "empty_sprite")) d->empty_sprite = atoi(value);
+-        else if (!strcasecmp(name, "ore")) cfgcopy(d->ore_key, value, sizeof(d->ore_key));
++        else if (!strcasecmp(name, "ore") || !strcasecmp(name, "gives")) cfgcopy(d->ore_key, value, sizeof(d->ore_key));
++        else if (!strcasecmp(name, "skill")) cfgcopy(d->skill_key, value, sizeof(d->skill_key));
++        else if (!strcasecmp(name, "tool")) cfgcopy(d->tool_key, value, sizeof(d->tool_key));
++        else if (!strcasecmp(name, "amount")) d->amount = max(1, min(10000, atoi(value)));
++        else if (!strcasecmp(name, "chance")) d->chance = max(1, min(100, atoi(value)));
++        else if (!strcasecmp(name, "group")) cfgcopy(d->group_key, value, sizeof(d->group_key));
+         else if (!strcasecmp(name, "make")) cfgcopy(d->make_key, value, sizeof(d->make_key));
+         else if (!strcasecmp(name, "name")) cfgcopy(d->name, value, sizeof(d->name));
+         else if (!strcasecmp(name, "description")) cfgcopy(d->desc, value, sizeof(d->desc));
+@@ -244,6 +361,8 @@
+                 sprintf(ti->description, "1 %.70s.", ti->name);
+                 break;
+             case SKT_ROCK:
++            case SKT_TREE:
++            case SKT_PLANT:
+                 ti->driver = IDR_SKROCK;
+                 ti->flags |= IF_USE;
+                 ti->flags &= ~IF_TAKE;
+@@ -251,6 +370,7 @@
+                 break;
+             case SKT_FURNACE:
+             case SKT_ANVIL:
++            case SKT_BENCH:
+             case SKT_SUPPLY:
+                 ti->driver = IDR_SKSTATION;
+                 ti->flags |= IF_USE;
+@@ -259,24 +379,48 @@
+             }
+         }
+ 
+-        if (d->type == SKT_ROCK) {
++        if (is_node(d->type) || is_recipe(d->type)) { // skill= and tool=
++            char *key = d->skill_key[0] ? d->skill_key : default_skill(d->type);
++
++            if (!strcasecmp(key, "none")) d->skill = -1;
++            else if ((d->skill = skill_lookup_key(key)) == -1) {
++                if (d->skill_key[0]) {
++                    elog("%s: %s: skill=%s is not in skills.cfg.", SKILLING_CFG, d->key, d->skill_key);
++                    return 0;
++                }
++                elog("%s: %s: skills.cfg has no %s skill, it gives no XP and has no level limit.", SKILLING_CFG, d->key, key);
++            }
++            if (!d->tool_key[0]) d->tool = default_tool(d->type);
++            else if (!strcasecmp(d->tool_key, "none")) d->tool = 0;
++            else {
++                for (k = 1; k <= SKT_MAX; k++)
++                    if (is_tool(k) && !strcasecmp(d->tool_key, type_name[k])) break;
++                if (k > SKT_MAX) {
++                    elog("%s: %s: tool=%s is not pickaxe, axe, hammer, knife or none.", SKILLING_CFG, d->key, d->tool_key);
++                    return 0;
++                }
++                d->tool = k;
++            }
++        }
++
++        if (is_node(d->type)) {
+             if ((d->ore = lookup_def(d->ore_key)) == -1 || skdef[d->ore].type != SKT_RESOURCE) {
+-                elog("%s: rock %s: ore=%s is not a resource.", SKILLING_CFG, d->key, d->ore_key);
++                elog("%s: %s %s: ore=%s is not a resource.", SKILLING_CFG, type_name[d->type], d->key, d->ore_key);
+                 return 0;
+             }
+         }
+ 
+         if (d->type == SKT_SUPPLY) {
+             for (m = 0; m < d->nneed; m++) {
+-                if ((k = lookup_def(d->need_key[m])) == -1 || (skdef[k].type != SKT_PICKAXE && skdef[k].type != SKT_HAMMER)) {
+-                    elog("%s: supply %s: give=%s is not a pickaxe or hammer.", SKILLING_CFG, d->key, d->need_key[m]);
++                if ((k = lookup_def(d->need_key[m])) == -1 || (!is_tool(skdef[k].type) && skdef[k].type != SKT_RESOURCE)) {
++                    elog("%s: supply %s: give=%s is not a tool or resource.", SKILLING_CFG, d->key, d->need_key[m]);
+                     return 0;
+                 }
+                 d->need[m] = k;
+             }
+         }
+ 
+-        if (d->type == SKT_SMELT || d->type == SKT_SMITH) {
++        if (is_recipe(d->type)) {
+             if ((k = lookup_def(d->make_key)) != -1) {
+                 if (skdef[k].type != SKT_RESOURCE) {
+                     elog("%s: recipe %s: make=%s is not a resource.", SKILLING_CFG, d->key, d->make_key);
+@@ -298,6 +442,10 @@
+                 }
+                 d->need[m] = k;
+             }
++            if (d->group_key[0] && ((d->group = lookup_def(d->group_key)) == -1 || skdef[d->group].type != SKT_RESOURCE)) {
++                elog("%s: recipe %s: group=%s is not a resource.", SKILLING_CFG, d->key, d->group_key);
++                return 0;
++            }
+             if (!d->name[0]) {
+                 if (d->make_res != -1) cfgcopy(d->name, item_template(skdef[d->make_res].tmp)->name, sizeof(d->name));
+                 else cfgcopy(d->name, item_template(d->make_tmp)->name, sizeof(d->name));
+@@ -312,11 +460,10 @@
+     int ok, n, cnt[SKT_MAX + 1];
+ 
+     nskdef = 0;
+-    sk_mining = skill_lookup_key("MINING");
+-    sk_smithing = skill_lookup_key("SMITHING");
++    for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+     if (!(text = skillcfg_read(SKILLING_CFG))) {
+-        elog("Could not read %s. Mining and smithing are off.", SKILLING_CFG);
++        elog("Could not read %s. Gathering and production skills are off.", SKILLING_CFG);
+         return 1;
+     }
+     ok = parse_cfg(text);
+@@ -328,9 +475,9 @@
+ 
+     bzero(cnt, sizeof(cnt));
+     for (n = 0; n < nskdef; n++) cnt[skdef[n].type]++;
+-    xlog("Loaded %s: %d resources, %d rocks, %d tools, %d stations, %d recipes.", SKILLING_CFG,
+-         cnt[SKT_RESOURCE], cnt[SKT_ROCK], cnt[SKT_PICKAXE] + cnt[SKT_HAMMER], cnt[SKT_FURNACE] + cnt[SKT_ANVIL] + cnt[SKT_SUPPLY], cnt[SKT_SMELT] + cnt[SKT_SMITH]);
+-    if (sk_mining == -1 || sk_smithing == -1) elog("skills.cfg has no MINING or SMITHING skill. Those give no XP.");
++    xlog("Loaded %s: %d resources, %d rocks, %d trees, %d plants, %d tools, %d stations, %d recipes.", SKILLING_CFG,
++         cnt[SKT_RESOURCE], cnt[SKT_ROCK], cnt[SKT_TREE], cnt[SKT_PLANT], cnt[SKT_PICKAXE] + cnt[SKT_AXE] + cnt[SKT_HAMMER] + cnt[SKT_KNIFE],
++         cnt[SKT_FURNACE] + cnt[SKT_ANVIL] + cnt[SKT_BENCH] + cnt[SKT_SUPPLY], cnt[SKT_SMELT] + cnt[SKT_SMITH] + cnt[SKT_CRAFT]);
+     return 1;
+ }
+ 
+@@ -468,12 +615,12 @@
+     log_char(cn, LOG_SYSTEM, 0, "%s", it[in].description);
+ }
+ 
+-// ---------- mining ----------
++// ---------- gathering: rocks, trees, plants ----------
+ 
+ #define ROCK_COUNT(in) (*(unsigned int *)(it[in].drdata))
+ #define ROCK_STATE(in) (it[in].drdata[4]) // 0 = new, 1 = has ore, 2 = empty
+ 
+-// best pickaxe the character carries and may use, -1 = none; *need = lowest level of the ones carried
++// best tool of this type the character carries and may use, -1 = none; *need = lowest level of the ones carried
+ static int best_tool(int cn, int type, int lvl, int *need) {
+     int n, in, d, best = -1;
+ 
+@@ -499,7 +646,7 @@
+ }
+ 
+ static void rock_driver(int in, int cn) {
+-    int d, ore, lvl, pick, need, chance;
++    int d, ore, lvl, tool, need, chance, power = 1;
+ 
+     if ((d = def_by_item(in)) == -1) return;
+     ore = skdef[d].ore;
+@@ -510,7 +657,7 @@
+     }
+ 
+     if (ROCK_STATE(in) != 1) {
+-        log_char(cn, LOG_SYSTEM, 0, "There is no ore left in this rock.");
++        log_char(cn, LOG_SYSTEM, 0, "%s", node_empty_text(skdef[d].type));
+         player_driver_dig_off(cn);
+         return;
+     }
+@@ -519,17 +666,20 @@
+         player_driver_dig_off(cn);
+         return;
+     }
+-    lvl = skill_level(cn, sk_mining);
++    lvl = skill_level(cn, skdef[d].skill);
+     if (lvl < skdef[d].level) {
+-        log_char(cn, LOG_SYSTEM, 0, "You need Mining level %d to mine %s.", skdef[d].level, it[in].name);
++        log_char(cn, LOG_SYSTEM, 0, "You need %s level %d to %s %s.", skill_name(skdef[d].skill), skdef[d].level, node_verb(skdef[d].type), it[in].name);
+         player_driver_dig_off(cn);
+         return;
+     }
+-    if ((pick = best_tool(cn, SKT_PICKAXE, lvl, &need)) == -1) {
+-        if (need) log_char(cn, LOG_SYSTEM, 0, "You need Mining level %d to use your pickaxe.", need);
+-        else log_char(cn, LOG_SYSTEM, 0, "You need a pickaxe to mine here.");
+-        player_driver_dig_off(cn);
+-        return;
++    if (skdef[d].tool) {
++        if ((tool = best_tool(cn, skdef[d].tool, lvl, &need)) == -1) {
++            if (need) log_char(cn, LOG_SYSTEM, 0, "You need %s level %d to use your %s.", skill_name(skdef[d].skill), need, type_name[skdef[d].tool]);
++            else log_char(cn, LOG_SYSTEM, 0, "You need %s to %s this.", tool_text(skdef[d].tool), node_verb(skdef[d].type));
++            player_driver_dig_off(cn);
++            return;
++        }
++        power = skdef[tool].power;
+     }
+     if (!res_room(cn, ore)) {
+         log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
+@@ -537,7 +687,7 @@
+         return;
+     }
+ 
+-    chance = 35 + 2 * (lvl - skdef[d].level) + 10 * (skdef[pick].power - 1);
++    chance = skdef[d].chance + 2 * (lvl - skdef[d].level) + 10 * (power - 1);
+     chance = max(5, min(95, chance));
+     if (RANDOM(100) >= chance) { // no luck this swing, keep going
+         player_driver_dig_on(cn);
+@@ -549,8 +699,8 @@
+         player_driver_dig_off(cn);
+         return;
+     }
+-    log_char(cn, LOG_SYSTEM, 0, "You mine some %s.", item_template(skdef[ore].tmp)->name);
+-    give_xp(cn, sk_mining, skdef[d].xp);
++    log_char(cn, LOG_SYSTEM, 0, "You %s some %s.", node_verb(skdef[d].type), item_template(skdef[ore].tmp)->name);
++    give_xp(cn, skdef[d].skill, skdef[d].xp);
+ 
+     if (ROCK_COUNT(in) > 1) {
+         ROCK_COUNT(in)--;
+@@ -566,14 +716,36 @@
+     player_driver_dig_off(cn);
+ }
+ 
+-// ---------- smelting and smithing ----------
++// ---------- smelting, smithing and crafting ----------
++
++static int station_type(int rtype) {
++    switch (rtype) {
++    case SKT_SMELT: return SKT_FURNACE;
++    case SKT_SMITH: return SKT_ANVIL;
++    default: return SKT_BENCH;
++    }
++}
++
++static int recipe_type(int station) {
++    switch (station) {
++    case SKT_FURNACE: return SKT_SMELT;
++    case SKT_ANVIL: return SKT_SMITH;
++    default: return SKT_CRAFT;
++    }
++}
+ 
+-static int station_type(int recipe_type) {
+-    return recipe_type == SKT_SMELT ? SKT_FURNACE : SKT_ANVIL;
++static char *recipe_title(int rtype) {
++    switch (rtype) {
++    case SKT_SMELT: return "Smelting";
++    case SKT_SMITH: return "Smithing";
++    default: return "Crafting";
++    }
+ }
+ 
+-static int recipe_skill(void) {
+-    return sk_smithing;
++static int has_tool(int cn, int tool) {
++    int need;
++
++    return !tool || best_tool(cn, tool, 999, &need) != -1;
+ }
+ 
+ // how many the character could make right now from what they carry
+@@ -593,32 +765,34 @@
+ }
+ 
+ static void list_recipes(int cn, int rtype) {
+-    int r, lvl;
+-    char buf[256];
++    int r;
++    char buf[256], amount[16];
+ 
+-    lvl = skill_level(cn, recipe_skill());
+-    log_char(cn, LOG_SYSTEM, 0, "\260c3%s (your Smithing level is %d):", rtype == SKT_SMELT ? "Smelting" : "Smithing", lvl);
++    log_char(cn, LOG_SYSTEM, 0, "\260c3%s (your %s level is %d):", recipe_title(rtype), skill_name(type_skill[rtype]), skill_level(cn, type_skill[rtype]));
+     for (r = 0; r < nskdef; r++) {
+         if (skdef[r].type != rtype) continue;
+         need_text(r, buf);
+-        log_char(cn, LOG_SYSTEM, 0, "%s%s (level %d, %d XP): %s", skdef[r].level > lvl ? "\260c1" : "", skdef[r].name, skdef[r].level, skdef[r].xp, buf);
++        if (skdef[r].amount > 1) sprintf(amount, " x%d", skdef[r].amount);
++        else amount[0] = 0;
++        log_char(cn, LOG_SYSTEM, 0, "%s%s%s (level %d, %d XP): %s", skill_level(cn, skdef[r].skill) < skdef[r].level ? "\260c1" : "",
++                 skdef[r].name, amount, skdef[r].level, skdef[r].xp, buf);
+     }
+-    log_char(cn, LOG_SYSTEM, 0, "Use /%s <name> [count|all], or click the %s holding the material.", rtype == SKT_SMELT ? "smelt" : "smith", rtype == SKT_SMELT ? "furnace" : "anvil");
++    log_char(cn, LOG_SYSTEM, 0, "Use /%s <name> [count|all], or click the %s holding the material.", recipe_cmd(rtype), station_name(station_type(rtype)));
+ }
+ 
+ // makes up to cnt of recipe r; returns how many were made
+ static int make_recipe(int cn, int r, int cnt) {
+     struct skdef *d = skdef + r;
+-    int lvl, done = 0, failed = 0, m, in, need, fail, xp = 0;
++    int lvl, done = 0, failed = 0, m, in, fail, xp = 0;
+     char buf[256];
+ 
+-    lvl = skill_level(cn, recipe_skill());
++    lvl = skill_level(cn, d->skill);
+     if (lvl < d->level) {
+-        log_char(cn, LOG_SYSTEM, 0, "You need Smithing level %d to make %s.", d->level, d->name);
++        log_char(cn, LOG_SYSTEM, 0, "You need %s level %d to make %s.", skill_name(d->skill), d->level, d->name);
+         return 0;
+     }
+-    if (d->type == SKT_SMITH && best_tool(cn, SKT_HAMMER, lvl, &need) == -1) {
+-        log_char(cn, LOG_SYSTEM, 0, "You need a hammer to work the anvil.");
++    if (!has_tool(cn, d->tool)) {
++        log_char(cn, LOG_SYSTEM, 0, "You need %s to make %s.", tool_text(d->tool), d->name);
+         return 0;
+     }
+     if (can_make(cn, r) < 1) {
+@@ -640,7 +814,7 @@
+             continue;
+         }
+         if (d->make_res != -1) {
+-            if (!res_give(cn, d->make_res, 1)) break; // checked above, cannot happen
++            if (!res_give(cn, d->make_res, d->amount)) break; // checked above, cannot happen
+         } else {
+             if (!(in = create_item_nr(d->make_tmp))) break;
+             if (d->name[0]) cfgcopy(it[in].name, d->name, sizeof(it[in].name));
+@@ -650,15 +824,15 @@
+                 break;
+             }
+             ch[cn].flags |= CF_ITEMS;
+-            if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "made by %s", d->type == SKT_SMELT ? "smelting" : "smithing");
++            if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "made by %s", recipe_cmd(d->type));
+         }
+         done++;
+         xp += d->xp;
+     }
+ 
+-    if (done) log_char(cn, LOG_SYSTEM, 0, "You make %d %s.", done, d->name);
++    if (done) log_char(cn, LOG_SYSTEM, 0, "You make %d %s.", done * d->amount, d->name);
+     if (failed) log_char(cn, LOG_SYSTEM, 0, "%d %s failed and the materials were lost.", failed, failed == 1 ? "attempt" : "attempts");
+-    give_xp(cn, recipe_skill(), xp);
++    give_xp(cn, d->skill, xp);
+     return done;
+ }
+ 
+@@ -671,17 +845,26 @@
+     return p + len;
+ }
+ 
++// can this character's client show the window for this station?
++static int craft_window(int cn, int rtype) {
++    int ver = get_char_version(cn);
++
++    if (rtype == SKT_CRAFT) return ver >= CRAFT_BENCH_VERSION;
++    return ver >= CRAFT_CLIENT_VERSION;
++}
++
+ static void send_craft_list(int cn, int rtype, int open) {
+     static unsigned char buf[16384];
+-    int nr, r, p, n = 0, lvl, need, sprite, m, nmat = 0, mat[256];
++    int nr, r, p, n = 0, lvl, sprite, m, nmat = 0, mat[256], tool, g, k;
+     char text[256];
+ 
+-    if (!(nr = ch[cn].player) || get_player_version(nr) < CRAFT_CLIENT_VERSION) return;
++    if (!(nr = ch[cn].player) || !craft_window(cn, rtype)) return;
+ 
+-    lvl = skill_level(cn, recipe_skill());
++    lvl = skill_level(cn, type_skill[rtype]);
++    tool = default_tool(rtype);
+     buf[0] = SV_CRAFTLIST;
+-    buf[3] = rtype == SKT_SMELT ? 1 : 2;
+-    buf[4] = (open ? CRAFT_OPEN : 0) | (rtype == SKT_SMITH && best_tool(cn, SKT_HAMMER, lvl, &need) == -1 ? CRAFT_NOHAMMER : 0);
++    buf[3] = rtype == SKT_SMELT ? 1 : rtype == SKT_SMITH ? 2 : 3;
++    buf[4] = (open ? CRAFT_OPEN : 0) | (!has_tool(cn, tool) ? CRAFT_NOHAMMER : 0) | (rtype != SKT_SMELT ? CRAFT_GROUP : 0);
+     buf[5] = min(lvl, 255);
+     p = 7;
+     for (r = 0; r < nskdef && n < 255; r++) {
+@@ -693,16 +876,19 @@
+ 
+         buf[p++] = r;
+         buf[p++] = min(skdef[r].level, 255);
+-        buf[p++] = min(can_make(cn, r), 255);
++        buf[p++] = min(skill_level(cn, skdef[r].skill) < skdef[r].level && skdef[r].skill != type_skill[rtype] ? 0 : can_make(cn, r), 255);
+         *(unsigned short *)(buf + p) = min(skdef[r].xp, 65535);
+         p += 2;
+         *(unsigned int *)(buf + p) = sprite;
+         p += 4;
+-        if (skdef[r].nneed > 0) {
+-            buf[p++] = skdef[r].need[0];
+-            buf[p++] = min(skdef[r].needcnt[0], 255);
+-            for (m = 0; m < nmat && mat[m] != skdef[r].need[0]; m++);
+-            if (m == nmat) mat[nmat++] = skdef[r].need[0];
++        if ((g = skdef[r].group) == -1 && skdef[r].nneed > 0) g = skdef[r].need[0];
++        if (g != -1) {
++            for (k = 0, m = 0; m < skdef[r].nneed; m++)
++                if (skdef[r].need[m] == g) k = skdef[r].needcnt[m];
++            buf[p++] = g;
++            buf[p++] = min(k, 255);
++            for (m = 0; m < nmat && mat[m] != g; m++);
++            if (m == nmat) mat[nmat++] = g;
+         } else {
+             buf[p++] = 255;
+             buf[p++] = 0;
+@@ -722,6 +908,16 @@
+         p += 2;
+         p = craft_str(buf, p, item_template(skdef[mat[m]].tmp)->name, 39);
+     }
++
++    // protocol 9: the texts of the station, so the client needs no fixed list
++    if (get_player_version(nr) >= CRAFT_BENCH_VERSION) {
++        sprintf(text, "What would you like to %s?", rtype == SKT_SMELT ? "smelt" : "make");
++        p = craft_str(buf, p, text, 80);
++        p = craft_str(buf, p, recipe_cmd(rtype), 15);
++        p = craft_str(buf, p, skill_name(type_skill[rtype]), 39);
++        p = craft_str(buf, p, tool_text(tool), 39);
++        p = craft_str(buf, p, station_name(station_type(rtype)), 39);
++    }
+     *(unsigned short *)(buf + 1) = p;
+     psend(nr, (char *)buf, p);
+ }
+@@ -734,9 +930,10 @@
+         log_char(cn, LOG_SYSTEM, 0, "You cannot use that here.");
+         return;
+     }
+-    lvl = skill_level(cn, recipe_skill());
+     for (r = 0; r < nskdef; r++) {
+-        if (skdef[r].type != rtype || skdef[r].level > lvl) continue;
++        if (skdef[r].type != rtype) continue;
++        lvl = skill_level(cn, skdef[r].skill);
++        if (skdef[r].level > lvl || !has_tool(cn, skdef[r].tool)) continue;
+         for (m = 0; m < skdef[r].nneed; m++)
+             if (skdef[r].need[m] == res) break;
+         if (m == skdef[r].nneed || can_make(cn, r) < 1) continue;
+@@ -744,7 +941,7 @@
+     }
+     if (best == -1) {
+         log_char(cn, LOG_SYSTEM, 0, "You cannot make anything here from what you carry.");
+-        if (get_char_version(cn) >= CRAFT_CLIENT_VERSION) send_craft_list(cn, rtype, 1);
++        if (craft_window(cn, rtype)) send_craft_list(cn, rtype, 1);
+         else list_recipes(cn, rtype);
+         return;
+     }
+@@ -752,12 +949,23 @@
+     send_craft_list(cn, rtype, 0);
+ }
+ 
+-// gives each listed tool the character does not carry yet
++// gives each listed tool the character does not carry yet, and tops resources up to their count
+ static void supply_driver(int cn, int d) {
+     int m, n, in, t, have, given = 0;
+ 
+     for (m = 0; m < skdef[d].nneed; m++) {
+         t = skdef[d].need[m];
++        if (skdef[t].type == SKT_RESOURCE) {
++            if ((have = res_count(cn, t)) >= skdef[d].needcnt[m]) continue;
++            if (!res_room(cn, t)) {
++                log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
++                return;
++            }
++            if (!res_give(cn, t, skdef[d].needcnt[m] - have)) continue;
++            log_char(cn, LOG_SYSTEM, 0, "You take %d %s.", skdef[d].needcnt[m] - have, item_template(skdef[t].tmp)->name);
++            given++;
++            continue;
++        }
+         for (have = 0, n = 0; n <= INVENTORYSIZE && !have; n++) {
+             if (n >= 12 && n < 30) continue;
+             in = (n == INVENTORYSIZE) ? ch[cn].citem : ch[cn].item[n];
+@@ -775,7 +983,7 @@
+         log_char(cn, LOG_SYSTEM, 0, "You take a %s.", it[in].name);
+         given++;
+     }
+-    if (!given) log_char(cn, LOG_SYSTEM, 0, "You already have the tools from here.");
++    if (!given) log_char(cn, LOG_SYSTEM, 0, "You already have everything from here.");
+ }
+ 
+ static void station_driver(int in, int cn) {
+@@ -787,10 +995,10 @@
+         supply_driver(cn, d);
+         return;
+     }
+-    rtype = skdef[d].type == SKT_FURNACE ? SKT_SMELT : SKT_SMITH;
++    rtype = recipe_type(skdef[d].type);
+ 
+     if (ch[cn].citem) station_use_with(cn, rtype, ch[cn].citem);
+-    else if (get_char_version(cn) >= CRAFT_CLIENT_VERSION) send_craft_list(cn, rtype, 1);
++    else if (craft_window(cn, rtype)) send_craft_list(cn, rtype, 1);
+     else list_recipes(cn, rtype);
+ }
+ 
+@@ -811,7 +1019,7 @@
+     return 1;
+ }
+ 
+-// ---------- /smelt and /smith ----------
++// ---------- /smelt, /smith and /craft ----------
+ 
+ static int near_station(int cn, int type) {
+     int x, y, in, d;
+@@ -859,21 +1067,22 @@
+     return found;
+ }
+ 
+-// /smelt [what] [count|all], /smith [what] [count|all]; returns 1 if cmd was one of ours
++// /smelt, /smith, /craft [what] [count|all]; returns 1 if cmd was one of ours
+ int skilling_command(int cn, char *cmd, char *args) {
+     int rtype, r, cnt = 1, len;
+     char what[80], *last;
+ 
+     if (!strcasecmp(cmd, "smelt")) rtype = SKT_SMELT;
+     else if (!strcasecmp(cmd, "smith")) rtype = SKT_SMITH;
++    else if (!strcasecmp(cmd, "craft")) rtype = SKT_CRAFT;
+     else return 0;
+ 
+     if (!nskdef) {
+-        log_char(cn, LOG_SYSTEM, 0, "Smithing is not set up on this server.");
++        log_char(cn, LOG_SYSTEM, 0, "%s is not set up on this server.", recipe_title(rtype));
+         return 1;
+     }
+     if (!near_station(cn, station_type(rtype))) {
+-        log_char(cn, LOG_SYSTEM, 0, "You need to stand next to %s.", rtype == SKT_SMELT ? "a furnace" : "an anvil");
++        log_char(cn, LOG_SYSTEM, 0, "You need to stand next to %s.", station_text(station_type(rtype)));
+         return 1;
+     }
+ 
+diff -ruN a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 12:15:52.866311872 +0000
++++ b/src/skilling.h	2026-10-13 12:15:52.926679264 +0000
+@@ -1,5 +1,5 @@
+ /*
+- * Gathering and production skills (Mining -> Smithing first).
++ * Gathering and production skills (Mining -> Smithing, Woodcutting -> Crafting).
+  * Everything is defined in zones/generic/skilling.cfg, see the header of that file.
+  */
+ 
+@@ -7,15 +7,20 @@
+ 
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+-int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith
++int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
+ 
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+ // then per recipe: nr, level, can make (0-100), xp u16, sprite u32, material (first need, 255 none),
+ // material count, key, name, needs (strings: u8 length + text);
+ // then material count, per material: nr, carried u16, name. The client groups anvil recipes by material.
+-// The client makes things by sending "/smelt <key> <count>" or "/smith <key> <count>".
++// Protocol 9 (CRAFT_BENCH_VERSION) adds station 3 (workbench), flag CRAFT_GROUP and five strings after the
++// materials: window title, command, skill name, tool text ("a hammer"), station name. Older clients get no
++// workbench window (text list instead).
++// The client makes things by sending "/<command> <key> <count>" (smelt, smith, craft).
+ #define SV_CRAFTLIST 56
+ #define CRAFT_CLIENT_VERSION 7
+ #define CRAFT_OPEN 1 // open the window (else only refresh it if it shows this station)
+-#define CRAFT_NOHAMMER 2 // anvil: the character has no hammer
++#define CRAFT_NOHAMMER 2 // the character has no tool for this station (hammer, knife)
++#define CRAFT_GROUP 4 // protocol 9: group the recipes by their material (anvil, workbench)
++#define CRAFT_BENCH_VERSION 9
+diff -ruN a/zones/1/mining_camp.place b/zones/1/mining_camp.place
+--- a/zones/1/mining_camp.place	2026-10-13 12:19:42.645506024 +0000
++++ b/zones/1/mining_camp.place	2026-10-13 12:19:42.647503491 +0000
+@@ -1,5 +1,5 @@
+ # =====================================================================
+-# mining_camp.place - test mining camp east of the Cameron start
++# mining_camp.place - test mining and woodcutting camp east of the Cameron start
+ # =====================================================================
+ # .place files are read after the .map files of the area. They add things
+ # to the map without changing the .map: at="x,y" picks a tile (the tile must
+@@ -25,3 +25,31 @@
+ it=rock_iron
+ at="140,186"
+ it=rock_coal
++
++# ---- woodcutting and crafting, west of the mining camp ----
++at="122,181"
++it=sk_woodcutting_supplies
++at="125,181"
++it=sk_workbench
++
++at="119,184"
++it=sk_tree_normal
++at="121,184"
++it=sk_tree_normal
++at="123,184"
++it=sk_tree_oak
++at="125,184"
++it=sk_tree_oak
++at="127,184"
++it=sk_tree_willow
++at="119,187"
++it=sk_tree_maple
++at="121,187"
++it=sk_tree_yew
++
++at="119,178"
++it=sk_flax_plant
++at="121,178"
++it=sk_flax_plant
++at="123,178"
++it=sk_flax_plant
+diff -ruN a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 12:19:42.632764749 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 12:19:42.635106736 +0000
+@@ -1,42 +1,57 @@
+ # =====================================================================
+-# skilling.cfg - Mining and Smithing (Astonia rebuild)
++# skilling.cfg - Mining, Smithing, Woodcutting and Crafting (Astonia rebuild)
+ # =====================================================================
+ #
+ # Every block is   KEY:  setting=value ...  ;     (# starts a comment)
+ # Items are templates from zones/generic/skilling.itm (or any other .itm).
+ #
+-# type=resource   something that stacks in the inventory (ore, coal, bars)
+-#     id=  item=
+-# type=rock       a rock on the map, mined with a pickaxe
+-#     id=  item=  ore=RESOURCE  level= (Mining)  xp= (per ore)
+-#     ores= (ores before it is empty)  respawn= (seconds until it refills)
+-#     empty_sprite= (sprite while empty)
+-# type=pickaxe    id=  item=  level= (Mining to use it)  power= (1 = basic,
+-#                 each point is +10% chance per swing)
+-# type=hammer     id=  item=   (needed to use an anvil)
+-# type=furnace    id=  item=   (/smelt works within 3 tiles)
+-# type=anvil      id=  item=   (/smith works within 3 tiles)
+-# type=supply     id=  item=  give=TOOL ...  (click it to get the listed
+-#                 tools you do not carry yet)
+-# type=smelt      recipe at a furnace: make=RESOURCE  need=RESOURCE,count ...
+-#                 level= (Smithing)  xp= (per bar)  fail= (percent chance to
+-#                 lose the ores at that level, 2 less per level above)
+-# type=smith      recipe at an anvil: make=RESOURCE or item template
+-#                 need=RESOURCE,count ...  level=  xp=  name= description=
+-#                 (name and description of the made item, default: template's)
++# type=resource   something that stacks in the inventory (ore, bars, logs,
++#                 arrows ...)   id=  item=
++#
++# Gathering spots on the map (rock, tree, plant):
++#     id=  item=  ore=RESOURCE (what it gives)  level=  xp= (per item)
++#     ores= (items before it is empty)  respawn= (seconds until it refills)
++#     empty_sprite= (sprite while empty)  chance= (base chance per try,
++#     default 35)  skill=KEY|none  tool=pickaxe|axe|knife|hammer|none
++# type=rock       default skill=MINING tool=pickaxe
++# type=tree       default skill=WOODCUTTING tool=axe
++# type=plant      default skill=none tool=none (picked by hand)
++#
++# Tools: id=  item=  level= (skill level to use it)  power= (1 = basic,
++#        each point is +10% chance per try)
++# type=pickaxe  type=axe  type=hammer  type=knife
++#
++# Stations (the commands work within 3 tiles):
++# type=furnace    /smelt          type=anvil      /smith
++# type=bench      /craft (workbench)
++# type=supply     id=  item=  give=TOOL ... give=RESOURCE,count ...
++#                 (click it to get the listed tools you do not carry yet,
++#                 and resources up to count)
++#
++# Recipes: make=RESOURCE or item template  need=RESOURCE,count (up to 4)
++#     level=  xp= (per make)  amount= (how many of the resource one make
++#     gives, default 1)  fail= (percent chance to lose the materials at that
++#     level, 2 less per level above)  name= description= (of the made item,
++#     default: template's)  skill=KEY  tool=...|none  group=RESOURCE (tab in
++#     the client window, default: the first need=)
++# type=smelt      at a furnace, default skill=SMITHING tool=none
++# type=smith      at an anvil, default skill=SMITHING tool=hammer
++# type=craft      at a workbench, default skill=CRAFTING tool=knife
+ #
+ # id= is saved with the items players carry: NEVER change or reuse an id
+ # once players have the items. Ids must be unique over all blocks with item=.
+ # Recipes have no id, add or change them any time.
+ #
+-# Mining chance per swing: 35% + 2% per Mining level above the rock's level
+-# + 10% per pickaxe power above 1, from 5% to 95%.
++# Chance per try at a rock or tree: chance (35%) + 2% per level above the
++# spot's level + 10% per tool power above 1, from 5% to 95%.
+ #
+-# Players: click a rock to mine (repeats until the rock is empty or the
+-# inventory is full). Click ore in the inventory with an empty hand to split
+-# a stack, with the same ore in hand to join stacks. At a furnace or anvil
+-# type /smelt or /smith to see the recipes, "/smelt bronze bar 10",
+-# "/smith bronze dagger all", or click the furnace holding ore.
++# Players: click a rock, tree or plant (repeats until it is empty or the
++# inventory is full). Click a stack in the inventory with an empty hand to
++# split it, with the same thing in hand to join stacks. At a station type
++# /smelt, /smith or /craft to see the recipes, "/smelt bronze bar 10",
++# "/smith bronze dagger all", "/craft arrow shafts 5", or click the station
++# holding a material. Clients with protocol 6+ get a window instead (the
++# workbench window needs protocol 9).
+ 
+ # ---------- resources (ids 1-99) ----------
+ 
+@@ -514,3 +529,633 @@
+ level=35
+ xp=74
+ ;
++
++# =====================================================================
++# Woodcutting and Crafting
++# =====================================================================
++
++# ---------- resources (ids 30-99) ----------
++
++LOGS:
++type=resource
++id=30
++item=sk_logs_normal
++;
++
++OAK_LOGS:
++type=resource
++id=31
++item=sk_logs_oak
++;
++
++WILLOW_LOGS:
++type=resource
++id=32
++item=sk_logs_willow
++;
++
++MAPLE_LOGS:
++type=resource
++id=33
++item=sk_logs_maple
++;
++
++YEW_LOGS:
++type=resource
++id=34
++item=sk_logs_yew
++;
++
++WOOD_PLACEHOLDER_1_LOGS:
++type=resource
++id=35
++item=sk_logs_wood_placeholder_1
++;
++
++WOOD_PLACEHOLDER_2_LOGS:
++type=resource
++id=36
++item=sk_logs_wood_placeholder_2
++;
++
++FLAX:
++type=resource
++id=37
++item=sk_flax
++;
++
++BOWSTRING:
++type=resource
++id=38
++item=sk_bowstring
++;
++
++FEATHER:
++type=resource
++id=39
++item=sk_feather
++;
++
++ARROW_SHAFT:
++type=resource
++id=40
++item=sk_arrow_shaft
++;
++
++HEADLESS_ARROW:
++type=resource
++id=41
++item=sk_headless_arrow
++;
++
++BRONZE_ARROWTIPS:
++type=resource
++id=42
++item=sk_arrowtips_bronze
++;
++
++IRON_ARROWTIPS:
++type=resource
++id=43
++item=sk_arrowtips_iron
++;
++
++STEEL_ARROWTIPS:
++type=resource
++id=44
++item=sk_arrowtips_steel
++;
++
++BRONZE_ARROW:
++type=resource
++id=45
++item=sk_arrow_bronze
++;
++
++IRON_ARROW:
++type=resource
++id=46
++item=sk_arrow_iron
++;
++
++STEEL_ARROW:
++type=resource
++id=47
++item=sk_arrow_steel
++;
++
++SHORTBOW_U:
++type=resource
++id=60
++item=sk_shortbow_u
++;
++
++LONGBOW_U:
++type=resource
++id=61
++item=sk_longbow_u
++;
++
++OAK_SHORTBOW_U:
++type=resource
++id=62
++item=sk_oak_shortbow_u
++;
++
++OAK_LONGBOW_U:
++type=resource
++id=63
++item=sk_oak_longbow_u
++;
++
++WILLOW_SHORTBOW_U:
++type=resource
++id=64
++item=sk_willow_shortbow_u
++;
++
++WILLOW_LONGBOW_U:
++type=resource
++id=65
++item=sk_willow_longbow_u
++;
++
++MAPLE_SHORTBOW_U:
++type=resource
++id=66
++item=sk_maple_shortbow_u
++;
++
++MAPLE_LONGBOW_U:
++type=resource
++id=67
++item=sk_maple_longbow_u
++;
++
++YEW_SHORTBOW_U:
++type=resource
++id=68
++item=sk_yew_shortbow_u
++;
++
++YEW_LONGBOW_U:
++type=resource
++id=69
++item=sk_yew_longbow_u
++;
++
++# ---------- trees and plants (ids 110-199) ----------
++# Woodcutting chance per swing works like mining: 35% + 2% per level above
++# the tree + 10% per axe power above 1.
++
++TREE:
++type=tree
++id=110
++item=sk_tree_normal
++ore=LOGS
++level=1
++xp=15
++ores=1
++respawn=15
++empty_sprite=15372
++;
++
++OAK_TREE:
++type=tree
++id=111
++item=sk_tree_oak
++ore=OAK_LOGS
++level=15
++xp=25
++ores=4
++respawn=30
++empty_sprite=15372
++;
++
++WILLOW_TREE:
++type=tree
++id=112
++item=sk_tree_willow
++ore=WILLOW_LOGS
++level=30
++xp=40
++ores=6
++respawn=30
++empty_sprite=15372
++;
++
++MAPLE_TREE:
++type=tree
++id=113
++item=sk_tree_maple
++ore=MAPLE_LOGS
++level=45
++xp=60
++ores=6
++respawn=60
++empty_sprite=15372
++;
++
++YEW_TREE:
++type=tree
++id=114
++item=sk_tree_yew
++ore=YEW_LOGS
++level=60
++xp=100
++ores=8
++respawn=90
++empty_sprite=15372
++;
++
++WOOD_PLACEHOLDER_1_TREE:
++type=tree
++id=115
++item=sk_tree_wood_placeholder_1
++ore=WOOD_PLACEHOLDER_1_LOGS
++level=70
++xp=130
++ores=8
++respawn=120
++empty_sprite=15372
++;
++
++WOOD_PLACEHOLDER_2_TREE:
++type=tree
++id=116
++item=sk_tree_wood_placeholder_2
++ore=WOOD_PLACEHOLDER_2_LOGS
++level=80
++xp=170
++ores=8
++respawn=150
++empty_sprite=15372
++;
++
++# Flax needs no skill and no tool (skill=none, tool=none).
++
++FLAX_PLANT:
++type=plant
++id=130
++item=sk_flax_plant
++ore=FLAX
++skill=none
++tool=none
++chance=80
++ores=5
++respawn=20
++empty_sprite=11057
++;
++
++# ---------- tools and stations ----------
++
++BRONZE_AXE:
++type=axe
++id=220
++item=sk_axe_bronze
++level=1
++power=1
++;
++
++IRON_AXE:
++type=axe
++id=221
++item=sk_axe_iron
++level=5
++power=2
++;
++
++STEEL_AXE:
++type=axe
++id=222
++item=sk_axe_steel
++level=10
++power=3
++;
++
++KNIFE:
++type=knife
++id=230
++item=sk_craft_knife
++;
++
++WORKBENCH:
++type=bench
++id=253
++item=sk_workbench
++;
++
++# give=RESOURCE,count tops the player up to that many (placeholder until
++# feathers drop from monsters).
++
++WOODCUTTING_SUPPLIES:
++type=supply
++id=261
++item=sk_woodcutting_supplies
++give=BRONZE_AXE
++give=KNIFE
++give=FEATHER,30
++;
++
++# ---------- smithing: arrowtips and axes ----------
++
++SMITH_BRONZE_ARROWTIPS:
++type=smith
++make=BRONZE_ARROWTIPS
++amount=15
++need=BRONZE_BAR,1
++level=5
++xp=12
++;
++
++SMITH_IRON_ARROWTIPS:
++type=smith
++make=IRON_ARROWTIPS
++amount=15
++need=IRON_BAR,1
++level=20
++xp=25
++;
++
++SMITH_STEEL_ARROWTIPS:
++type=smith
++make=STEEL_ARROWTIPS
++amount=15
++need=STEEL_BAR,1
++level=35
++xp=37
++;
++
++SMITH_IRON_AXE:
++type=smith
++make=sk_axe_iron
++need=IRON_BAR,1
++level=16
++xp=25
++;
++
++SMITH_STEEL_AXE:
++type=smith
++make=sk_axe_steel
++need=STEEL_BAR,1
++level=31
++xp=37
++;
++
++# ---------- crafting (workbench, needs a knife unless tool=none) ----------
++# amount= is how many one make gives. group= is the tab the client window
++# lists the recipe under (default: its first need=).
++
++CRAFT_ARROW_SHAFTS:
++type=craft
++make=ARROW_SHAFT
++amount=15
++need=LOGS,1
++level=1
++xp=5
++;
++
++CRAFT_OAK_ARROW_SHAFTS:
++type=craft
++make=ARROW_SHAFT
++name="Arrow Shafts (Oak)"
++amount=30
++need=OAK_LOGS,1
++level=15
++xp=10
++;
++
++CRAFT_SHORTBOW_U:
++type=craft
++make=SHORTBOW_U
++need=LOGS,1
++level=5
++xp=5
++;
++
++CRAFT_LONGBOW_U:
++type=craft
++make=LONGBOW_U
++need=LOGS,1
++level=10
++xp=10
++;
++
++CRAFT_OAK_SHORTBOW_U:
++type=craft
++make=OAK_SHORTBOW_U
++need=OAK_LOGS,1
++level=20
++xp=16
++;
++
++CRAFT_OAK_LONGBOW_U:
++type=craft
++make=OAK_LONGBOW_U
++need=OAK_LOGS,1
++level=25
++xp=25
++;
++
++CRAFT_WILLOW_SHORTBOW_U:
++type=craft
++make=WILLOW_SHORTBOW_U
++need=WILLOW_LOGS,1
++level=35
++xp=33
++;
++
++CRAFT_WILLOW_LONGBOW_U:
++type=craft
++make=WILLOW_LONGBOW_U
++need=WILLOW_LOGS,1
++level=40
++xp=41
++;
++
++CRAFT_MAPLE_SHORTBOW_U:
++type=craft
++make=MAPLE_SHORTBOW_U
++need=MAPLE_LOGS,1
++level=50
++xp=50
++;
++
++CRAFT_MAPLE_LONGBOW_U:
++type=craft
++make=MAPLE_LONGBOW_U
++need=MAPLE_LOGS,1
++level=55
++xp=58
++;
++
++CRAFT_YEW_SHORTBOW_U:
++type=craft
++make=YEW_SHORTBOW_U
++need=YEW_LOGS,1
++level=65
++xp=67
++;
++
++CRAFT_YEW_LONGBOW_U:
++type=craft
++make=YEW_LONGBOW_U
++need=YEW_LOGS,1
++level=70
++xp=75
++;
++
++CRAFT_HEADLESS_ARROWS:
++type=craft
++make=HEADLESS_ARROW
++amount=15
++need=ARROW_SHAFT,15
++need=FEATHER,15
++tool=none
++group=HEADLESS_ARROW
++level=1
++xp=15
++;
++
++CRAFT_BRONZE_ARROWS:
++type=craft
++make=BRONZE_ARROW
++amount=15
++need=HEADLESS_ARROW,15
++need=BRONZE_ARROWTIPS,15
++tool=none
++level=1
++xp=20
++;
++
++CRAFT_IRON_ARROWS:
++type=craft
++make=IRON_ARROW
++amount=15
++need=HEADLESS_ARROW,15
++need=IRON_ARROWTIPS,15
++tool=none
++level=15
++xp=38
++;
++
++CRAFT_STEEL_ARROWS:
++type=craft
++make=STEEL_ARROW
++amount=15
++need=HEADLESS_ARROW,15
++need=STEEL_ARROWTIPS,15
++tool=none
++level=30
++xp=75
++;
++
++CRAFT_BOWSTRING:
++type=craft
++make=BOWSTRING
++need=FLAX,1
++tool=none
++group=BOWSTRING
++level=1
++xp=3
++;
++
++STRING_SHORTBOW:
++type=craft
++make=sk_shortbow
++need=BOWSTRING,1
++need=SHORTBOW_U,1
++tool=none
++level=5
++xp=5
++;
++
++STRING_LONGBOW:
++type=craft
++make=sk_longbow
++need=BOWSTRING,1
++need=LONGBOW_U,1
++tool=none
++level=10
++xp=10
++;
++
++STRING_OAK_SHORTBOW:
++type=craft
++make=sk_oak_shortbow
++need=BOWSTRING,1
++need=OAK_SHORTBOW_U,1
++tool=none
++level=20
++xp=16
++;
++
++STRING_OAK_LONGBOW:
++type=craft
++make=sk_oak_longbow
++need=BOWSTRING,1
++need=OAK_LONGBOW_U,1
++tool=none
++level=25
++xp=25
++;
++
++STRING_WILLOW_SHORTBOW:
++type=craft
++make=sk_willow_shortbow
++need=BOWSTRING,1
++need=WILLOW_SHORTBOW_U,1
++tool=none
++level=35
++xp=33
++;
++
++STRING_WILLOW_LONGBOW:
++type=craft
++make=sk_willow_longbow
++need=BOWSTRING,1
++need=WILLOW_LONGBOW_U,1
++tool=none
++level=40
++xp=41
++;
++
++STRING_MAPLE_SHORTBOW:
++type=craft
++make=sk_maple_shortbow
++need=BOWSTRING,1
++need=MAPLE_SHORTBOW_U,1
++tool=none
++level=50
++xp=50
++;
++
++STRING_MAPLE_LONGBOW:
++type=craft
++make=sk_maple_longbow
++need=BOWSTRING,1
++need=MAPLE_LONGBOW_U,1
++tool=none
++level=55
++xp=58
++;
++
++STRING_YEW_SHORTBOW:
++type=craft
++make=sk_yew_shortbow
++need=BOWSTRING,1
++need=YEW_SHORTBOW_U,1
++tool=none
++level=65
++xp=67
++;
++
++STRING_YEW_LONGBOW:
++type=craft
++make=sk_yew_longbow
++need=BOWSTRING,1
++need=YEW_LONGBOW_U,1
++tool=none
++level=70
++xp=75
++;
+diff -ruN a/zones/generic/skilling.itm b/zones/generic/skilling.itm
+--- a/zones/generic/skilling.itm	2026-10-13 12:19:42.636958639 +0000
++++ b/zones/generic/skilling.itm	2026-10-13 12:19:42.639074364 +0000
+@@ -1,5 +1,5 @@
+ # =====================================================================
+-# skilling.itm - items of Mining and Smithing
++# skilling.itm - items of Mining, Smithing, Woodcutting and Crafting
+ # =====================================================================
+ # Plain item templates. skilling.cfg says what each one is (rock, ore,
+ # tool ...) and the server sets their driver and item ID when it starts,
+@@ -266,3 +266,429 @@
+ value=0
+ flag=IF_MOVEBLOCK
+ ;
++
++# ---- Woodcutting: trees (placed on the map with zones/<area>/*.place) ----
++
++sk_tree_normal:
++name="Tree"
++description="A tree you can cut for logs."
++sprite=21414
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_oak:
++name="Oak Tree"
++description="A tree you can cut for oak logs."
++sprite=21415
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_willow:
++name="Willow Tree"
++description="A tree you can cut for willow logs."
++sprite=21412
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_maple:
++name="Maple Tree"
++description="A tree you can cut for maple logs."
++sprite=21416
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_yew:
++name="Yew Tree"
++description="A tree you can cut for yew logs."
++sprite=21418
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_wood_placeholder_1:
++name="Placeholder Tree 1"
++description="Placeholder tree. Rename me in skilling.itm."
++sprite=21420
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_tree_wood_placeholder_2:
++name="Placeholder Tree 2"
++description="Placeholder tree. Rename me in skilling.itm."
++sprite=21423
++value=0
++flag=IF_MOVEBLOCK
++;
++
++# ---- logs ----
++
++sk_logs_normal:
++name="Logs"
++description="1 Logs."
++sprite=15398
++value=1
++flag=IF_TAKE
++;
++
++sk_logs_oak:
++name="Oak Logs"
++description="1 Oak Logs."
++sprite=15398
++value=4
++flag=IF_TAKE
++;
++
++sk_logs_willow:
++name="Willow Logs"
++description="1 Willow Logs."
++sprite=15398
++value=7
++flag=IF_TAKE
++;
++
++sk_logs_maple:
++name="Maple Logs"
++description="1 Maple Logs."
++sprite=15399
++value=10
++flag=IF_TAKE
++;
++
++sk_logs_yew:
++name="Yew Logs"
++description="1 Yew Logs."
++sprite=15399
++value=13
++flag=IF_TAKE
++;
++
++sk_logs_wood_placeholder_1:
++name="Placeholder Logs 1"
++description="1 Placeholder Logs 1."
++sprite=15399
++value=16
++flag=IF_TAKE
++;
++
++sk_logs_wood_placeholder_2:
++name="Placeholder Logs 2"
++description="1 Placeholder Logs 2."
++sprite=15399
++value=19
++flag=IF_TAKE
++;
++
++# ---- Crafting materials ----
++
++sk_flax_plant:
++name="Flax"
++description="A flax plant. Pick it for flax."
++sprite=11040
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_flax:
++name="Flax"
++description="1 Flax."
++sprite=11063
++value=1
++flag=IF_TAKE
++;
++
++sk_bowstring:
++name="Bowstring"
++description="1 Bowstring."
++sprite=15119
++value=3
++flag=IF_TAKE
++;
++
++sk_feather:
++name="Feathers"
++description="1 Feathers."
++sprite=50002
++value=1
++flag=IF_TAKE
++;
++
++sk_arrow_shaft:
++name="Arrow Shafts"
++description="1 Arrow Shafts."
++sprite=15396
++value=1
++flag=IF_TAKE
++;
++
++sk_headless_arrow:
++name="Headless Arrows"
++description="1 Headless Arrows."
++sprite=15394
++value=1
++flag=IF_TAKE
++;
++
++sk_arrowtips_bronze:
++name="Bronze Arrowtips"
++description="1 Bronze Arrowtips."
++sprite=15113
++value=1
++flag=IF_TAKE
++;
++
++sk_arrowtips_iron:
++name="Iron Arrowtips"
++description="1 Iron Arrowtips."
++sprite=15113
++value=1
++flag=IF_TAKE
++;
++
++sk_arrowtips_steel:
++name="Steel Arrowtips"
++description="1 Steel Arrowtips."
++sprite=15113
++value=1
++flag=IF_TAKE
++;
++
++sk_arrow_bronze:
++name="Bronze Arrows"
++description="1 Bronze Arrows."
++sprite=11121
++value=2
++flag=IF_TAKE
++;
++
++sk_arrow_iron:
++name="Iron Arrows"
++description="1 Iron Arrows."
++sprite=11121
++value=2
++flag=IF_TAKE
++;
++
++sk_arrow_steel:
++name="Steel Arrows"
++description="1 Steel Arrows."
++sprite=11121
++value=2
++flag=IF_TAKE
++;
++
++# ---- bows (no ranged combat yet: they cannot be wielded) ----
++
++sk_shortbow_u:
++name="Unstrung Shortbow"
++description="1 Unstrung Shortbow."
++sprite=10405
++value=5
++flag=IF_TAKE
++;
++
++sk_shortbow:
++name="Shortbow"
++description="A shortbow. Bows cannot be used in combat yet."
++sprite=10403
++value=20
++flag=IF_TAKE
++;
++
++sk_longbow_u:
++name="Unstrung Longbow"
++description="1 Unstrung Longbow."
++sprite=10405
++value=5
++flag=IF_TAKE
++;
++
++sk_longbow:
++name="Longbow"
++description="A longbow. Bows cannot be used in combat yet."
++sprite=10403
++value=40
++flag=IF_TAKE
++;
++
++sk_oak_shortbow_u:
++name="Unstrung Oak Shortbow"
++description="1 Unstrung Oak Shortbow."
++sprite=10405
++value=15
++flag=IF_TAKE
++;
++
++sk_oak_shortbow:
++name="Oak Shortbow"
++description="A oak shortbow. Bows cannot be used in combat yet."
++sprite=10403
++value=60
++flag=IF_TAKE
++;
++
++sk_oak_longbow_u:
++name="Unstrung Oak Longbow"
++description="1 Unstrung Oak Longbow."
++sprite=10405
++value=15
++flag=IF_TAKE
++;
++
++sk_oak_longbow:
++name="Oak Longbow"
++description="A oak longbow. Bows cannot be used in combat yet."
++sprite=10403
++value=120
++flag=IF_TAKE
++;
++
++sk_willow_shortbow_u:
++name="Unstrung Willow Shortbow"
++description="1 Unstrung Willow Shortbow."
++sprite=10405
++value=37
++flag=IF_TAKE
++;
++
++sk_willow_shortbow:
++name="Willow Shortbow"
++description="A willow shortbow. Bows cannot be used in combat yet."
++sprite=10403
++value=150
++flag=IF_TAKE
++;
++
++sk_willow_longbow_u:
++name="Unstrung Willow Longbow"
++description="1 Unstrung Willow Longbow."
++sprite=10405
++value=37
++flag=IF_TAKE
++;
++
++sk_willow_longbow:
++name="Willow Longbow"
++description="A willow longbow. Bows cannot be used in combat yet."
++sprite=10403
++value=300
++flag=IF_TAKE
++;
++
++sk_maple_shortbow_u:
++name="Unstrung Maple Shortbow"
++description="1 Unstrung Maple Shortbow."
++sprite=10405
++value=100
++flag=IF_TAKE
++;
++
++sk_maple_shortbow:
++name="Maple Shortbow"
++description="A maple shortbow. Bows cannot be used in combat yet."
++sprite=10403
++value=400
++flag=IF_TAKE
++;
++
++sk_maple_longbow_u:
++name="Unstrung Maple Longbow"
++description="1 Unstrung Maple Longbow."
++sprite=10405
++value=100
++flag=IF_TAKE
++;
++
++sk_maple_longbow:
++name="Maple Longbow"
++description="A maple longbow. Bows cannot be used in combat yet."
++sprite=10403
++value=800
++flag=IF_TAKE
++;
++
++sk_yew_shortbow_u:
++name="Unstrung Yew Shortbow"
++description="1 Unstrung Yew Shortbow."
++sprite=10405
++value=250
++flag=IF_TAKE
++;
++
++sk_yew_shortbow:
++name="Yew Shortbow"
++description="A yew shortbow. Bows cannot be used in combat yet."
++sprite=10403
++value=1000
++flag=IF_TAKE
++;
++
++sk_yew_longbow_u:
++name="Unstrung Yew Longbow"
++description="1 Unstrung Yew Longbow."
++sprite=10405
++value=250
++flag=IF_TAKE
++;
++
++sk_yew_longbow:
++name="Yew Longbow"
++description="A yew longbow. Bows cannot be used in combat yet."
++sprite=10403
++value=2000
++flag=IF_TAKE
++;
++
++# ---- Woodcutting and Crafting tools and stations ----
++
++sk_axe_bronze:
++name="Bronze Axe"
++description="An axe with a bronze head."
++sprite=15359
++value=10
++flag=IF_TAKE
++;
++
++sk_axe_iron:
++name="Iron Axe"
++description="An axe with an iron head."
++sprite=15352
++value=40
++flag=IF_TAKE
++;
++
++sk_axe_steel:
++name="Steel Axe"
++description="An axe with a steel head."
++sprite=15353
++value=150
++flag=IF_TAKE
++;
++
++sk_craft_knife:
++name="Knife"
++description="A small knife for carving wood."
++sprite=11174
++value=5
++flag=IF_TAKE
++;
++
++sk_workbench:
++name="Workbench"
++description="A workbench for carving bows and arrows."
++sprite=21071
++value=0
++flag=IF_MOVEBLOCK
++;
++
++sk_woodcutting_supplies:
++name="Woodcutting Supplies"
++description="A chopping block with axes, knives and feathers. Take what you need."
++sprite=15374
++value=0
++flag=IF_MOVEBLOCK
++;
+diff -ruN a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 12:19:42.641625716 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 12:19:42.643834227 +0000
+@@ -27,8 +27,8 @@
+ #   FIRE/LIGHTNING dmg_xp, warcry -> WARCRY, buying/selling -> BARTER,
+ #   sneaking (stealth mode walk) -> STEALTH per step, resting while hurt ->
+ #   REGENERATE, resting with low mana -> MEDITATE (about once per second).
+-#   MINING (per ore) and SMITHING (per bar or item made) get their XP from
+-#   zones/generic/skilling.cfg. Not hooked yet: PERCEPTION, IMMUNITY.
++#   MINING, WOODCUTTING (per ore / log), SMITHING and CRAFTING (per thing
++#   made) get their XP from zones/generic/skilling.cfg. Not hooked yet: PERCEPTION, IMMUNITY.
+ #
+ # XP curve: level 2 needs xp_base XP, every further level needs xp_growth
+ # percent of the step before (80 / 110 -> level 99 needs about 9.1 million).
+@@ -437,6 +437,15 @@
+ description="Mine ore from rocks."
+ ;
+ 
++WOODCUTTING:
++id=52
++name="Woodcutting"
++group=gathering
++start=1
++max=99
++description="Cut logs from trees."
++;
++
+ # ---- production ----
+ SMITHING:
+ id=51
+@@ -446,3 +455,12 @@
+ max=99
+ description="Smelt ore into bars and forge bars into gear."
+ ;
++
++CRAFTING:
++id=53
++name="Crafting"
++group=production
++start=1
++max=99
++description="Make bows, arrows and bowstrings at a workbench."
++;

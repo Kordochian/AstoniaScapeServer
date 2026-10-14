@@ -1,0 +1,72 @@
+--- a/src/player.h	2026-10-12 23:10:44.144045034 +0000
++++ src/player.h	2026-10-12 23:10:55.244425583 +0000
+@@ -32,7 +32,9 @@
+ #define MAXEF 64
+ 
+ #ifdef NEED_PLAYER_STRUCT
+-#define OBUFSIZE (16384 * 2) // 32K should be fine for everything. protocol 3 can handle up to 64K if needed.
++#define OBUFSIZE (65536 * 4) // output ring buffer: room for a few full-size ticks
++#define TBUFSIZE 65535 // one tick; protocol 3+ sends its length as 16 bits
++#define MAP_TICK_BUDGET (TBUFSIZE - 16384) // player_map stops here and finishes next tick
+ 
+ #define MAXSCROLLBACK 8192
+ 
+@@ -62,8 +64,9 @@
+     int iptr, optr;
+ 
+     // pre-compress buffer
+-    unsigned char tbuf[OBUFSIZE];
++    unsigned char tbuf[TBUFSIZE];
+     int tptr;
++    int map_more; // player_map ran out of tick space; compare the whole map again next tick
+ 
+     // state of connection (NEW/LOGIN/PLAYING etc)
+     unsigned int state;
+--- a/src/io.c	2026-10-12 23:10:44.144065024 +0000
++++ src/io.c	2026-10-12 23:10:55.244719894 +0000
+@@ -281,7 +281,7 @@
+ void psend(int nr, char *buf, int len) {
+     if (!player[nr]) return;
+ 
+-    if (player[nr]->tptr + len >= OBUFSIZE) {
++    if (player[nr]->tptr + len >= TBUFSIZE) {
+         xlog("tptr overflow!");
+         kick_player(nr, NULL);
+         return;
+--- a/src/player.c	2026-10-12 23:10:44.143966427 +0000
++++ src/player.c	2026-10-12 23:10:55.245352257 +0000
+@@ -1656,6 +1656,13 @@
+         redo = 1;
+     }
+ 
++    // the last tick ran out of space before the whole map was sent: compare everything again
++    // (tiles the client already has send nothing), since the sector skip would miss the rest
++    if (player[nr]->map_more) {
++        player[nr]->map_more = 0;
++        redo = 1;
++    }
++
+     xoff = ch[cn].x - DIST(nr);
+     yoff = ch[cn].y - DIST(nr);
+ 
+@@ -1674,6 +1681,12 @@
+         for (x = xs; x <= xe; x++) {
+             c = x + y * (DIST(nr) * 2 + 1);
+ 
++            // a full 64-tile map does not fit in one tick: send the rest next tick
++            if (player[nr]->tptr > MAP_TICK_BUDGET) {
++                player[nr]->map_more = 1;
++                goto map_done;
++            }
++
+             if (!redo) {
+                 skipx = skipx_sector(x + xoff, y + yoff);
+                 if (skipx) {
+@@ -2061,6 +2074,7 @@
+         }
+     }
+ 
++map_done:
+     // transmit effects on client map
+     bzero(usedef, sizeof(usedef));
+ 

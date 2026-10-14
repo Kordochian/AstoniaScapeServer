@@ -1,0 +1,31 @@
+# =====================================================================
+# thornwood.itm - zone 40 "Thornwood Vale" (Thornwick village)
+# =====================================================================
+# Everything else on the map uses generic templates (mr_lights.itm,
+# grave.itm, depot.itm, skilling.itm).
+
+# Log cabin doors. z40_door_x sits in a wall that runs along x (north/south
+# walls), z40_door_y in a wall that runs along y (east/west walls).
+z40_door_x:
+name="Wooden Door"
+description="A sturdy door of rough planks."
+sprite=16055
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+;
+
+z40_door_y:
+name="Wooden Door"
+description="A sturdy door of rough planks."
+sprite=16057
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+;

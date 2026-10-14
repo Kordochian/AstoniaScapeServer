@@ -1,0 +1,56 @@
+Grolm_teleport1:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="5B009D00000001"   # x=91, y=157, a=38, quiet=1
+;
+
+Grolm_teleport2:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="63009F00000001"   # x=99, y=159, a=38, quiet=1
+;
+
+Grolm_teleport3:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="6B00AC00000001"   # x=107, y=172, a=38, quiet=1
+;
+
+#--up
+
+Grolm_teleport01:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="5500AB00000001"   # x=85, y=171, a=38, quiet=1
+;
+
+Grolm_teleport02:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="5E00AB00000001"   # x=94, y=171, a=38, quiet=1
+;
+
+Grolm_teleport03:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="6400AB00000001"   # x=100, y=171, a=38, quiet=1
+;
+

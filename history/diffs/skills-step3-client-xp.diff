@@ -1,0 +1,138 @@
+diff --git a/src/player.c b/src/player.c
+index f095b47..03a6eb8 100644
+--- a/src/player.c
++++ b/src/player.c
+@@ -54,8 +54,9 @@
+ #include "shrine.h"
+ #include "spell.h"
+ #include "config.h"
++#include "skillreg.h"
+ 
+-#define SERVER_PROTOCOL_VERSION 4 // 4: view range DISTVIEW instead of DISTMAX
++#define SERVER_PROTOCOL_VERSION 5 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c)
+ 
+ #define MAX_IDLE (TICKS * 30)
+ 
+@@ -323,6 +324,7 @@ static void read_login(int nr) {
+     // we use the old vendor field to transmit the client version
+     if ((magic & 0xffffff00) == 0x8fd46100) player[nr]->client_version = magic & 0xff;
+     else player[nr]->client_version = 0;
++    skill_client_reset(nr);
+ 
+     ch[cn].flags |= CF_UPDATE | CF_ITEMS | CF_PROF;
+     ch[cn].driver = 0;
+@@ -2523,6 +2525,7 @@ static void player_stats(int nr) {
+ 
+     if (!player_stats_setval(cn, nr)) return;
+     if (!player_stats_singles(cn, nr)) return;
++    if (!skill_client_update(cn, nr)) return;
+     if (!player_stats_items(cn, nr)) return;
+     if (!player_stats_prof(cn, nr)) return;
+ 
+diff --git a/src/skillreg.c b/src/skillreg.c
+index 66989b9..4206350 100644
+--- a/src/skillreg.c
++++ b/src/skillreg.c
+@@ -20,6 +20,8 @@
+ #include "mem.h"
+ #include "questlog.h"
+ #include "skillreg.h"
++#include "player.h"
++#include "io.h"
+ 
+ #define SKILLS_CFG "zones/generic/skills.cfg"
+ #define QUESTS_CFG "zones/generic/quests.cfg"
+@@ -651,3 +653,76 @@ int skills_show(int cn, char *filter) {
+     log_char(cn, LOG_SYSTEM, 0, "Combat level %d.", ch[cn].level);
+     return cnt;
+ }
++
++// ---- client skills panel (protocol 5) ----
++// The skill list is sent once per login, XP only when it changed, at most four times a second.
++
++static unsigned int sent_xp[MAXPLAYER][MAXSKILLS];
++static unsigned char sent_level[MAXPLAYER][MAXSKILLS];
++static char sent_defs[MAXPLAYER];
++
++void skill_client_reset(int nr) {
++    if (nr < 1 || nr >= MAXPLAYER) return;
++    bzero(sent_xp[nr], sizeof(sent_xp[nr]));
++    bzero(sent_level[nr], sizeof(sent_level[nr]));
++    sent_defs[nr] = 0;
++}
++
++static int skill_client_def(int nr, int id) {
++    struct skilldef *sd = skilldef + id;
++    unsigned char buf[256];
++    int nlen, dlen;
++
++    nlen = min((int)strlen(sd->name), 39);
++    dlen = min((int)strlen(sd->desc), 159);
++
++    buf[0] = SV_SKILLDEF;
++    buf[1] = id;
++    buf[2] = sd->group;
++    buf[3] = sd->value >= 0 ? sd->value : 255;
++    buf[4] = min(sd->max, 255);
++    buf[5] = nlen;
++    memcpy(buf + 6, sd->name, nlen);
++    buf[6 + nlen] = dlen;
++    memcpy(buf + 7 + nlen, sd->desc, dlen);
++    psend(nr, (char *)buf, 7 + nlen + dlen);
++
++    return get_player_version(nr) != 0; // 0: kicked while sending
++}
++
++// returns 0 if the player was kicked while sending
++int skill_client_update(int cn, int nr) {
++    unsigned char buf[16];
++    unsigned int xp;
++    int id, level;
++
++    if (nr < 1 || nr >= MAXPLAYER) return 1;
++    if (get_player_version(nr) < SKILL_CLIENT_VERSION) return 1; // also 0 if the player is gone
++
++    if (!sent_defs[nr]) {
++        for (id = 0; id < MAXSKILLS; id++) {
++            if (skilldef[id].used && !skill_client_def(nr, id)) return 0;
++        }
++        sent_defs[nr] = 1;
++    } else if (ticker % 6) return 1;
++
++    for (id = 0; id < MAXSKILLS; id++) {
++        if (!skilldef[id].used) continue;
++
++        level = min(skill_get_level(cn, id), 255);
++        xp = skill_get_xp(cn, id);
++        if (level == sent_level[nr][id] && xp == sent_xp[nr][id]) continue;
++        sent_level[nr][id] = level;
++        sent_xp[nr][id] = xp;
++
++        buf[0] = SV_SKILLXP;
++        buf[1] = id;
++        buf[2] = level;
++        *(unsigned int *)(buf + 3) = xp;
++        *(unsigned int *)(buf + 7) = level > 0 ? skill_xp_for_level(level) : 0;
++        *(unsigned int *)(buf + 11) = (level > 0 && level < skilldef[id].max) ? skill_xp_for_level(level + 1) : 0;
++        psend(nr, (char *)buf, 15);
++        if (!get_player_version(nr)) return 0;
++    }
++    return 1;
++}
+diff --git a/src/skillreg.h b/src/skillreg.h
+index e225f87..c21bc72 100644
+--- a/src/skillreg.h
++++ b/src/skillreg.h
+@@ -71,3 +71,12 @@ void skills_init_player(int cn);
+ int skills_show(int cn, char *filter);
+ int quests_load(void);
+ void skill_quest_reward(int cn, int qnr, int cnt);
++
++// client skills panel (protocol 5): skill list and per-skill XP for the client.
++// Both use free command numbers of client.h (were SV_RESERVED1/2).
++#define SV_SKILLDEF 54 // id, group, value slot (255 none), max, name len, name, desc len, desc
++#define SV_SKILLXP 55 // id, level, xp, xp at this level, xp at next level (0 = max), 15 bytes
++#define SKILL_CLIENT_VERSION 5 // clients from this protocol version on get the messages
++
++void skill_client_reset(int nr);
++int skill_client_update(int cn, int nr);

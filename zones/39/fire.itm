@@ -1,0 +1,101 @@
+flame_throw1_5s:
+name="Gargoyle Head"
+description="A gargoyle's head carved in stone."
+sprite=20703
+flag=IF_MOVEBLOCK
+driver=24
+arg="01030004"
+;
+
+
+#--facing backward
+flame_throw2_5s:
+name="Gargoyle Head"
+description="A gargoyle's head carved in stone."
+sprite=20712
+flag=IF_MOVEBLOCK
+driver=24
+arg="01010004"
+;
+
+flame_throw3_5s:
+name="Gargoyle Head"
+description="A gargoyle's head carved in stone."
+sprite=20721
+flag=IF_MOVEBLOCK
+driver=24
+arg="01070004"
+;
+
+
+#--facing backward 3 seconds
+flame_throw2_5sA:
+name="Gargoyle Head"
+description="A gargoyle's head carved in stone."
+sprite=20712
+flag=IF_MOVEBLOCK
+driver=24
+arg="01010004"
+;
+
+#--facing forward 3 seconds
+flame_throw4_5sB:
+name="Gargoyle Head"
+description="A gargoyle's head carved in stone."
+sprite=20730
+flag=IF_MOVEBLOCK
+driver=24
+arg="01050004"
+;
+
+fireball1:
+name="Fireball Trap"
+description="A strange magical artifact"
+sprite=50000
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+driver=15
+arg="7080FF64"
+;
+
+pond1:
+sprite=20793
+flag=IF_USE
+name="Pond"
+driver=28
+;
+
+pond2:
+sprite=20794
+flag=IF_USE
+flag=IF_MOVEBLOCK
+name="Pond"
+driver=28
+;
+
+pond3:
+sprite=20795
+flag=IF_USE
+flag=IF_MOVEBLOCK
+name="Pond"
+driver=28
+;
+
+pond4:
+sprite=20796
+flag=IF_USE
+flag=IF_MOVEBLOCK
+name="Pond"
+driver=28
+;
+
+fireball2:
+name="Fireball Trap"
+description="A strange magical artifact"
+sprite=50041
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+driver=15
+arg="8070FF64"
+;
+

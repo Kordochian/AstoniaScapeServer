@@ -1,0 +1,1582 @@
+diff --git a/.gitignore b/.gitignore
+index 6f43a01..baed721 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,3 +12,6 @@ v3.*
+ *.d
+ .serverkey
+ accman/var
++.wobj/
++*.exe
++windeps/
+diff --git a/Makefile.win b/Makefile.win
+new file mode 100644
+index 0000000..5e07a97
+--- /dev/null
++++ b/Makefile.win
+@@ -0,0 +1,140 @@
++# Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++#
++# Windows x64 build (Windows Server 2019 and later) with MinGW-w64.
++#
++#   MSYS2 (MINGW64 shell) on Windows:
++#     pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib \
++#               mingw-w64-x86_64-libmariadbclient mingw-w64-x86_64-argon2
++#     make -f Makefile.win WINLIBS="-lmariadb -lz -largon2"
++#
++#   Cross compiling from Linux:
++#     make -f Makefile.win CC=x86_64-w64-mingw32-gcc-posix WINDEPS=/path/to/win64
++#
++# Produces server35.exe, create_account.exe, create_character.exe,
++# chatserver.exe and the zone drivers in runtime/<area>/*.dll.
++#
++# The zone DLLs call back into the server, so server35.exe exports its symbols
++# and writes an import library (.wobj/libserver35.a) the DLLs link against.
++
++CC?=x86_64-w64-mingw32-gcc
++WINDEPS?=/mingw64
++DEBUG=-g
++WINDEFS=-D_WIN32_WINNT=0x0601 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DFD_SETSIZE=2048
++CFLAGS=-Wall -Wshadow -Wno-pointer-sign -Wno-maybe-uninitialized -O3 $(DEBUG) -fno-strict-aliasing $(WINDEFS) -include src/wincompat.h -iquote src -I$(WINDEPS)/include
++DEPFLAGS=-MMD -MP
++# static MariaDB Connector/C plus the Windows libraries it needs
++WINLIBS?=-L$(WINDEPS)/lib -L$(WINDEPS)/lib/mariadb -lmariadbclient -lzs -largon2
++SYSLIBS=-lws2_32 -lsecur32 -lcrypt32 -lbcrypt -lshlwapi -ladvapi32 -lwinmm
++LDFLAGS=$(DEBUG) -static -static-libgcc
++
++OBJS=.wobj/server.o .wobj/io.o .wobj/libload.o .wobj/tool.o .wobj/sleep.o \
++.wobj/log.o .wobj/create.o .wobj/notify.o .wobj/skill.o .wobj/do.o \
++.wobj/act.o .wobj/player.o .wobj/rdtsc.o .wobj/los.o .wobj/light.o \
++.wobj/map.o .wobj/path.o .wobj/error.o .wobj/talk.o .wobj/drdata.o \
++.wobj/death.o .wobj/database.o .wobj/see.o .wobj/drvlib.o .wobj/timer.o \
++.wobj/expire.o .wobj/effect.o .wobj/command.o .wobj/date.o \
++.wobj/container.o .wobj/store.o .wobj/mem.o .wobj/sector.o .wobj/chat.o \
++.wobj/statistics.o .wobj/mail.o .wobj/player_driver.o .wobj/clan.o \
++.wobj/lookup.o .wobj/area.o .wobj/task.o .wobj/depot.o \
++.wobj/prof.o .wobj/motd.o .wobj/ignore.o .wobj/tell.o .wobj/clanlog.o \
++.wobj/respawn.o .wobj/poison.o .wobj/swear.o .wobj/lab.o \
++.wobj/consistency.o .wobj/btrace.o .wobj/club.o .wobj/balance.o \
++.wobj/questlog.o .wobj/badip.o .wobj/escape.o .wobj/argon.o \
++.wobj/config.o .wobj/version.o
++
++DLLS= \
++runtime/generic/base.dll \
++runtime/generic/lostcon.dll \
++runtime/generic/merchant.dll \
++runtime/generic/simple_baddy.dll \
++runtime/generic/bank.dll \
++runtime/generic/clubmaster.dll \
++runtime/generic/book.dll \
++runtime/generic/transport.dll \
++runtime/generic/clanmaster.dll \
++runtime/generic/pents.dll \
++runtime/generic/alchemy.dll \
++runtime/generic/mine.dll \
++runtime/generic/professor.dll \
++runtime/generic/sidestory.dll \
++runtime/1/cameron.dll \
++runtime/1/shrike.dll \
++runtime/2/below_aston.dll \
++runtime/3/aston.dll \
++runtime/3/gatekeeper.dll \
++runtime/3/military.dll \
++runtime/3/arena.dll \
++runtime/5/sewers.dll \
++runtime/6/edemon.dll \
++runtime/8/fdemon.dll \
++runtime/10/ice.dll \
++runtime/11/palace.dll \
++runtime/14/random.dll \
++runtime/15/swamp.dll \
++runtime/16/forest.dll \
++runtime/17/exkordon.dll \
++runtime/18/bones.dll \
++runtime/19/nomad.dll \
++runtime/19/saltmine.dll \
++runtime/22/lab1.dll \
++runtime/22/lab2.dll \
++runtime/22/lab3.dll \
++runtime/22/lab4.dll \
++runtime/22/lab5.dll \
++runtime/23/strategy.dll \
++runtime/25/warped.dll \
++runtime/26/below_aston2.dll \
++runtime/29/brannington.dll \
++runtime/28/bran_forest.dll \
++runtime/33/tunnel.dll \
++runtime/36/caligar.dll \
++runtime/37/arkhata.dll \
++
++all: server35.exe create_character.exe create_account.exe chatserver.exe $(DLLS)
++
++-include $(wildcard .wobj/*.d)
++
++.wobj/%.o: src/%.c
++	@mkdir -p .wobj
++	$(CC) $(CFLAGS) $(DEPFLAGS) -o $@ -c $<
++
++.wobj/mem.o: src/mem.c
++	@mkdir -p .wobj
++	$(CC) $(CFLAGS) $(DEPFLAGS) -DDEBUG -o $@ -c $<
++
++# ------- Server -----
++
++.wobj/libserver35.a: server35.exe
++	@:
++
++server35.exe: $(OBJS)
++	$(CC) $(LDFLAGS) -o server35.exe $(OBJS) \
++		-Wl,--export-all-symbols -Wl,--exclude-libs,ALL -Wl,--out-implib,.wobj/libserver35.a \
++		$(WINLIBS) $(SYSLIBS) -lpthread -lm
++
++# ------- DLLs -------
++
++define DLL_RULE
++$(1): .wobj/$(basename $(notdir $(1))).o .wobj/libserver35.a
++	@mkdir -p $(dir $(1))
++	$$(CC) $$(LDFLAGS) -shared -o $(1) .wobj/$(basename $(notdir $(1))).o .wobj/libserver35.a -lm
++endef
++$(foreach d,$(DLLS),$(eval $(call DLL_RULE,$(d))))
++
++# ------- Tools -----
++
++chatserver.exe: .wobj/chatserver.o
++	$(CC) $(LDFLAGS) -o $@ $< -lws2_32
++
++create_character.exe: .wobj/create_character.o .wobj/config.o
++	$(CC) $(LDFLAGS) -o $@ $^ $(WINLIBS) $(SYSLIBS) -lpthread
++
++create_account.exe: .wobj/create_account.o .wobj/argon.o .wobj/config.o
++	$(CC) $(LDFLAGS) -o $@ $^ $(WINLIBS) $(SYSLIBS) -lpthread
++
++# ------- Helper -----
++
++clean:
++	@rm -rf .wobj server35.exe create_character.exe create_account.exe chatserver.exe $(DLLS)
++
++.PHONY: all clean
+diff --git a/WINDOWS.md b/WINDOWS.md
+new file mode 100644
+index 0000000..85e900d
+--- /dev/null
++++ b/WINDOWS.md
+@@ -0,0 +1,140 @@
++# Astonia 3.5 server on Windows Server 2019
++
++The server builds as a native 64-bit Windows program with MinGW-w64. It uses
++the same database and the same client protocol as the 64-bit Linux build, so
++both can share one database.
++
++## What you get
++
++| File | Purpose |
++|---|---|
++| `server35.exe` | the area server, one process per area |
++| `chatserver.exe` | relays chat between areas, start it first |
++| `create_account.exe` | `create_account.exe <email> <password>` |
++| `create_character.exe` | `create_character.exe <accountID> <name> <MW/FM/MWG...>` |
++| `runtime\<area>\*.dll` | the zone drivers (NPC and item scripts) |
++| `start.bat` / `stop.bat` | start or stop the chat server and all areas |
++
++No extra DLLs are needed. MariaDB Connector/C, zlib and argon2 are linked into
++the executables.
++
++You still need the `zones` folder (copy your own `zones` folder next to
++`server35.exe`) and a `motd.txt`.
++
++## Setting up the database
++
++1. Install MariaDB Server for Windows (the 10.11 or 11.4 LTS MSI from
++   mariadb.org). Set the root password to the one in `install\MYSQLPASSWD`,
++   or pick your own and pass it to every program with `-s dbpass=<password>`.
++   Leave "Enable access from remote machines" off.
++2. Open "Command Prompt (MariaDB)" in the server folder and create the tables:
++
++   ```
++   mysql -uroot -p < install\create_tables.sql
++   mysql -uroot -p merc35 < install\merc.sql
++   ```
++
++3. Create the message of the day: `echo Welcome to Astonia > motd.txt`
++
++The programs connect to `localhost` over TCP port 3306. Use `-s dbhost=...`,
++`-s dbuser=...`, `-s dbpass=...`, `-s dbname=...` or a config file
++(`-f <file>`) to change that. These options work on every program.
++
++## First start
++
++```
++server35.exe -a 1
++```
++
++Look for errors, then press Ctrl+C. The server saves everybody and prints
++"Clean shutdown". Then:
++
++```
++create_account.exe you@example.com yourpassword
++create_character.exe 1 Ishtar MWG
++start.bat
++```
++
++Connect with the client: `bin\moac -uIshtar -p<password> -d<server IP> -v35`
++
++## Starting and stopping
++
++* `start.bat` starts the chat server and every area, each in its own
++  minimized window. The window title shows the area, players online and load.
++* `stop.bat` creates `stop.flag`. Every area notices it within about a second,
++  saves all players and exits. The script waits for that, then stops the chat
++  server. `start.bat` removes a leftover `stop.flag`.
++* Ctrl+C in an area window also saves and exits cleanly.
++* Avoid closing an area window with the X button. Windows only gives the
++  program about 5 seconds before killing it, which may not be enough to save
++  everybody on a busy area.
++
++To start the server when Windows boots, create a Task Scheduler task with the
++trigger "At startup", the action `start.bat`, "Start in" set to the server
++folder, and "Run whether user is logged on or not".
++
++## Firewall
++
++Allow the game ports and keep the database and chat server private
++(PowerShell as Administrator):
++
++```
++New-NetFirewallRule -DisplayName "Astonia 3.5 areas" -Direction Inbound -Protocol TCP -LocalPort 27584-27777 -Action Allow
++```
++
++Ports 3306 (MariaDB) and 5554 (chat server) need no rule; Windows blocks them
++from outside by default.
++
++## Differences from Linux
++
++* `-d` (run in the background) is ignored. Use `start.bat` or Task Scheduler.
++* Windows locks a loaded DLL, so you cannot overwrite a zone driver while its
++  area is running. Rename the old DLL first, then copy the new one in; the
++  server should then load the new one as it does on Linux (not yet tested on
++  Windows). Stopping the area first always works.
++* Auto-complaints are not e-mailed (there is no sendmail).
++* Crash backtraces are not written to the log.
++* The memory report at shutdown leaves out the malloc details.
++
++## Building from source
++
++`build-windows.sh` downloads and builds zlib, argon2 and MariaDB Connector/C
++into `windeps\`, then builds the server. Run it once; later runs reuse
++`windeps\` and only rebuild the server.
++
++On Windows, install MSYS2 from msys2.org, open the "MSYS2 MINGW64" shell, go
++to the server folder (`cd /f/path/to/server`) and run:
++
++```
++pacman -S --needed git make mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
++./build-windows.sh
++```
++
++From Linux with the MinGW-w64 cross compiler:
++
++```
++CROSS=x86_64-w64-mingw32 ./build-windows.sh
++```
++
++MariaDB Connector/C 3.4 and newer refuse a MariaDB server without a TLS
++certificate by default ("SSL is required, but the server does not support
++it"). The server turns that check off when it connects (`src/dbconnect.h`), so
++a Connector/C you did not build yourself works too.
++
++The Linux `Makefile` and `Makefile.win` both write to `runtime\`, so run
++`make -f Makefile.win clean` before switching between them in one folder.
++
++## How the port works
++
++* `src/netcompat.h` maps the few socket calls that differ (close, ioctl,
++  errno) to Winsock, and `net_startup()` calls `WSAStartup`.
++* `src/wincompat.h` is force-included in the Windows build and supplies
++  `bzero` and `kill`.
++* `src/libload.c` loads zone drivers with `LoadLibrary`. `server35.exe`
++  exports its functions and data and writes an import library that every zone
++  DLL links against, which is what `-rdynamic` does on Linux.
++* `select()` cannot be used as a sleep on Windows, so the tick timer uses
++  `Sleep()` with a 1 ms timer resolution (`timeBeginPeriod(1)`).
++* The listening socket uses `SO_EXCLUSIVEADDRUSE` instead of `SO_REUSEADDR`;
++  on Windows `SO_REUSEADDR` would let two areas bind the same port.
++* All files are opened in binary mode, as on Linux.
+diff --git a/accman/AGENTS.md b/accman/AGENTS.md
+index 78dcd55..7ec847a 100644
+--- a/accman/AGENTS.md
++++ b/accman/AGENTS.md
+@@ -23,10 +23,12 @@
+ 
+ ## Character Rules
+ - Max 20 characters per account (creation disabled at 20).
++- Names: 3-35 letters, stored capitalized, checked against the `badname` table.
++- Delete: owner or admin, confirm by typing the name, only while offline (current_area = 0).
+  - Character creation requires a CSRF token and only allows posting to the user's own account unless admin.
+ 
+ ## Files
+ - App entry: `public/index.php`
+ - Config: `config.php`
+ - Install notes: `install.md`
+-- Service scripts: `start.sh`, `stop.sh`
++- Service scripts: `start.sh`, `stop.sh` (Linux), `start.bat`, `stop.bat` (Windows)
+diff --git a/accman/install.md b/accman/install.md
+index d7581cf..3c95a97 100644
+--- a/accman/install.md
++++ b/accman/install.md
+@@ -12,3 +12,27 @@
+ 
+ ## Stop
+ - Run `./stop.sh`
++
++## Windows (Windows Server 2019)
++1. Download PHP 8.3 "VS16 x64 Non Thread Safe" (zip) from https://windows.php.net/download/
++   and unzip it to `C:\php`. Add `C:\php` to the system PATH.
++2. Copy `C:\php\php.ini-production` to `C:\php\php.ini` and enable these lines
++   (remove the leading `;`):
++   ```
++   extension_dir = "ext"
++   extension=pdo_mysql
++   ```
++3. Edit `accman\config.php` with your database credentials.
++4. Run `accman\start.bat`, then open `http://localhost:8088`. `accman\stop.bat` stops it.
++5. To reach it from other machines, allow the port (PowerShell as Administrator):
++   `New-NetFirewallRule -DisplayName "Astonia account manager" -Direction Inbound -Protocol TCP -LocalPort 8088 -Action Allow`
++
++PHP's built-in server is fine for a small private server. For a public one, put it
++behind IIS or Apache with HTTPS, because passwords are sent in plain text otherwise.
++
++## Characters
++- Players can create up to 20 characters per account and delete their own.
++- Names are 3-35 letters, the same rule the game server uses, and names in the
++  `badname` table are refused.
++- Deleting asks for the character name to be typed again, and only works while the
++  character is offline.
+diff --git a/accman/public/index.php b/accman/public/index.php
+index 9e75c74..0dc320a 100644
+--- a/accman/public/index.php
++++ b/accman/public/index.php
+@@ -60,6 +60,9 @@ function require_csrf(string $page): void {
+     $posted = (string)($_POST['csrf_token'] ?? '');
+     $session = (string)($_SESSION['csrf_token'] ?? '');
+     if ($posted === '' || $session === '' || !hash_equals($session, $posted)) {
++        if (!in_array($page, ['login', 'account_create'], true)) {
++            $page = 'account';
++        }
+         redirect('?page=' . rawurlencode($page) . '&err=' . rawurlencode('Invalid session token.'));
+     }
+ }
+@@ -100,7 +103,7 @@ function class_label(int $flag): string {
+ }
+ 
+ function fmt_time(int $timestamp): string {
+-    if ($timestamp <= 0) {
++    if ($timestamp <= 1) { // new characters get login_time 1
+         return '-';
+     }
+     return date('Y-m-d H:i', $timestamp);
+@@ -201,8 +204,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+         if ($account_id <= 0 || $name === '') {
+             redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Name is required.'));
+         }
+-        if (strlen($name) < 2 || strlen($name) > 40) {
+-            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Name must be 2-40 characters.'));
++        // same rules the server uses for names: letters only, 3-35 long
++        if (!preg_match('/^[A-Za-z]{3,35}$/', $name)) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Name must be 3-35 letters (A-Z only).'));
++        }
++        $name = ucfirst(strtolower($name));
++
++        $stmt = $pdo->prepare('SELECT ID FROM badname WHERE bad = ?');
++        $stmt->execute([strtolower($name)]);
++        if ($stmt->fetch()) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('That name is not allowed.'));
+         }
+         if (!in_array($gender, ['M', 'F'], true) || !in_array($class, ['W', 'M'], true)) {
+             redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Invalid class or gender.'));
+@@ -256,6 +267,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+ 
+         redirect('?page=account&id=' . $account_id . '&msg=' . rawurlencode('Character created.'));
+     }
++
++    if ($page === 'character_delete') {
++        $account_id = (int)($_POST['account_id'] ?? 0);
++        $char_id = (int)($_POST['char_id'] ?? 0);
++        $confirm = trim((string)($_POST['confirm_name'] ?? ''));
++        $session_id = (int)($_SESSION['accman_user']['id'] ?? 0);
++
++        if ($session_id !== 1 && $account_id !== $session_id) {
++            redirect('?page=account&id=' . $session_id . '&err=' . rawurlencode('Access denied.'));
++        }
++
++        $stmt = $pdo->prepare('SELECT ID, name, current_area FROM chars WHERE ID = ? AND sID = ?');
++        $stmt->execute([$char_id, $account_id]);
++        $char = $stmt->fetch();
++        if (!$char) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Character not found.'));
++        }
++        if (strcasecmp($confirm, (string)$char['name']) !== 0) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Type the character name exactly to confirm deletion.'));
++        }
++        if ((int)$char['current_area'] !== 0) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode($char['name'] . ' is online. Log out first, then try again.'));
++        }
++
++        // current_area = 0 in the WHERE makes sure the player did not log in meanwhile
++        $stmt = $pdo->prepare('DELETE FROM chars WHERE ID = ? AND sID = ? AND current_area = 0');
++        $stmt->execute([$char_id, $account_id]);
++        if ($stmt->rowCount() !== 1) {
++            redirect('?page=account&id=' . $account_id . '&err=' . rawurlencode('Could not delete ' . $char['name'] . '. Is the character online?'));
++        }
++
++        redirect('?page=account&id=' . $account_id . '&msg=' . rawurlencode('Character ' . $char['name'] . ' deleted.'));
++    }
+ }
+ 
+ if ($page === 'logout' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+@@ -297,6 +341,8 @@ if ($pdo) {
+         form > div { margin-bottom: 10px; }
+         input[type="text"], input[type="email"], input[type="password"], select { width: 100%; max-width: 360px; padding: 6px; }
+         .small { color: #666; font-size: 0.9em; }
++        form.delete { display: flex; gap: 6px; margin: 0; }
++        form.delete input[type="text"] { width: 130px; padding: 4px; }
+     </style>
+ </head>
+ <body>
+@@ -437,13 +483,14 @@ if ($pdo) {
+                         <th>Class</th>
+                         <th>Created</th>
+                         <th>Last Login</th>
+-                        <th>Locked</th>
++                        <th>Status</th>
++                        <th>Delete</th>
+                     </tr>
+                 </thead>
+                 <tbody>
+                 <?php
+                     $stmt = $pdo->prepare(
+-                        'SELECT ID, name, class, creation_time, login_time, locked FROM chars ' .
++                        'SELECT ID, name, class, creation_time, login_time, locked, current_area FROM chars ' .
+                         'WHERE sID = ? ORDER BY ID DESC'
+                     );
+                     $stmt->execute([$account_id]);
+@@ -456,7 +503,20 @@ if ($pdo) {
+                         <td><?php echo h(class_label((int)$row['class'])); ?></td>
+                         <td><?php echo h(fmt_time((int)$row['creation_time'])); ?></td>
+                         <td><?php echo h(fmt_time((int)$row['login_time'])); ?></td>
+-                        <td><?php echo h($row['locked']); ?></td>
++                        <td><?php echo (int)$row['current_area'] !== 0 ? 'Online (area ' . h($row['current_area']) . ')' : 'Offline'; ?><?php echo $row['locked'] === 'Y' ? ', locked' : ''; ?></td>
++                        <td>
++                            <?php if ((int)$row['current_area'] === 0): ?>
++                            <form method="post" action="?page=character_delete" class="delete">
++                                <input type="hidden" name="csrf_token" value="<?php echo h(csrf_token()); ?>">
++                                <input type="hidden" name="account_id" value="<?php echo h($account_id); ?>">
++                                <input type="hidden" name="char_id" value="<?php echo h($row['ID']); ?>">
++                                <input type="text" name="confirm_name" placeholder="Type <?php echo h($row['name']); ?>" required>
++                                <button type="submit">Delete</button>
++                            </form>
++                            <?php else: ?>
++                            <span class="small">Log out first</span>
++                            <?php endif; ?>
++                        </td>
+                     </tr>
+                 <?php endforeach; ?>
+                 </tbody>
+@@ -478,7 +538,8 @@ if ($pdo) {
+                     <input type="hidden" name="account_id" value="<?php echo h($account_id); ?>">
+                     <div>
+                         <label>Name</label><br>
+-                        <input type="text" name="name" required>
++                        <input type="text" name="name" pattern="[A-Za-z]{3,35}" title="3-35 letters" required>
++                        <div class="small">3-35 letters, no spaces or numbers.</div>
+                     </div>
+                     <div>
+                         <label>Gender</label><br>
+diff --git a/accman/start.bat b/accman/start.bat
+new file mode 100644
+index 0000000..ce6612a
+--- /dev/null
++++ b/accman/start.bat
+@@ -0,0 +1,7 @@
++@echo off
++rem Starts the account manager on port 8088 with PHP's built-in web server.
++rem Needs PHP 8.1+ for Windows on the PATH (see install.md).
++cd /d "%~dp0"
++where php >nul 2>&1 || (echo PHP not found. See install.md. & exit /b 1)
++start "Astonia account manager" /min php -S 0.0.0.0:8088 -t public
++echo Started on http://localhost:8088
+diff --git a/accman/stop.bat b/accman/stop.bat
+new file mode 100644
+index 0000000..f4d99b6
+--- /dev/null
++++ b/accman/stop.bat
+@@ -0,0 +1,4 @@
++@echo off
++rem Stops the account manager started by start.bat.
++taskkill /FI "WINDOWTITLE eq Astonia account manager*" >nul 2>&1
++echo Done
+diff --git a/build-windows.sh b/build-windows.sh
+new file mode 100644
+index 0000000..f7df51f
+--- /dev/null
++++ b/build-windows.sh
+@@ -0,0 +1,104 @@
++#!/bin/sh
++#
++# Builds the Windows server from source, including the libraries it needs.
++#
++# On Windows: open the "MSYS2 MINGW64" shell, go to the server folder and run
++#
++#     pacman -S --needed git make mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
++#     ./build-windows.sh
++#
++# From Linux with the MinGW-w64 cross compiler:
++#
++#     CROSS=x86_64-w64-mingw32 ./build-windows.sh
++#
++# The libraries (zlib, argon2, MariaDB Connector/C) are downloaded into
++# windeps/src, built once and installed into windeps. They are linked into the
++# executables, so the finished server needs no extra DLLs. Delete windeps to
++# rebuild them.
++
++set -e
++
++ZLIB_TAG=v1.3.2
++ARGON2_TAG=20190702
++MARIADB_TAG=v3.4.9
++
++TOP=$(pwd)
++DEPS=$TOP/windeps
++JOBS=${JOBS:-4}
++
++if [ -n "$CROSS" ]; then
++    CC=${CC:-$CROSS-gcc-posix}
++    AR=${AR:-$CROSS-ar}
++    mkdir -p "$DEPS"
++    cat > "$DEPS/toolchain.cmake" <<EOF
++set(CMAKE_SYSTEM_NAME Windows)
++set(CMAKE_C_COMPILER $CC)
++set(CMAKE_RC_COMPILER $CROSS-windres)
++set(CMAKE_FIND_ROOT_PATH $DEPS)
++set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
++set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
++set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
++EOF
++    CMAKE_TC="-DCMAKE_TOOLCHAIN_FILE=$DEPS/toolchain.cmake"
++else
++    CC=${CC:-gcc}
++    AR=${AR:-ar}
++    CMAKE_TC=""
++fi
++
++fetch() { # fetch <name> <url> <tag>
++    if [ ! -d "$DEPS/src/$1" ]; then
++        git clone --depth 1 --branch "$3" "$2" "$DEPS/src/$1"
++    fi
++}
++
++mkdir -p "$DEPS/src" "$DEPS/include" "$DEPS/lib"
++
++if [ ! -f "$DEPS/lib/libzs.a" ]; then
++    echo "=== zlib $ZLIB_TAG"
++    fetch zlib https://github.com/madler/zlib "$ZLIB_TAG"
++    cmake -S "$DEPS/src/zlib" -B "$DEPS/src/zlib/build" -G Ninja $CMAKE_TC \
++        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS" \
++        -DZLIB_BUILD_TESTING=OFF -DZLIB_BUILD_SHARED=OFF
++    cmake --build "$DEPS/src/zlib/build" -j "$JOBS"
++    cmake --install "$DEPS/src/zlib/build"
++    # zlib names its static library libzs.a on Windows from 1.3.2 on, but
++    # libz.a in older versions
++    [ -f "$DEPS/lib/libzs.a" ] || cp "$DEPS/lib/libz.a" "$DEPS/lib/libzs.a"
++fi
++
++if [ ! -f "$DEPS/lib/libargon2.a" ]; then
++    echo "=== argon2 $ARGON2_TAG"
++    fetch argon2 https://github.com/P-H-C/phc-winner-argon2 "$ARGON2_TAG"
++    A=$DEPS/src/argon2
++    mkdir -p "$A/build"
++    for f in argon2 core encoding thread blake2/blake2b ref; do
++        $CC -O2 -I"$A/include" -I"$A/src" -c "$A/src/$f.c" -o "$A/build/$(basename $f).o"
++    done
++    rm -f "$DEPS/lib/libargon2.a"
++    $AR rcs "$DEPS/lib/libargon2.a" "$A"/build/*.o
++    cp "$A/include/argon2.h" "$DEPS/include/"
++fi
++
++if [ ! -f "$DEPS/lib/mariadb/libmariadbclient.a" ]; then
++    echo "=== MariaDB Connector/C $MARIADB_TAG"
++    fetch mariadb https://github.com/mariadb-corporation/mariadb-connector-c "$MARIADB_TAG"
++    # SCHANNEL is the TLS library built into Windows, so no OpenSSL is needed.
++    cmake -S "$DEPS/src/mariadb" -B "$DEPS/src/mariadb/build" -G Ninja $CMAKE_TC \
++        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS" \
++        -DWITH_SSL=SCHANNEL -DWITH_UNIT_TESTS=OFF -DWITH_CURL=OFF \
++        -DWITH_EXTERNAL_ZLIB=ON -DZLIB_INCLUDE_DIR="$DEPS/include" -DZLIB_LIBRARY="$DEPS/lib/libzs.a" \
++        -DCLIENT_PLUGIN_DIALOG=OFF -DCLIENT_PLUGIN_AUTH_GSSAPI_CLIENT=OFF \
++        -DDEFAULT_SSL_VERIFY_SERVER_CERT=OFF
++    cmake --build "$DEPS/src/mariadb/build" -j "$JOBS"
++    cmake --install "$DEPS/src/mariadb/build"
++    # the server includes <mysql/mysql.h>
++    rm -rf "$DEPS/include/mysql"
++    cp -r "$DEPS/include/mariadb" "$DEPS/include/mysql"
++fi
++
++echo "=== server"
++make -f Makefile.win -j "$JOBS" CC="$CC" WINDEPS="$DEPS"
++
++echo
++echo "Done: server35.exe chatserver.exe create_account.exe create_character.exe runtime/"
+diff --git a/src/argon.c b/src/argon.c
+index 0de7d3b..1000763 100644
+--- a/src/argon.c
++++ b/src/argon.c
+@@ -12,8 +12,13 @@
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <string.h>
++#ifdef _WIN32
++#include <windows.h>
++#include <bcrypt.h>
++#else
+ #include <sys/random.h>
+ #include <unistd.h>
++#endif
+ 
+ #include "argon.h"
+ 
+@@ -24,6 +29,13 @@
+ // -------------------------
+ // CSPRNG (Linux getrandom + /dev/urandom fallback)
+ // -------------------------
++#ifdef _WIN32
++static int csprng_bytes(void *buf, size_t len) {
++    // Windows: system CSPRNG
++    if (BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return -1;
++    return 0;
++}
++#else
+ static int csprng_bytes(void *buf, size_t len) {
+     uint8_t *p = (uint8_t *)buf;
+ 
+@@ -60,6 +72,7 @@ static int csprng_bytes(void *buf, size_t len) {
+     close(fd);
+     return 0;
+ }
++#endif
+ 
+ // Optional: add a "pepper" (server secret) to reduce damage if DB leaks.
+ // Keep pepper OUT of the DB (config file/env var). If you don't want it, set to NULL.
+diff --git a/src/btrace.c b/src/btrace.c
+index 0d26b5e..df4f549 100644
+--- a/src/btrace.c
++++ b/src/btrace.c
+@@ -3,11 +3,16 @@
+  */
+ 
+ #include <stdlib.h>
++#ifndef _WIN32
+ #include <execinfo.h>
++#endif
+ 
+ #include "log.h"
+ 
+ void btrace(char *msg) {
++#ifdef _WIN32
++    elog("%s: (no backtrace on Windows)", msg);
++#else
+     int i, n;
+     void *ba[128];
+     char **names;
+@@ -19,4 +24,5 @@ void btrace(char *msg) {
+         }
+         free(names);
+     }
++#endif
+ }
+diff --git a/src/chat.c b/src/chat.c
+index 38d0627..8d01710 100644
+--- a/src/chat.c
++++ b/src/chat.c
+@@ -6,8 +6,7 @@
+ #include <unistd.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <sys/ioctl.h>
+-#include <netdb.h>
++#include "netcompat.h"
+ #include <ctype.h>
+ #include <stdarg.h>
+ 
+@@ -88,6 +87,8 @@ static int connect_chat(void) {
+     he = gethostbyname(config_data.chathost);
+     if (!he) return 0;
+ 
++    if (!net_startup()) return 0;
++
+     sock = socket(PF_INET, SOCK_STREAM, 0);
+     if (sock == -1) return 0;
+ 
+@@ -95,7 +96,7 @@ static int connect_chat(void) {
+     addr.sin_port = htons(5554);
+     memcpy(&addr.sin_addr.s_addr, *he->h_addr_list, sizeof(addr.sin_addr.s_addr));
+ 
+-    ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
++    sock_ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
+ 
+     connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+ 
+@@ -268,7 +269,7 @@ static int send_chat(unsigned short channel, char *text) {
+         ret = send(sock, buf, len + 2, 0);
+         if (ret == -1) {
+             connected = 0;
+-            close(sock);
++            sock_close(sock);
+             state = 0;
+             elog("lost connection to chat server (send - %s)", text);
+         }
+@@ -330,7 +331,7 @@ void tick_chat(void) {
+             ret = select(sock + 1, &fd_in, &fd_out, &fd_err, &tv);
+ 
+             if (ret == -1) {
+-                close(sock);
++                sock_close(sock);
+                 state = 0;
+                 delay = 100;
+                 return;
+@@ -338,17 +339,18 @@ void tick_chat(void) {
+             if (ret == 0) return;
+ 
+             if (FD_ISSET(sock, &fd_err)) {
+-                close(sock);
++                sock_close(sock);
+                 delay = 100;
+                 state = 0;
+             } else if (FD_ISSET(sock, &fd_out)) {
+-                unsigned int sol, sollen = 4;
+-                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &sol, &sollen)) {
+-                    close(sock);
++                unsigned int sol;
++                socklen_t sollen = 4;
++                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (void *)&sol, &sollen)) {
++                    sock_close(sock);
+                     delay = 100;
+                     state = 0;
+                 } else if (sol) {
+-                    close(sock);
++                    sock_close(sock);
+                     delay = 100;
+                     state = 0;
+                 } else {
+diff --git a/src/chatserver.c b/src/chatserver.c
+index cbf4160..b32fe0e 100644
+--- a/src/chatserver.c
++++ b/src/chatserver.c
+@@ -9,8 +9,14 @@
+ #include <stdlib.h>
+ #include <signal.h>
+ #include <string.h>
+-#include <sys/ioctl.h>
+-#include <netinet/in.h>
++#include "netcompat.h"
++
++#ifdef _WIN32
++int net_startup(void) {
++    WSADATA wsa;
++    return WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
++}
++#endif
+ 
+ volatile int quit = 0;
+ 
+@@ -32,7 +38,7 @@ void sig_leave(int dummy) {
+ }
+ 
+ void kick_chat(int nr) {
+-    close(chat[nr].sock);
++    sock_close(chat[nr].sock);
+     chat[nr].sock = 0;
+ 
+     printf("kicked client %d\n", nr);
+@@ -45,12 +51,12 @@ void new_chat(int sock) {
+     nsock = accept(sock, (struct sockaddr *)&addr, &len);
+     if (nsock == -1) return;
+ 
+-    ioctl(nsock, FIONBIO, (u_long *)&one); // non-blocking mode
++    sock_ioctl(nsock, FIONBIO, (u_long *)&one); // non-blocking mode
+ 
+     for (n = 1; n < MAXCHAT; n++)
+         if (!chat[n].sock) break;
+     if (n == MAXCHAT) {
+-        close(nsock);
++        sock_close(nsock);
+         return;
+     }
+ 
+@@ -154,22 +160,32 @@ int main(void) {
+     fd_set in_fd, out_fd;
+     struct sockaddr_in addr;
+ 
++#ifndef _WIN32
+     // ignore the silly pipe errors and hangups:
+     signal(SIGPIPE, SIG_IGN);
+     signal(SIGHUP, SIG_IGN);
++#endif
+ 
+     // shutdown gracefully if possible:
++#ifndef _WIN32
+     signal(SIGQUIT, sig_leave);
++#endif
+     signal(SIGINT, sig_leave);
+     signal(SIGTERM, sig_leave);
+ 
+     chat = calloc(MAXCHAT, sizeof(struct chat));
+ 
++    if (!net_startup()) return 0;
++
+     sock = socket(PF_INET, SOCK_STREAM, 0);
+     if (sock == -1) return 0;
+ 
+-    ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
++    sock_ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
++#ifdef _WIN32
++    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(int));
++#else
+     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(int));
++#endif
+ 
+     addr.sin_family = AF_INET;
+     addr.sin_port = htons(5554);
+diff --git a/src/create.c b/src/create.c
+index 485c924..f8e51b4 100644
+--- a/src/create.c
++++ b/src/create.c
+@@ -10,7 +10,11 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <signal.h>
++#ifdef _WIN32
++#include <windows.h>
++#else
+ #include <sys/mman.h>
++#endif
+ #include <errno.h>
+ 
+ #include "server.h"
+@@ -58,10 +62,18 @@ void protect(void *mem, unsigned int size) {
+ 
+     xlog("protect: ptr=%p/%p, len=%X/%X, off=%d", ptr, mem, len, size, off);
+ 
++#ifdef _WIN32
++    DWORD old;
++    if (!VirtualProtect(ptr, len, PAGE_READONLY, &old)) {
++        elog("VirtualProtect failed: %lu", GetLastError());
++        exit(1);
++    }
++#else
+     if (mprotect(ptr, len, PROT_READ)) {
+         elog("mprotect failed: %d", errno);
+         exit(1);
+     }
++#endif
+ }
+ 
+ // zone load from definition file
+diff --git a/src/create_account.c b/src/create_account.c
+index 8e8f5f1..c5bc14c 100644
+--- a/src/create_account.c
++++ b/src/create_account.c
+@@ -9,6 +9,7 @@
+ #include <mysql/mysql.h>
+ #include "argon.h"
+ #include "config.h"
++#include "dbconnect.h"
+ 
+ static MYSQL mysql;
+ 
+@@ -17,7 +18,7 @@ int init_database(void) {
+     if (!mysql_init(&mysql)) return 0;
+ 
+     // try to login to database using config data
+-    if (!mysql_real_connect(&mysql, config_data.dbhost, config_data.dbuser, config_data.dbpass, config_data.dbname, 0, NULL, 0)) {
++    if (!db_connect(&mysql)) {
+         fprintf(stderr, "MySQL error: %s (%d)\n", mysql_error(&mysql), mysql_errno(&mysql));
+         return 0;
+     }
+diff --git a/src/create_character.c b/src/create_character.c
+index 4b93e4a..5f1346f 100644
+--- a/src/create_character.c
++++ b/src/create_character.c
+@@ -14,6 +14,7 @@
+ #undef EXTERNAL_PROGRAM
+ #include "drdata.h"
+ #include "config.h"
++#include "dbconnect.h"
+ 
+ static MYSQL mysql;
+ 
+@@ -22,7 +23,7 @@ int init_database(void) {
+     if (!mysql_init(&mysql)) return 0;
+ 
+     // try to login as root with our password
+-    if (!mysql_real_connect(&mysql, config_data.dbhost, config_data.dbuser, config_data.dbpass, config_data.dbname, 0, NULL, 0)) {
++    if (!db_connect(&mysql)) {
+         fprintf(stderr, "MySQL error: %s (%d)\n", mysql_error(&mysql), mysql_errno(&mysql));
+         return 0;
+     }
+diff --git a/src/database.c b/src/database.c
+index 4dab7cd..6a1fbdd 100644
+--- a/src/database.c
++++ b/src/database.c
+@@ -14,6 +14,7 @@
+ #include <math.h>
+ #include <stddef.h>
+ #include <stdlib.h>
++#include <unistd.h>
+ 
+ #include "server.h"
+ #include "log.h"
+@@ -42,6 +43,7 @@
+ #include "note.h"
+ #include "argon.h"
+ #include "config.h"
++#include "dbconnect.h"
+ 
+ #define DT_QUERY 1
+ #define DT_LOAD 2
+@@ -138,7 +140,8 @@ int mysql_query_con(MYSQL *my, const char *query) {
+             elog("lost connection to server: %s", mysql_error(my));
+             mysql_close(my);
+             sleep(1);
+-            mysql_real_connect(my, config_data.dbhost, config_data.dbuser, config_data.dbpass, config_data.dbname, 0, NULL, 0);
++            mysql_init(my);
++            db_connect(my);
+         } else if (err == ER_NO_SUCH_TABLE) { // is this still needed? We are logging in with the correct database set already?
+             elog("wrong database: %s", mysql_error(my));
+             sprintf(buf, "use %s", config_data.dbname);
+@@ -232,7 +235,7 @@ int init_database(void) {
+     }
+ 
+     // try to login as root with our password
+-    if (!mysql_real_connect(&mysql, config_data.dbhost, config_data.dbuser, config_data.dbpass, config_data.dbname, 0, NULL, 0)) {
++    if (!db_connect(&mysql)) {
+         xlog("Connect to database failed.");
+         return 0;
+     } else {
+@@ -1111,6 +1114,7 @@ static void db_thread_sub(void) {
+ }
+ 
+ void *db_thread(void *dummy) {
++#ifndef _WIN32
+     sigset_t set;
+     struct timeval tv;
+ 
+@@ -1121,6 +1125,7 @@ void *db_thread(void *dummy) {
+     sigdelset(&set, SIGBUS);
+     sigdelset(&set, SIGSTKFLT);
+     pthread_sigmask(SIG_BLOCK, &set, NULL);
++#endif
+ 
+     while (42) {
+         if (wquery) { // work to be done?
+@@ -1128,9 +1133,13 @@ void *db_thread(void *dummy) {
+         } else {
+             if (db_thread_quit) break;
+ 
++#ifdef _WIN32
++            usleep(10000); // select() without sockets fails at once on Windows
++#else
+             tv.tv_sec = 0;
+             tv.tv_usec = 10000;
+             select(0, NULL, NULL, NULL, &tv); // sleep for 1/100 of a second. wish i had yield(). or semaphores.
++#endif
+         }
+     }
+     xlog("DB thread exiting");
+diff --git a/src/dbconnect.h b/src/dbconnect.h
+new file mode 100644
+index 0000000..12b0e0b
+--- /dev/null
++++ b/src/dbconnect.h
+@@ -0,0 +1,25 @@
++/*
++ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Connects to the database with the settings from config_data.
++ * Include config.h before this file.
++ */
++
++#ifndef DBCONNECT_H
++#define DBCONNECT_H
++
++#include <mysql/mysql.h>
++
++// MariaDB Connector/C 3.4 and newer insist on a verified TLS connection by
++// default and refuse a MariaDB server without a certificate ("SSL is required,
++// but the server does not support it"). The database runs on the same machine
++// or a private network, so we turn that off. Must be called after mysql_init().
++static inline MYSQL *db_connect(MYSQL *my) {
++#ifdef MARIADB_PACKAGE_VERSION
++    my_bool off = 0;
++    mysql_optionsv(my, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &off);
++#endif
++    return mysql_real_connect(my, config_data.dbhost, config_data.dbuser, config_data.dbpass, config_data.dbname, 0, NULL, 0);
++}
++
++#endif
+diff --git a/src/io.c b/src/io.c
+index d48952f..a5d1137 100644
+--- a/src/io.c
++++ b/src/io.c
+@@ -3,9 +3,8 @@
+  */
+ 
+ #include <string.h>
+-#include <sys/ioctl.h>
+-#include <netdb.h>
+ #include <errno.h>
++#include "netcompat.h"
+ #include <zlib.h>
+ 
+ #include "server.h"
+@@ -31,7 +30,7 @@ void my_zlib_free(void *dummy, void *ptr) {
+ // close connection to player nr
+ void exit_player(int nr) {
+     online--;
+-    close(player[nr]->sock);
++    sock_close(player[nr]->sock);
+     deflateEnd(&player[nr]->zs);
+     xfree(player[nr]);
+     player[nr] = NULL;
+@@ -48,19 +47,19 @@ static void new_player(int sock) {
+     nsock = accept(sock, (struct sockaddr *)&addr, &len);
+     if (nsock == -1) return;
+ 
+-    ioctl(nsock, FIONBIO, (u_long *)&one); // non-blocking mode
++    sock_ioctl(nsock, FIONBIO, (u_long *)&one); // non-blocking mode
+ 
+     for (n = 1; n < MAXPLAYER; n++)
+         if (!player[n]) break;
+     if (n == MAXPLAYER) {
+-        close(nsock);
++        sock_close(nsock);
+         return;
+     }
+ 
+     player[n] = xcalloc(sizeof(struct player), IM_PLAYER);
+     mem_usage += sizeof(struct player);
+     if (player[n] == NULL) {
+-        close(nsock);
++        sock_close(nsock);
+         return;
+     }
+ 
+@@ -68,7 +67,7 @@ static void new_player(int sock) {
+     player[n]->zs.zfree = my_zlib_free;
+ 
+     if (deflateInit2(&player[n]->zs, 1, Z_DEFLATED, 14, 7, Z_DEFAULT_STRATEGY)) {
+-        close(nsock);
++        sock_close(nsock);
+         xfree(player[n]);
+         player[n] = NULL;
+         mem_usage -= sizeof(struct player);
+@@ -147,7 +146,7 @@ static void rec_player(int nr) {
+     len = recv(player[nr]->sock, (char *)player[nr]->inbuf + player[nr]->in_len, 256 - player[nr]->in_len, 0);
+ 
+     if (len < 1) { // receive failure
+-        if (errno != EWOULDBLOCK) {
++        if (sock_errno != SOCK_EWOULDBLOCK) {
+             kick_player(nr, NULL);
+         }
+         return;
+@@ -216,6 +215,21 @@ void io_loop(void) {
+     }
+ }
+ 
++#ifdef _WIN32
++int net_startup(void) {
++    static int started = 0;
++    WSADATA wsa;
++
++    if (started) return 1;
++    if (WSAStartup(MAKEWORD(2, 2), &wsa)) {
++        elog("WSAStartup failed: %d", WSAGetLastError());
++        return 0;
++    }
++    started = 1;
++    return 1;
++}
++#endif
++
+ int init_io(void) {
+     int sock, port;
+     u_long one = 1;
+@@ -229,11 +243,18 @@ int init_io(void) {
+ 
+     xlog("Size of player data: %d bytes", (int)(sizeof(struct player)));
+ 
++    if (!net_startup()) return 0;
++
+     sock = socket(PF_INET, SOCK_STREAM, 0);
+     if (sock == -1) return 0;
+ 
+-    ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
++    sock_ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
++#ifdef _WIN32
++    // on Windows SO_REUSEADDR would let two area servers share a port; we need the opposite
++    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(int));
++#else
+     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(int));
++#endif
+ 
+     for (port = 27584; port < 27684; port++) {
+         addr.sin_family = AF_INET;
+@@ -254,7 +275,7 @@ int init_io(void) {
+ }
+ 
+ void exit_io(void) {
+-    close(io_sock);
++    sock_close(io_sock);
+ }
+ 
+ void psend(int nr, char *buf, int len) {
+diff --git a/src/libload.c b/src/libload.c
+index 6bdc48b..0a79b69 100644
+--- a/src/libload.c
++++ b/src/libload.c
+@@ -8,7 +8,33 @@
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <dirent.h>
++#ifdef _WIN32
++#include <windows.h>
++
++// Minimal dlopen() family on top of LoadLibrary(). Zone DLLs resolve the
++// server's functions and globals through the import library of server35.exe.
++#define RTLD_NOW 0
++static void *dlopen(const char *name, int flags) {
++    (void)flags;
++    return (void *)LoadLibraryA(name);
++}
++static void *dlsym(void *handle, const char *sym) {
++    return (void *)GetProcAddress((HMODULE)handle, sym);
++}
++static int dlclose(void *handle) {
++    return FreeLibrary((HMODULE)handle) ? 0 : -1;
++}
++static const char *dlerror(void) {
++    static char buf[256];
++    DWORD err = GetLastError();
++
++    if (!FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, buf, sizeof(buf), NULL))
++        sprintf(buf, "error %lu", err);
++    return buf;
++}
++#else
+ #include <dlfcn.h>
++#endif
+ 
+ #include "server.h"
+ #include "tool.h"
+diff --git a/src/mail.c b/src/mail.c
+index c4c02b1..0b445f9 100644
+--- a/src/mail.c
++++ b/src/mail.c
+@@ -5,10 +5,20 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include "mail.h"
++
++#ifdef _WIN32
++
++// There is no /usr/lib/sendmail on Windows, so auto-complaints are not mailed.
++int sendmail(char *to, char *subject, char *body, char *from, int do_copy) {
++    return 0;
++}
++
++#else
++
+ #include <unistd.h>
+ #include <netinet/in.h>
+ #include <sys/wait.h>
+-#include "mail.h"
+ 
+ // we cannot do anything about write() failing
+ // so we don't have to check the return code
+@@ -64,3 +74,5 @@ int sendmail(char *to, char *subject, char *body, char *from, int do_copy) {
+ }
+ 
+ #pragma GCC diagnostic pop
++
++#endif
+diff --git a/src/netcompat.h b/src/netcompat.h
+new file mode 100644
+index 0000000..dc46f04
+--- /dev/null
++++ b/src/netcompat.h
+@@ -0,0 +1,47 @@
++/*
++ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Small socket compatibility layer so the same code builds on Linux and
++ * on Windows (Winsock2).
++ */
++
++#ifndef NETCOMPAT_H
++#define NETCOMPAT_H
++
++#ifdef _WIN32
++
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++
++#define sock_close(s)    closesocket(s)
++#define sock_ioctl(s, c, a) ioctlsocket((s), (c), (a))
++#define sock_errno       WSAGetLastError()
++#define SOCK_EWOULDBLOCK WSAEWOULDBLOCK
++
++// Winsock must be started before any socket call.
++int net_startup(void);
++
++#else
++
++#include <unistd.h>
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <sys/select.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <netdb.h>
++
++#define sock_close(s)    close(s)
++#define sock_ioctl(s, c, a) ioctl((s), (c), (a))
++#define sock_errno       errno
++#define SOCK_EWOULDBLOCK EWOULDBLOCK
++
++static inline int net_startup(void) {
++    return 1;
++}
++
++#endif
++
++#endif
+diff --git a/src/player.c b/src/player.c
+index 552d444..bf7adc3 100644
+--- a/src/player.c
++++ b/src/player.c
+@@ -7,7 +7,7 @@
+ #include <stdlib.h>
+ #include <time.h>
+ #include <zlib.h>
+-#include <netinet/in.h>
++#include "netcompat.h"
+ 
+ #include "server.h"
+ #include "log.h"
+diff --git a/src/server.c b/src/server.c
+index 3b01605..69652ab 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -11,12 +11,16 @@
+ #include <zlib.h>
+ #include <time.h>
+ 
++#include <unistd.h>
++
+ #ifdef _WIN32
+-#include <windows.h>
+ #include <winsock2.h>
++#include <windows.h>
++#include <mmsystem.h>
++#include <fcntl.h>
++#include <sys/stat.h>
+ #else
+ #include <malloc.h>
+-#include <unistd.h>
+ #endif
+ 
+ #include "server.h"
+@@ -92,6 +96,31 @@ void sig_leave(int dummy) {
+     quit = 1;
+ }
+ 
++#ifdef _WIN32
++static volatile int shutdown_complete = 0;
++
++// Windows has no SIGTERM. Closing the console window, logging off, a system
++// shutdown or Ctrl+Break all arrive here instead. We ask the game loop to quit
++// and hold the process open until it has saved everybody.
++static BOOL WINAPI console_handler(DWORD type) {
++    int n;
++
++    switch (type) {
++    case CTRL_C_EVENT:
++    case CTRL_BREAK_EVENT:
++        quit = 1;
++        return TRUE;
++    case CTRL_CLOSE_EVENT:
++    case CTRL_LOGOFF_EVENT:
++    case CTRL_SHUTDOWN_EVENT:
++        quit = 1;
++        for (n = 0; n < 300 && !shutdown_complete; n++) Sleep(100);
++        return TRUE;
++    }
++    return FALSE;
++}
++#endif
++
+ void sig_showprof(int dummy) {
+     showprof = 1;
+ }
+@@ -161,9 +190,7 @@ void show(char *ptr, int size) {
+ 
+ int main(int argc, char *args[]) {
+     int n;
+-#ifndef _WIN32
+     int c;
+-#endif
+     unsigned long long prof, start, end;
+ 
+ #ifndef _WIN32
+@@ -187,7 +214,11 @@ int main(int argc, char *args[]) {
+     // load serverkey from file first so it can be overwritten by config
+     config_file(".serverkey", 1);
+ 
+-   #ifndef _WIN32
++#ifdef _WIN32
++    // read and write all files as binary, the same as on Linux
++    _fmode = _O_BINARY;
++#endif
++
+     if (argc > 1) {
+         while (1) {
+             c = getopt(argc, args, "a:m:i:w:dhcs:f:e");
+@@ -225,7 +256,6 @@ int main(int argc, char *args[]) {
+             }
+         }
+     }
+-#endif
+ 
+     if (!areaID) areaID = 1;
+     if (!areaM) areaM = 1;
+@@ -361,7 +391,11 @@ int main(int argc, char *args[]) {
+     }
+ #endif
+ 
+-    #ifndef _WIN32
++#ifdef _WIN32
++    SetConsoleCtrlHandler(console_handler, TRUE);
++    // Sleep() in tick_sleep() needs 1ms timer resolution to hold 24 ticks per second
++    timeBeginPeriod(1);
++#else
+     // ignore the silly pipe errors:
+     signal(SIGPIPE, SIG_IGN);
+     // ignore sighup - just to be safe
+@@ -404,7 +438,23 @@ int main(int argc, char *args[]) {
+     prof_reset();
+ 
+     while (!quit) {
++#ifdef _WIN32
++        if (!(ticker & 31)) {
++            char title[128];
++            struct stat st;
++
++            // stop.bat creates this file to ask every area server to save and quit
++            if (!stat("stop.flag", &st)) {
++                xlog("Found stop.flag, shutting down");
++                quit = 1;
++            }
++
++            sprintf(title, "server35 -a %d -m %d -i %d # %d on %5.2f%% load %5.2fM memory", areaID, areaM, serverID, online, (10000 - server_idle) / 100.0, mem_usage / 1024.0 / 1024.0);
++            SetConsoleTitleA(title);
++        }
++#else
+         sprintf(args[0], "./server35 -a %2d -m %2d -i %d # %3d on %5.2f%% load %5.2fM memory (busy)", areaID, areaM, serverID, online, (10000 - server_idle) / 100.0, mem_usage / 1024.0 / 1024.0);
++#endif
+         start = rdtsc();
+         lock_server();
+ 
+@@ -484,7 +534,9 @@ int main(int argc, char *args[]) {
+ 
+         unlock_server();
+ 
++#ifndef _WIN32
+         sprintf(args[0], "./server35 -a %2d -m %2d -i %d # %3d on %5.2f%% load %5.2fM memory (idle)", areaID, areaM, serverID, online, (10000 - server_idle) / 100.0, mem_usage / 1024.0 / 1024.0);
++#endif
+ 
+         prof = prof_start(1);
+         tick_sleep(0);
+@@ -518,6 +570,11 @@ int main(int argc, char *args[]) {
+     exit_log();
+     exit_io();
+ 
++#ifdef _WIN32
++    timeEndPeriod(1);
++    shutdown_complete = 1;
++#endif
++
+     return 0;
+ }
+ 
+diff --git a/src/server.h b/src/server.h
+index cbaa4a1..b119608 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -4,6 +4,11 @@
+ 
+ #include <stdint.h>
+ #include <stdlib.h>
++#include <limits.h>
++
++#ifndef NAME_MAX
++#define NAME_MAX 255 // not defined by MinGW
++#endif
+ 
+ #define TICKS 24
+ #define TICK (1000000ull / TICKS)
+diff --git a/src/sleep.c b/src/sleep.c
+index 9d1f0fc..222e793 100644
+--- a/src/sleep.c
++++ b/src/sleep.c
+@@ -4,6 +4,11 @@
+ 
+ #include <sys/time.h>
+ #include <unistd.h>
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <sys/select.h>
++#endif
+ 
+ #include "server.h"
+ #include "log.h"
+@@ -44,9 +49,16 @@ void tick_sleep(int show) {
+ 
+     // sleep while idle
+     if (tosleep > 0) {
++#ifdef _WIN32
++        // select() without sockets fails at once on Windows. Sleep() is accurate
++        // to 1ms because main() calls timeBeginPeriod(1).
++        (void)tv;
++        Sleep((DWORD)(tosleep / 1000));
++#else
+         tv.tv_usec = tosleep % 1000000;
+         tv.tv_sec = tosleep / 1000000;
+         select(0, NULL, NULL, NULL, &tv);
++#endif
+ 
+         // how long did we REALLY sleep? (tends to be too long)
+         now = timel();
+diff --git a/src/wincompat.h b/src/wincompat.h
+new file mode 100644
+index 0000000..382d4b2
+--- /dev/null
++++ b/src/wincompat.h
+@@ -0,0 +1,23 @@
++/*
++ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
++ *
++ * Force-included into every file of the Windows build (see Makefile.win).
++ * Supplies the few POSIX bits MinGW-w64 does not have.
++ */
++
++#ifndef WINCOMPAT_H
++#define WINCOMPAT_H
++
++#ifdef _WIN32
++
++#include <string.h>
++#include <signal.h>
++
++#define bzero(ptr, len) memset((ptr), 0, (len))
++
++// the server uses kill(getpid(), 11) to crash on purpose
++#define kill(pid, sig) raise(sig)
++
++#endif
++
++#endif
+diff --git a/start.bat b/start.bat
+new file mode 100644
+index 0000000..43ca2d8
+--- /dev/null
++++ b/start.bat
+@@ -0,0 +1,54 @@
++@echo off
++rem Starts the chat server and every area of Astonia 3.5 on Windows.
++rem Each area runs in its own minimized console window. Use stop.bat to stop them.
++cd /d "%~dp0"
++
++if exist stop.flag del stop.flag
++
++rem Chatserver needs to run first
++start "Astonia chatserver" /min chatserver.exe
++timeout /t 1 /nobreak >nul
++
++call :area 1  "Cameron"
++call :area 2  "Below Aston"
++call :area 3  "Aston"
++call :area 4  "Earth Pents"
++call :area 5  "Aston Sewers"
++call :area 6  "Earth Underground"
++call :area 7  "Fire Pents"
++call :area 8  "Fire Underground"
++call :area 9  "Ice Pents"
++call :area 10 "Ice Underground"
++call :area 11 "Ice Palace"
++call :area 12 "Mines"
++call :area 13 "Clan Halls"
++call :area 14 "Random Dungeons"
++call :area 15 "Swamps"
++call :area 16 "Exkordon Forest"
++call :area 17 "Exkordon"
++call :area 18 "Bone Tower"
++call :area 19 "Nomad Plains"
++rem 20-21 empty
++call :area 22 "Labs"
++call :area 23 "Ice Army Caves 1"
++call :area 24 "Ice Army Caves 2"
++call :area 25 "Rodney's Warped World"
++call :area 26 "Below Aston 2"
++rem 27 empty
++call :area 28 "Brannington Forest + Robbers"
++call :area 29 "Brannington"
++call :area 30 "Clan Spawners"
++rem 31-32 empty
++call :area 33 "Long Tunnels"
++rem 34-35 empty
++call :area 36 "Caligar"
++call :area 37 "Arkhata"
++
++echo Done
++goto :eof
++
++:area
++echo area %1 %~2
++start "Astonia area %1 - %~2" /min server35.exe -a %1
++timeout /t 1 /nobreak >nul
++goto :eof
+diff --git a/stop.bat b/stop.bat
+new file mode 100644
+index 0000000..74c06f7
+--- /dev/null
++++ b/stop.bat
+@@ -0,0 +1,18 @@
++@echo off
++rem Asks every area server to save all players and shut down, then stops the chat server.
++cd /d "%~dp0"
++
++echo. > stop.flag
++echo Waiting for the area servers to save and exit...
++
++:wait
++tasklist /FI "IMAGENAME eq server35.exe" 2>nul | find /I "server35.exe" >nul
++if not errorlevel 1 (
++    timeout /t 1 /nobreak >nul
++    goto wait
++)
++
++taskkill /IM chatserver.exe >nul 2>&1
++taskkill /F /IM chatserver.exe >nul 2>&1
++del stop.flag
++echo Done

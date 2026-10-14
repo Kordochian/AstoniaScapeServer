@@ -1,0 +1,6 @@
+#!/bin/sh
+
+pkill chatserver
+pkill server35
+
+echo Done

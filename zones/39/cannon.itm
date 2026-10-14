@@ -1,0 +1,185 @@
+#----------------------------------------#
+# Cannon Loaders and Cannon of section 0 #
+#----------------------------------------#
+
+Cannon_Loader_00a:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="000000"      # Section 0 (0x00), loader 0 (0x00) power 0 (0x00)
+;
+
+Cannon_Loader_00b:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="000100"      # Section 0 (0x00), loader 1 (0x01) power 0 (0x00)
+;
+
+Cannon_Loader_00c:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="000200"      # Section 0 (0x00), loader 2 (0x02) power 0 (0x00)
+;
+
+Cannon_fire_00:
+name="Cannon"
+description="Fires incredibly powerful ancient magic."
+sprite=14380
+flag=IF_MOVEBLOCK
+flag=IF_USE
+mod_index=V_LIGHT
+mod_value=255
+driver=5
+arg="001E"    # section 0 (0x00), strength 30 (0x1E)
+;
+
+#----------------------------------------#
+# Cannon Loaders and Cannon of section 1 #
+#----------------------------------------#
+
+Cannon_Loader_01a:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="010000"      # Section 1 (0x01), loader 0 (0x00) power 0 (0x00)
+;
+
+Cannon_Loader_01b:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="010100"      # Section 1 (0x01), loader 1 (0x01) power 0 (0x00)
+;
+
+Cannon_Loader_01c:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="010200"      # Section 1 (0x01), loader 2 (0x02) power 0 (0x00)
+;
+
+Cannon_fire_01:
+name="Cannon"
+description="Fires incredibly powerful ancient magic."
+sprite=14380
+flag=IF_MOVEBLOCK
+flag=IF_USE
+mod_index=V_LIGHT
+mod_value=255
+driver=5
+arg="011E"    # section 1 (0x01), strength 30 (0x1E)
+;
+
+
+#----------------------------------------#
+# Cannon Loaders and Cannon of section 2 #
+#----------------------------------------#
+
+Cannon_Loader_02a:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="020000"      # Section 2 (0x02), loader 0 (0x00) power 0 (0x00)
+;
+
+Cannon_Loader_02b:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="020100"      # Section 2 (0x02), loader 1 (0x01) power 0 (0x00)
+;
+
+Cannon_Loader_02c:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="020200"      # Section 2 (0x02), loader 2 (0x02) power 0 (0x00)
+;
+
+Cannon_fire_02:
+name="Cannon"
+description="Fires incredibly powerful ancient magic."
+sprite=14380
+flag=IF_MOVEBLOCK
+flag=IF_USE
+mod_index=V_LIGHT
+mod_value=255
+driver=5
+arg="021E"    # section 2 (0x02), strength 30 (0x1E)
+;
+
+
+#----------------------------------------#
+# Cannon Loaders and Cannon of section 3 #
+#----------------------------------------#
+
+Cannon_Loader_03a:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="030000"      # Section 3 (0x03), loader 0 (0x00) power 0 (0x00)
+;
+
+Cannon_Loader_03b:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="030100"      # Section 3 (0x03), loader 1 (0x01) power 0 (0x00)
+;
+
+Cannon_Loader_03c:
+name="Loader"
+description="You see directions on the side: Load Jewel Here."
+sprite=14234    #50466
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=5
+arg="030200"      # Section 3 (0x03), loader 2 (0x02) power 0 (0x00)
+;
+
+Cannon_fire_03:
+name="Cannon"
+description="Fires incredibly powerful ancient magic."
+sprite=14380
+flag=IF_MOVEBLOCK
+flag=IF_USE
+mod_index=V_LIGHT
+mod_value=255
+driver=5
+arg="031E"    # section 3 (0x03), strength 30 (0x1E)
+;

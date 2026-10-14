@@ -1,0 +1,1985 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 20:45:52.166413325 +0000
++++ b/src/act.c	2026-10-13 20:45:52.167839285 +0000
+@@ -377,8 +377,10 @@
+                         dam / 1000.0);
+ 
+     // skill XP: the attacker's weapon skill gets XP for the damage done (in hurt()),
+-    // the defender gets Parry XP for every attack that misses
++    // the defender gets Parry XP for every attack that misses, and Armor Class XP for every hit
++    // taken while wearing armour (step 15)
+     if (!dam && (ch[co].flags & CF_PLAYER)) skill_used(co, skill_for_value(V_PARRY));
++    if (dam && (ch[co].flags & CF_PLAYER) && ch[co].value[0][V_ARMOR] > 0) skill_used(co, skill_for_value(V_ARMORSKILL));
+ 
+     skill_xp_context = skill_weapon_id(cn);
+     hurt(co, dam, cn, ATTACK_DIV, combat_armor_soak, 90);
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 20:45:52.156138278 +0000
++++ b/src/balance.c	2026-10-13 21:10:00.802841195 +0000
+@@ -50,15 +50,66 @@
+ // ---------- RuneScape-style melee (step 14, George 2026-10-13) ----------
+ // Effective levels: accuracy = (weapon skill + Attack) / 2, strength = (weapon skill + STR) / 2,
+ // defence = (weapon skill + Parry) / 2, surround = (weapon skill + Surround) / 2, each plus
+-// combat_tactics_boost percent of Tactics. Gear adds Melee Accuracy / Strength / Defence bonuses.
++// combat_tactics_boost percent of Tactics, then raised by Body Control (step 15). Gear adds
++// Melee Accuracy / Strength / Defence bonuses.
+ 
+ int combat_tactics_boost = 10, combat_min_hit = 20, combat_armor_soak = 75, combat_magic_damage_cap = 50;
++int combat_body_control = 3, combat_clarity = 3; // step 15: tenths of a percent per skill level
++int combat_armor_class_percent = 5; // tenths of a percent per Armor Class level on worn armour's stats
++int combat_weapon_skill_percent = 5; // tenths of a percent per weapon skill level on the wielded weapon's stats
+ 
+ void combat_settings_reset(void) {
+     combat_tactics_boost = 10;
+     combat_min_hit = 20;
+     combat_armor_soak = 75;
+     combat_magic_damage_cap = 50;
++    combat_body_control = 3;
++    combat_clarity = 3;
++    combat_armor_class_percent = 5;
++    combat_weapon_skill_percent = 5;
++}
++
++// the skill an item's level requirement is on, when that skill boosts the item: Armor Class for
++// armour, the weapon skill for weapons. -1 = none.
++int item_boost_skill(int in) {
++    int n, v;
++
++    if (in < 1 || in >= MAXITEM) return -1;
++    for (n = 0; n < MAXMOD; n++) {
++        if (it[in].mod_value[n] <= 0) continue;
++        v = -it[in].mod_index[n];
++        if (v == V_ARMORSKILL || v == V_HAND || v == V_DAGGER || v == V_STAFF || v == V_SWORD || v == V_TWOHAND) return v;
++    }
++    return -1;
++}
++
++// Armor Class and weapon skills (step 15): the wearer's level in the item's requirement skill raises
++// the item's positive Armor and equipment bonuses by combat_armor_class_percent (armour) or
++// combat_weapon_skill_percent (weapons) tenths of a percent per level. It is worked out on the
++// character in update_char() and never written to the item, so traded gear keeps its own values.
++int item_skill_permille(int cn, int v) {
++    if (cn < 1 || cn >= MAXCHARS || v < 0 || v >= V_MAX) return 1000;
++    return 1000 + max(0, ch[cn].value[1][v]) * (v == V_ARMORSKILL ? combat_armor_class_percent : combat_weapon_skill_percent);
++}
++
++// Body Control and Clarity (step 15): a flat bonus per trained level, in tenths of a percent
++// (1000 = no bonus). Gear never raises these skills (IS_PURE_SKILL in update_char()).
++int body_control_permille(int cn) {
++    if (cn < 1 || cn >= MAXCHARS) return 1000;
++    return 1000 + max(0, ch[cn].value[0][V_BODYCONTROL]) * combat_body_control;
++}
++
++int clarity_permille(int cn) {
++    if (cn < 1 || cn >= MAXCHARS) return 1000;
++    return 1000 + max(0, ch[cn].value[0][V_CLARITY]) * combat_clarity;
++}
++
++static int body_control(int cn, int lvl) {
++    return (long long)lvl * body_control_permille(cn) / 1000;
++}
++
++static int clarity(int cn, int val) {
++    return (long long)val * clarity_permille(cn) / 1000;
+ }
+ 
+ static int weapon_skill(int cn) {
+@@ -70,20 +121,20 @@
+ }
+ 
+ int melee_attack_level(int cn) {
+-    return (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn);
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn));
+ }
+ 
+ int melee_strength_level(int cn) {
+-    return (weapon_skill(cn) + ch[cn].value[0][V_STR]) / 2 + tactics_boost(cn);
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_STR]) / 2 + tactics_boost(cn));
+ }
+ 
+ int melee_defence_level(int cn) {
+-    return (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn);
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn));
+ }
+ 
+ int melee_surround_level(int cn) {
+     if (!ch[cn].value[1][V_SURROUND]) return 0;
+-    return (weapon_skill(cn) + ch[cn].value[0][V_SURROUND]) / 2 + tactics_boost(cn);
++    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_SURROUND]) / 2 + tactics_boost(cn));
+ }
+ 
+ // RuneScape: attack roll = (level + 8) x (accuracy bonus + 64), defence roll likewise; vcn and vco
+@@ -303,6 +354,9 @@
+     // accuracy and defence bonuses scale the melee rolls (x (bonus + 64) / 64)
+     if (caster > 0 && caster < MAXCHARS) skill_strength = skill_strength * max(1, ch[caster].value[0][V_MAGIC_ACC] + 64) / 64;
+     immun = immun * max(1, ch[subject].value[0][V_MAGIC_DEF] + 64) / 64;
++    // Clarity (step 15): raises the caster's spell strength and the subject's immunity
++    if (caster > 0 && caster < MAXCHARS) skill_strength = clarity(caster, skill_strength);
++    immun = clarity(subject, immun);
+ 
+     diff = skill_strength - immun;
+ 
+@@ -323,7 +377,8 @@
+     immun = ch[co].value[0][V_IMMUNITY];
+     if (ch[co].value[1][V_RAGE]) immun += ch[co].rage / POWERSCALE / RAGEMOD;
+ 
+-    str = spellpower(cn, V_FREEZE);
++    str = clarity(cn, spellpower(cn, V_FREEZE));
++    immun = clarity(co, immun);
+ 
+     diff = str - immun;
+     if (diff < -50) return 0;
+@@ -362,12 +417,12 @@
+ }
+ 
+ // Fire and Lightning damage, raised by the caster's Magic Damage % from gear (at most
+-// combat_magic_damage_cap)
++// combat_magic_damage_cap) and by Clarity
+ static int spell_damage(int cn, int co, int str) {
+     int pct = 100;
+ 
+     if (cn > 0 && cn < MAXCHARS) pct += max(-100, min(combat_magic_damage_cap, ch[cn].value[0][V_MAGIC_DMG]));
+-    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0) * pct / 100.0;
++    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0) * pct / 100.0 * clarity_permille(cn) / 1000.0;
+ }
+ 
+ int fireball_damage(int cn, int co, int str) {
+diff -ru a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 20:45:52.159587718 +0000
++++ b/src/balance.h	2026-10-13 21:10:00.805173827 +0000
+@@ -16,6 +16,14 @@
+ extern int combat_min_hit; // a landed melee hit rolls between this percent of the max hit and the max hit
+ extern int combat_armor_soak; // armor soaks at most this percent of a melee hit
+ extern int combat_magic_damage_cap; // most magic damage percent gear can add
++extern int combat_body_control; // tenths of a percent per Body Control level on the melee levels (step 15)
++extern int combat_clarity; // tenths of a percent per Clarity level on magic strength, immunity and spell damage
++extern int combat_armor_class_percent; // tenths of a percent per Armor Class level on worn armour's stats
++extern int combat_weapon_skill_percent; // tenths of a percent per weapon skill level on the wielded weapon's stats
++int item_boost_skill(int in); // V_ARMORSKILL or the weapon skill an item requires, -1 = none
++int item_skill_permille(int cn, int v); // 1000 = no bonus
++int body_control_permille(int cn); // 1000 = no bonus
++int clarity_permille(int cn);
+ void combat_settings_reset(void);
+ int melee_attack_level(int cn);
+ int melee_strength_level(int cn);
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 20:45:52.149387426 +0000
++++ b/src/create.c	2026-10-13 21:10:00.799353675 +0000
+@@ -268,9 +268,9 @@
+     "V_MAGIC_ACC",
+     "V_MAGIC_DMG",
+     "V_MAGIC_DEF",
+-    "empty",
+-    "empty",
+-    "empty"};
++    "V_ARMORSKILL",
++    "V_BODYCONTROL",
++    "V_CLARITY"};
+ 
+ static int lookup_V(char *name) {
+     int n;
+@@ -1545,12 +1545,13 @@
+     if (v >= V_WIS && v <= V_STR) return 1;
+     if (v == V_OFFENSE || v == V_DEFENSE) return 1;
+     if (v >= V_DAGGER && v <= V_PROFESSION && v != V_DEMON && v != V_COLD) return 1;
++    if (IS_PURE_SKILL(v)) return 1;
+     return 0;
+ }
+ 
+ void update_char(int cn) {
+     int mod[V_MAX], base[V_MAX], n, in, m, v1, v2, v3, oldlight, fn, bless[V_MAX], infrared = 0, newlight, nonomagic = 0, oxygen = 0;
+-    int spellspeed = 0, cnt;
++    int spellspeed = 0, cnt, boost, boostsk;
+     double effectivity;
+ 
+     if (!(ch[cn].flags)) kill(getpid(), 11);
+@@ -1577,6 +1578,9 @@
+             if (it[in].driver == IDR_INFRARED) infrared = 1;
+             if (it[in].driver == IDR_NONOMAGIC) nonomagic = 1;
+             if (it[in].driver == IDR_OXYGEN) oxygen = 1;
++            // worn armour and weapons: Armor Class / the weapon skill raise the item's stats on the wearer (step 15)
++            boostsk = n < 12 ? item_boost_skill(in) : -1;
++            boost = boostsk >= 0 ? item_skill_permille(cn, boostsk) : 1000;
+ 
+             for (m = cnt = 0; m < MAXMOD; m++) {
+                 if (!it[in].mod_value[m]) continue; // ignore empty ones
+@@ -1600,7 +1604,10 @@
+                     else if (v1 == V_SPEED && it[in].driver == IDR_WARCRY) spellspeed = min(spellspeed, it[in].mod_value[m]);
+                     else if (v1 == V_SPEED && it[in].driver == IDR_FREEZE) spellspeed = min(spellspeed, it[in].mod_value[m]);
+                     else if (n < 12 && gear_skips_value(v1)) continue; // gear no longer modifies skills or attributes (step 14): it gives equipment bonuses instead
+-                    else mod[v1] += v;
++                    else {
++                        if (v > 0 && (v1 == V_ARMOR || IS_EQUIP_BONUS(v1))) v = v * boost / 1000; // negatives (e.g. magic defence on plate) stay as they are
++                        mod[v1] += v;
++                    }
+                 }
+             }
+         }
+@@ -1631,6 +1638,10 @@
+             ch[cn].value[0][n] = ch[cn].value[1][n] + mod[n];
+             continue;
+         }
++        if (IS_PURE_SKILL(n)) { // Armor Class, Body Control, Clarity: the trained level only
++            ch[cn].value[0][n] = ch[cn].value[1][n];
++            continue;
++        }
+         if (n == V_DEMON) {
+             ch[cn].value[0][n] = min(ch[cn].value[0][n], ch[cn].value[1][n]);
+             continue;
+diff -ru a/src/server.h b/src/server.h
+--- a/src/server.h	2026-10-13 20:45:52.141864647 +0000
++++ b/src/server.h	2026-10-13 20:45:52.147735541 +0000
+@@ -328,6 +328,11 @@
+ #define V_MAGIC_DMG 45 // magic damage in percent
+ #define V_MAGIC_DEF 46 // magic defence
+ #define IS_EQUIP_BONUS(v) ((v) >= V_MELEE_ACC && (v) <= V_MAGIC_DEF)
++// pure skills (step 15): only training raises them, gear, spells and attributes never do
++#define V_ARMORSKILL 47 // Armor Class: armour can only be worn up to this level
++#define V_BODYCONTROL 48 // Body Control: percent bonus to the melee levels, gather chance
++#define V_CLARITY 49 // Clarity: percent bonus to magic, extra resource chance when gathering
++#define IS_PURE_SKILL(v) ((v) >= V_ARMORSKILL && (v) <= V_CLARITY)
+ #define V_MAX 50
+ 
+ // Professions
+diff -ru a/src/skill.c b/src/skill.c
+--- a/src/skill.c	2026-10-13 20:45:52.152676294 +0000
++++ b/src/skill.c	2026-10-13 20:45:52.154429683 +0000
+@@ -75,7 +75,12 @@
+     {"Melee Defence", -1, -1, -1, 0, 0}, // 43
+     {"Magic Accuracy", -1, -1, -1, 0, 0}, // 44
+     {"Magic Damage %", -1, -1, -1, 0, 0}, // 45
+-    {"Magic Defence", -1, -1, -1, 0, 0} // 46
++    {"Magic Defence", -1, -1, -1, 0, 0}, // 46
++
++    // pure skills (step 15): trained only, never raised by gear
++    {"Armor Class", -1, -1, -1, 1, 1}, // 47
++    {"Body Control", -1, -1, -1, 1, 1}, // 48
++    {"Clarity", -1, -1, -1, 1, 1} // 49
+ };
+ 
+ int raise_cost(int v, int n) {
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 20:45:52.172647083 +0000
++++ b/src/skilling.c	2026-10-13 21:10:00.807329321 +0000
+@@ -100,6 +100,9 @@
+ // config: while blessed, bless_gather percent is added to the gather chance and bless_craft percent taken off fail
+ // chances, plus *_strength percent of the spell's strength on top (0 = flat bonus only)
+ static int bless_gather = 10, bless_craft = 10, bless_gather_strength = 0, bless_craft_strength = 0;
++// config (step 15): body_control_gather tenths of a percent per Body Control level are added to the
++// gather chance, clarity_luck tenths of a percent per Clarity level is the chance of one extra resource
++static int body_control_gather = 2, clarity_luck = 2;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ static int is_node(int type) {
+@@ -250,6 +253,12 @@
+                 else if (!strcasecmp(name, "min_hit")) combat_min_hit = max(0, min(100, atoi(value)));
+                 else if (!strcasecmp(name, "armor_soak")) combat_armor_soak = max(0, min(100, atoi(value)));
+                 else if (!strcasecmp(name, "magic_damage_cap")) combat_magic_damage_cap = max(0, atoi(value));
++                else if (!strcasecmp(name, "body_control")) combat_body_control = max(0, atoi(value));
++                else if (!strcasecmp(name, "clarity")) combat_clarity = max(0, atoi(value));
++                else if (!strcasecmp(name, "armor_class_percent")) combat_armor_class_percent = max(0, atoi(value));
++                else if (!strcasecmp(name, "weapon_skill_percent")) combat_weapon_skill_percent = max(0, atoi(value));
++                else if (!strcasecmp(name, "body_control_gather")) body_control_gather = max(0, atoi(value));
++                else if (!strcasecmp(name, "clarity_luck")) clarity_luck = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -497,6 +506,7 @@
+     nskdef = 0;
+     bless_gather = bless_craft = 10;
+     bless_gather_strength = bless_craft_strength = 0;
++    body_control_gather = clarity_luck = 2;
+     combat_settings_reset();
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+@@ -759,9 +769,11 @@
+         return;
+     }
+ 
+-    chance = skdef[d].chance + 2 * (lvl - skdef[d].level) + 10 * (power - 1) + bless_bonus(cn, bless_gather, bless_gather_strength);
+-    chance = max(5, min(95, chance));
+-    if (RANDOM(100) >= chance) { // no luck this swing, keep going
++    // in tenths of a percent so Body Control can add 0.2% per level
++    chance = (skdef[d].chance + 2 * (lvl - skdef[d].level) + 10 * (power - 1) + bless_bonus(cn, bless_gather, bless_gather_strength)) * 10;
++    chance += ch[cn].value[0][V_BODYCONTROL] * body_control_gather;
++    chance = max(50, min(950, chance));
++    if (RANDOM(1000) >= chance) { // no luck this swing, keep going
+         player_driver_dig_on(cn);
+         return;
+     }
+@@ -774,6 +786,10 @@
+     log_char(cn, LOG_SYSTEM, 0, "You %s some %s.", node_verb(skdef[d].type), item_template(skdef[ore].tmp)->name);
+     give_xp(cn, skdef[d].skill, skdef[d].xp);
+ 
++    // Clarity: a chance of one extra resource, without XP and without using up the node
++    if (RANDOM(1000) < ch[cn].value[0][V_CLARITY] * clarity_luck && res_room(cn, ore) && res_give(cn, ore, 1))
++        log_char(cn, LOG_SYSTEM, 0, "Your clarity lets you %s an extra %s.", node_verb(skdef[d].type), item_template(skdef[ore].tmp)->name);
++
+     if (ROCK_COUNT(in) > 1) {
+         ROCK_COUNT(in)--;
+         player_driver_dig_on(cn);
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 20:45:52.169403819 +0000
++++ b/src/skillreg.c	2026-10-13 20:45:52.171279413 +0000
+@@ -42,7 +42,8 @@
+     "V_DEFENSE", "V_LIGHT", "V_SPEED", "V_DAGGER", "V_HAND", "V_STAFF", "V_SWORD", "V_TWOHAND", "V_ATTACK", "V_PARRY",
+     "V_WARCRY", "V_TACTICS", "V_SURROUND", "V_SPEEDSKILL", "V_BARTER", "V_PERCEPT", "V_STEALTH", "V_BLESS", "V_HEAL", "V_FREEZE",
+     "V_MAGICSHIELD", "V_FLASH", "V_FIRE", "V_REGENERATE", "V_MEDITATE", "V_IMMUNITY", "V_DEMON", "V_DURATION", "V_RAGE", "V_COLD",
+-    "V_PROFESSION"};
++    "V_PROFESSION", "V_MELEE_ACC", "V_MELEE_STR", "V_MELEE_DEF", "V_MAGIC_ACC", "V_MAGIC_DMG", "V_MAGIC_DEF", "V_ARMORSKILL",
++    "V_BODYCONTROL", "V_CLARITY"};
+ 
+ // bounded string copy, always terminated
+ static void scopy(char *dst, const char *src, int size) {
+diff -ru a/zones/generic/armor.itm b/zones/generic/armor.itm
+--- a/zones/generic/armor.itm	2026-10-13 20:45:52.181822089 +0000
++++ b/zones/generic/armor.itm	2026-10-13 21:10:00.810379588 +0000
+@@ -9,7 +9,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=4
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=1
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -26,7 +28,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=8
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=9
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -43,7 +47,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=11
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=16
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -60,7 +66,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=14
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=23
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -77,7 +85,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=18
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=31
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -94,7 +104,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=21
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=39
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -111,7 +123,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=24
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=46
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -128,7 +142,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=28
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=53
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -145,7 +161,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=31
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=61
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -162,7 +180,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=35
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=69
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -179,7 +199,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=6
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=6
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -196,7 +218,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=10
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=14
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -213,7 +237,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=13
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=21
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -230,7 +256,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=16
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=28
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -247,7 +275,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=20
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=36
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -264,7 +294,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=24
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=44
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -281,7 +313,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=27
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=51
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -298,7 +332,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=30
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=58
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -315,7 +351,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=33
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=66
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -332,7 +370,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=37
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=74
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -349,7 +389,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=9
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=11
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -366,7 +408,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=12
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=19
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -383,7 +427,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=15
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=26
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -400,7 +446,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=19
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=33
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -417,7 +465,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=22
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=41
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -434,7 +484,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=26
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=49
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -451,7 +503,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=29
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=56
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -468,7 +522,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=32
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=63
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -485,7 +541,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=36
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=71
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -502,7 +560,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=39
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=79
+ flag=IF_TAKE
+ flag=IF_WNARMS
+@@ -519,7 +579,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=6
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=1
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -536,7 +598,9 @@
+ mod_value=-3
+ mod_index=V_MELEE_DEF
+ mod_value=11
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=9
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -553,7 +617,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=15
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=16
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -570,7 +636,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=20
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=23
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -587,7 +655,9 @@
+ mod_value=-9
+ mod_index=V_MELEE_DEF
+ mod_value=25
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=31
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -604,7 +674,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=30
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=39
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -621,7 +693,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=34
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=46
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -638,7 +712,9 @@
+ mod_value=-15
+ mod_index=V_MELEE_DEF
+ mod_value=39
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=53
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -655,7 +731,9 @@
+ mod_value=-17
+ mod_index=V_MELEE_DEF
+ mod_value=44
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=61
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -672,7 +750,9 @@
+ mod_value=-19
+ mod_index=V_MELEE_DEF
+ mod_value=49
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=69
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -689,7 +769,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=9
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-1
++req_index=V_ARMORSKILL
+ req_value=6
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -706,7 +788,9 @@
+ mod_value=-3
+ mod_index=V_MELEE_DEF
+ mod_value=14
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=14
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -723,7 +807,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=18
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=21
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -740,7 +826,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=23
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=28
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -757,7 +845,9 @@
+ mod_value=-9
+ mod_index=V_MELEE_DEF
+ mod_value=28
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=36
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -774,7 +864,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=33
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=44
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -791,7 +883,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=37
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=51
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -808,7 +902,9 @@
+ mod_value=-15
+ mod_index=V_MELEE_DEF
+ mod_value=42
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=58
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -825,7 +921,9 @@
+ mod_value=-17
+ mod_index=V_MELEE_DEF
+ mod_value=47
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=66
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -842,7 +940,9 @@
+ mod_value=-19
+ mod_index=V_MELEE_DEF
+ mod_value=52
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=74
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -859,7 +959,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=12
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=11
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -876,7 +978,9 @@
+ mod_value=-3
+ mod_index=V_MELEE_DEF
+ mod_value=17
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=19
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -893,7 +997,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=22
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=26
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -910,7 +1016,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=26
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=33
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -927,7 +1035,9 @@
+ mod_value=-9
+ mod_index=V_MELEE_DEF
+ mod_value=31
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=41
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -944,7 +1054,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=36
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=49
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -961,7 +1073,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=41
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=56
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -978,7 +1092,9 @@
+ mod_value=-15
+ mod_index=V_MELEE_DEF
+ mod_value=45
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=63
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -995,7 +1111,9 @@
+ mod_value=-17
+ mod_index=V_MELEE_DEF
+ mod_value=50
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=71
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -1012,7 +1130,9 @@
+ mod_value=-19
+ mod_index=V_MELEE_DEF
+ mod_value=55
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=79
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+@@ -1029,7 +1149,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=17
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=1
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1046,7 +1168,9 @@
+ mod_value=-6
+ mod_index=V_MELEE_DEF
+ mod_value=31
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=9
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1063,7 +1187,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=44
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=16
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1080,7 +1206,9 @@
+ mod_value=-16
+ mod_index=V_MELEE_DEF
+ mod_value=56
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=23
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1097,7 +1225,9 @@
+ mod_value=-21
+ mod_index=V_MELEE_DEF
+ mod_value=71
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=31
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1114,7 +1244,9 @@
+ mod_value=-26
+ mod_index=V_MELEE_DEF
+ mod_value=85
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-9
++req_index=V_ARMORSKILL
+ req_value=39
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1131,7 +1263,9 @@
+ mod_value=-31
+ mod_index=V_MELEE_DEF
+ mod_value=98
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-10
++req_index=V_ARMORSKILL
+ req_value=46
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1148,7 +1282,9 @@
+ mod_value=-36
+ mod_index=V_MELEE_DEF
+ mod_value=110
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-11
++req_index=V_ARMORSKILL
+ req_value=53
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1165,7 +1301,9 @@
+ mod_value=-41
+ mod_index=V_MELEE_DEF
+ mod_value=125
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-12
++req_index=V_ARMORSKILL
+ req_value=61
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1182,7 +1320,9 @@
+ mod_value=-46
+ mod_index=V_MELEE_DEF
+ mod_value=139
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-13
++req_index=V_ARMORSKILL
+ req_value=69
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1199,7 +1339,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=26
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=6
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1216,7 +1358,9 @@
+ mod_value=-6
+ mod_index=V_MELEE_DEF
+ mod_value=40
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=14
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1233,7 +1377,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=53
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=21
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1250,7 +1396,9 @@
+ mod_value=-16
+ mod_index=V_MELEE_DEF
+ mod_value=65
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=28
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1267,7 +1415,9 @@
+ mod_value=-21
+ mod_index=V_MELEE_DEF
+ mod_value=80
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=36
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1284,7 +1434,9 @@
+ mod_value=-26
+ mod_index=V_MELEE_DEF
+ mod_value=94
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-10
++req_index=V_ARMORSKILL
+ req_value=44
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1301,7 +1453,9 @@
+ mod_value=-31
+ mod_index=V_MELEE_DEF
+ mod_value=107
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-11
++req_index=V_ARMORSKILL
+ req_value=51
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1318,7 +1472,9 @@
+ mod_value=-36
+ mod_index=V_MELEE_DEF
+ mod_value=119
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-12
++req_index=V_ARMORSKILL
+ req_value=58
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1335,7 +1491,9 @@
+ mod_value=-41
+ mod_index=V_MELEE_DEF
+ mod_value=134
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-13
++req_index=V_ARMORSKILL
+ req_value=66
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1352,7 +1510,9 @@
+ mod_value=-46
+ mod_index=V_MELEE_DEF
+ mod_value=148
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-14
++req_index=V_ARMORSKILL
+ req_value=74
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1369,7 +1529,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=35
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=11
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1386,7 +1548,9 @@
+ mod_value=-6
+ mod_index=V_MELEE_DEF
+ mod_value=49
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=19
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1403,7 +1567,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=62
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=26
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1420,7 +1586,9 @@
+ mod_value=-16
+ mod_index=V_MELEE_DEF
+ mod_value=74
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=33
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1437,7 +1605,9 @@
+ mod_value=-21
+ mod_index=V_MELEE_DEF
+ mod_value=89
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-9
++req_index=V_ARMORSKILL
+ req_value=41
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1454,7 +1624,9 @@
+ mod_value=-26
+ mod_index=V_MELEE_DEF
+ mod_value=103
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-10
++req_index=V_ARMORSKILL
+ req_value=49
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1471,7 +1643,9 @@
+ mod_value=-31
+ mod_index=V_MELEE_DEF
+ mod_value=116
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-11
++req_index=V_ARMORSKILL
+ req_value=56
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1488,7 +1662,9 @@
+ mod_value=-36
+ mod_index=V_MELEE_DEF
+ mod_value=128
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-12
++req_index=V_ARMORSKILL
+ req_value=63
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1505,7 +1681,9 @@
+ mod_value=-41
+ mod_index=V_MELEE_DEF
+ mod_value=143
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-14
++req_index=V_ARMORSKILL
+ req_value=71
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1522,7 +1700,9 @@
+ mod_value=-46
+ mod_index=V_MELEE_DEF
+ mod_value=157
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-15
++req_index=V_ARMORSKILL
+ req_value=79
+ flag=IF_TAKE
+ flag=IF_WNBODY
+@@ -1539,7 +1719,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=10
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=1
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1556,7 +1738,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=19
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=9
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1573,7 +1757,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=26
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=16
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1590,7 +1776,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=34
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=23
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1607,7 +1795,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=42
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=31
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1624,7 +1814,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=51
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=39
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1641,7 +1833,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=59
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=46
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1658,7 +1852,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=66
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=53
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1675,7 +1871,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=75
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=61
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1692,7 +1890,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=84
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=69
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1709,7 +1909,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=15
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-2
++req_index=V_ARMORSKILL
+ req_value=6
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1726,7 +1928,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=24
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=14
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1743,7 +1947,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=32
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=21
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1760,7 +1966,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=39
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=28
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1777,7 +1985,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=48
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=36
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1794,7 +2004,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=57
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=44
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1811,7 +2023,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=64
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=51
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1828,7 +2042,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=72
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=58
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1845,7 +2061,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=80
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=66
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1862,7 +2080,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=89
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=74
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1879,7 +2099,9 @@
+ mod_value=-1
+ mod_index=V_MELEE_DEF
+ mod_value=21
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-3
++req_index=V_ARMORSKILL
+ req_value=11
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1896,7 +2118,9 @@
+ mod_value=-2
+ mod_index=V_MELEE_DEF
+ mod_value=30
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=19
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1913,7 +2137,9 @@
+ mod_value=-4
+ mod_index=V_MELEE_DEF
+ mod_value=37
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-4
++req_index=V_ARMORSKILL
+ req_value=26
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1930,7 +2156,9 @@
+ mod_value=-5
+ mod_index=V_MELEE_DEF
+ mod_value=45
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=33
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1947,7 +2175,9 @@
+ mod_value=-7
+ mod_index=V_MELEE_DEF
+ mod_value=53
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-5
++req_index=V_ARMORSKILL
+ req_value=41
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1964,7 +2194,9 @@
+ mod_value=-8
+ mod_index=V_MELEE_DEF
+ mod_value=62
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-6
++req_index=V_ARMORSKILL
+ req_value=49
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1981,7 +2213,9 @@
+ mod_value=-10
+ mod_index=V_MELEE_DEF
+ mod_value=69
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=56
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -1998,7 +2232,9 @@
+ mod_value=-11
+ mod_index=V_MELEE_DEF
+ mod_value=77
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-7
++req_index=V_ARMORSKILL
+ req_value=63
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -2015,7 +2251,9 @@
+ mod_value=-13
+ mod_index=V_MELEE_DEF
+ mod_value=86
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-8
++req_index=V_ARMORSKILL
+ req_value=71
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+@@ -2032,7 +2270,9 @@
+ mod_value=-14
+ mod_index=V_MELEE_DEF
+ mod_value=94
+-req_index=V_PARRY
++mod_index=V_MAGIC_DEF
++mod_value=-9
++req_index=V_ARMORSKILL
+ req_value=79
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+diff -ru a/zones/generic/cloth.itm b/zones/generic/cloth.itm
+--- a/zones/generic/cloth.itm	2026-10-13 21:10:00.789950759 +0000
++++ b/zones/generic/cloth.itm	2026-10-13 21:10:00.810739592 +0000
+@@ -5,6 +5,10 @@
+ sprite=50122
+ mod_index=V_ARMOR
+ mod_value=60
++mod_index=V_MELEE_DEF
++mod_value=2
++mod_index=V_MAGIC_DEF
++mod_value=8
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ ;
+@@ -15,6 +19,10 @@
+ sprite=50123
+ mod_index=V_ARMOR
+ mod_value=60
++mod_index=V_MELEE_DEF
++mod_value=2
++mod_index=V_MAGIC_DEF
++mod_value=8
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ ;
+@@ -25,6 +33,10 @@
+ sprite=50124
+ mod_index=V_ARMOR
+ mod_value=30
++mod_index=V_MELEE_DEF
++mod_value=1
++mod_index=V_MAGIC_DEF
++mod_value=6
+ flag=IF_TAKE
+ flag=IF_WNCLOAK
+ ;
+@@ -35,6 +47,10 @@
+ sprite=50125
+ mod_index=V_ARMOR
+ mod_value=30
++mod_index=V_MELEE_DEF
++mod_value=1
++mod_index=V_MAGIC_DEF
++mod_value=6
+ flag=IF_TAKE
+ flag=IF_WNCLOAK
+ ;
+@@ -45,6 +61,10 @@
+ sprite=50126
+ mod_index=V_ARMOR
+ mod_value=20
++mod_index=V_MELEE_DEF
++mod_value=1
++mod_index=V_MAGIC_DEF
++mod_value=4
+ flag=IF_TAKE
+ flag=IF_WNBELT
+ ;
+@@ -63,6 +83,10 @@
+ sprite=50510
+ mod_index=V_ARMOR
+ mod_value=30
++mod_index=V_MELEE_DEF
++mod_value=1
++mod_index=V_MAGIC_DEF
++mod_value=5
+ flag=IF_TAKE
+ flag=IF_WNFEET
+ ;
+@@ -74,6 +98,10 @@
+ sprite=50512
+ mod_index=V_ARMOR
+ mod_value=150
++mod_index=V_MELEE_DEF
++mod_value=5
++mod_index=V_MAGIC_DEF
++mod_value=20
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ ;
+@@ -85,6 +113,10 @@
+ sprite=50513
+ mod_index=V_ARMOR
+ mod_value=48
++mod_index=V_MELEE_DEF
++mod_value=3
++mod_index=V_MAGIC_DEF
++mod_value=12
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ ;
+@@ -96,6 +128,10 @@
+ sprite=51084
+ mod_index=V_ARMOR
+ mod_value=48
++mod_index=V_MELEE_DEF
++mod_value=1
++mod_index=V_MAGIC_DEF
++mod_value=5
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ ;
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 20:45:52.178741655 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 21:10:00.809918127 +0000
+@@ -46,7 +46,8 @@
+ # Recipes have no id, add or change them any time.
+ #
+ # Chance per try at a rock or tree: chance (35%) + 2% per level above the
+-# spot's level + 10% per tool power above 1, from 5% to 95%.
++# spot's level + 10% per tool power above 1 + Bless + Body Control, from 5%
++# to 95%.
+ #
+ # Players: click a rock, tree or plant (repeats until it is empty or the
+ # inventory is full). Click a stack in the inventory with an empty hand to
+@@ -74,6 +75,30 @@
+ # Gear no longer changes skills; weapons and armour carry Melee Accuracy,
+ # Melee Strength, Melee Defence, Magic Accuracy, Magic Damage and Magic
+ # Defence (mod_index=V_MELEE_ACC ... in the .itm files).
++#
++# Body Control and Clarity (step 15; gear cannot raise them; all in TENTHS
++# of a percent per skill level, so 3 = 0.3% per level, 30% at level 99):
++# body_control: raises the effective melee levels (accuracy, strength,
++#   defence, surround) after Tactics.
++# body_control_gather: added to the chance per try at rocks, trees and
++#   plants (2 = +0.2% per level, about +20% at level 99).
++# clarity: raises Fire/Lightning/Freeze strength, Fire/Lightning damage and
++#   your Immunity against spells.
++# clarity_luck: chance per resource gathered of one extra (2 = 0.2% per
++#   level, about 20% at level 99). The extra gives no XP and does not use
++#   up the rock or tree.
++# armor_class_percent: each Armor Class level raises the Armor, Melee
++#   Defence and Magic Defence of the armour you wear (items that need Armor
++#   Class) by this many tenths of a percent (5 = 0.5% per level, +49.5% at
++#   99). Negative values (the Magic Defence penalty on melee armour) are not
++#   changed.
++# weapon_skill_percent: the same for the weapon you wield: each level of the
++#   skill it needs (Dagger, Sword, Staff, Two-Handed, Hand to Hand) raises its
++#   Melee Accuracy, Melee Strength, Magic Accuracy and Magic Damage by this
++#   many tenths of a percent. Dagger level only helps daggers.
++# Both are worked out on you, never stored on the item: gear you trade away
++# keeps only its own values, and better gear always stays better for the
++# same player.
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -83,6 +108,12 @@
+ min_hit=20
+ armor_soak=75
+ magic_damage_cap=50
++body_control=3
++body_control_gather=2
++clarity=3
++clarity_luck=2
++armor_class_percent=5
++weapon_skill_percent=5
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 20:45:52.175482566 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 20:45:52.177321287 +0000
+@@ -23,6 +23,7 @@
+ #
+ # Where XP comes from in the code (search for skill_used / skill_xp_context):
+ #   melee hit -> weapon skill dmg_xp, missed attack on you -> PARRY use_xp,
++#   melee hit on you while wearing armour -> ARMORCLASS use_xp,
+ #   surround hit -> SURROUND, spell cast -> that spell, spell damage ->
+ #   FIRE/LIGHTNING dmg_xp, warcry -> WARCRY, buying/selling -> BARTER,
+ #   sneaking (stealth mode walk) -> STEALTH per step, resting while hurt ->
+@@ -128,6 +129,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=SPEEDSKILL,10
++feed=BODYCONTROL,15
+ description="Trained by hitting with dagger weapons."
+ ;
+ 
+@@ -146,6 +148,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=SPEEDSKILL,10
++feed=BODYCONTROL,15
+ description="Trained by fighting unarmed or with claws."
+ ;
+ 
+@@ -164,6 +167,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=SPEEDSKILL,10
++feed=BODYCONTROL,15
+ description="Trained by hitting with staff weapons."
+ ;
+ 
+@@ -182,6 +186,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=SPEEDSKILL,10
++feed=BODYCONTROL,15
+ description="Trained by hitting with sword weapons."
+ ;
+ 
+@@ -200,6 +205,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=SPEEDSKILL,10
++feed=BODYCONTROL,15
+ description="Trained by hitting with two-handed weapons."
+ ;
+ 
+@@ -321,6 +327,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ description="Raises your chance to gather and craft. Does not help in combat."
+ ;
+ 
+@@ -335,6 +342,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ ;
+ 
+ FREEZE:
+@@ -348,6 +356,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ ;
+ 
+ MAGICSHIELD:
+@@ -361,6 +370,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ ;
+ 
+ LIGHTNING:
+@@ -375,6 +385,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ ;
+ 
+ FIRE:
+@@ -389,6 +400,7 @@
+ feed=INTUITION,25
+ feed=WISDOM,25
+ feed=MANA,25
++feed=CLARITY,15
+ ;
+ 
+ REGENERATE:
+@@ -425,8 +437,42 @@
+ description="Not trained yet."
+ ;
+ 
++# ---- pure skills (step 15): trained only, gear and spells never raise them ----
++ARMORCLASS:
++id=47
++name="Armor Class"
++group=combat
++value=V_ARMORSKILL
++start=1
++max=99
++use_xp=6
++feed=HP,10
++description="Lets you wear armour up to this level. Trained by taking hits while wearing armour."
++;
++
++BODYCONTROL:
++id=48
++name="Body Control"
++group=combat
++value=V_BODYCONTROL
++start=1
++max=99
++description="Flat bonus per level to melee and gathering chance. Gear cannot raise it. Gets part of melee and gathering XP."
++;
++
++CLARITY:
++id=49
++name="Clarity"
++group=magic
++value=V_CLARITY
++start=1
++max=99
++description="Flat bonus per level to magic, chance of an extra resource. Gear cannot raise it. Gets part of spell and gathering XP."
++;
++
+ # Not registered (they are computed or arch-only): V_ARMOR, V_WEAPON, V_OFFENSE,
+-# V_DEFENSE, V_LIGHT, V_SPEED, V_DEMON, V_DURATION, V_RAGE, V_COLD, V_PROFESSION.
++# V_DEFENSE, V_LIGHT, V_SPEED, V_DEMON, V_DURATION, V_RAGE, V_COLD, V_PROFESSION,
++# and the equipment bonuses V_MELEE_ACC ... V_MAGIC_DEF.
+ 
+ # ---- gathering (ids 50+ have no value slot) ----
+ FARMING:
+@@ -435,6 +481,8 @@
+ group=gathering
+ start=1
+ max=99
++feed=BODYCONTROL,10
++feed=CLARITY,10
+ description="Grow and harvest various plants."
+ ;
+ 
+@@ -444,6 +492,8 @@
+ group=gathering
+ start=1
+ max=99
++feed=BODYCONTROL,10
++feed=CLARITY,10
+ description="Mine ore from rocks."
+ ;
+ 
+@@ -453,6 +503,8 @@
+ group=gathering
+ start=1
+ max=99
++feed=BODYCONTROL,10
++feed=CLARITY,10
+ description="Cut logs from trees."
+ ;
+ 

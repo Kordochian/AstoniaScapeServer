@@ -1,0 +1,17 @@
+leon_door:
+name="Door"
+description="This is the door to Leon's room."
+sprite=13150
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+driver=5
+;
+
+underwater_light:
+sprite=11064
+flag=IF_MOVEBLOCK
+mod_index=V_LIGHT
+mod_value=200
+;

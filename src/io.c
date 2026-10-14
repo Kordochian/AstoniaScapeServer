@@ -1,0 +1,335 @@
+/*
+ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+ */
+
+#include <string.h>
+#include <errno.h>
+#include "netcompat.h"
+#include <zlib.h>
+
+#include "server.h"
+#include "client.h"
+#define NEED_PLAYER_STRUCT
+#include "player.h"
+#undef NEED_PLAYER_STRUCT
+#include "log.h"
+#include "mem.h"
+#include "date.h"
+#include "io.h"
+
+struct player **player;
+
+void *my_zlib_malloc(void *dummy, unsigned int cnt, unsigned int size) {
+    return xmalloc(cnt * size, IM_ZLIB);
+}
+
+void my_zlib_free(void *dummy, void *ptr) {
+    return xfree(ptr);
+}
+
+// close connection to player nr
+void exit_player(int nr) {
+    online--;
+    sock_close(player[nr]->sock);
+    deflateEnd(&player[nr]->zs);
+    xfree(player[nr]);
+    player[nr] = NULL;
+    mem_usage -= sizeof(struct player);
+}
+
+/* Process a new connection by finding, initializing and connecting a player entry to a new socket */
+static void new_player(int sock) {
+    int n, nsock, len = sizeof(struct sockaddr_in);
+    u_long one = 1;
+    struct sockaddr_in addr;
+    char buf[16];
+
+    nsock = accept(sock, (struct sockaddr *)&addr, &len);
+    if (nsock == -1) return;
+
+    sock_ioctl(nsock, FIONBIO, (u_long *)&one); // non-blocking mode
+
+    for (n = 1; n < MAXPLAYER; n++)
+        if (!player[n]) break;
+    if (n == MAXPLAYER) {
+        sock_close(nsock);
+        return;
+    }
+
+    player[n] = xcalloc(sizeof(struct player), IM_PLAYER);
+    mem_usage += sizeof(struct player);
+    if (player[n] == NULL) {
+        sock_close(nsock);
+        return;
+    }
+
+    player[n]->zs.zalloc = my_zlib_malloc;
+    player[n]->zs.zfree = my_zlib_free;
+
+    if (deflateInit2(&player[n]->zs, 1, Z_DEFLATED, 14, 7, Z_DEFAULT_STRATEGY)) {
+        sock_close(nsock);
+        xfree(player[n]);
+        player[n] = NULL;
+        mem_usage -= sizeof(struct player);
+        return;
+    }
+
+    player[n]->sock = nsock;
+    player[n]->addr = addr.sin_addr.s_addr;
+    player[n]->state = ST_CONNECT;
+    player[n]->lastcmd = ticker;
+
+    buf[0] = SV_REALTIME;
+    *(unsigned int *)(buf + 1) = realtime;
+    psend(n, buf, 5);
+
+    online++;
+    if (!player[n]) return;
+}
+
+static void send_player(int nr) {
+    int ret, len;
+    unsigned long long prof;
+
+    if (player[nr]->iptr < player[nr]->optr) {
+        len = OBUFSIZE - player[nr]->optr;
+    } else {
+        len = player[nr]->iptr - player[nr]->optr;
+    }
+
+    prof = prof_start(11);
+    ret = send(player[nr]->sock, player[nr]->obuf + player[nr]->optr, len, 0);
+    prof_stop(11, prof);
+    if (ret == -1) { // send failure
+        kick_player(nr, NULL);
+        return;
+    }
+
+    player[nr]->optr += ret;
+
+    if (player[nr]->optr == OBUFSIZE) player[nr]->optr = 0;
+
+    sent_bytes_raw += ret + 60;
+    sent_bytes += ret;
+}
+
+static int csend(int nr, unsigned char *buf, int len) {
+    int size;
+
+    if (!player[nr]) return -1;
+
+    while (len) {
+        if (player[nr]->iptr >= player[nr]->optr) {
+            size = OBUFSIZE - player[nr]->iptr;
+        } else {
+            size = player[nr]->optr - player[nr]->iptr;
+        }
+        size = min(size, len);
+        memcpy(player[nr]->obuf + player[nr]->iptr, buf, size);
+
+        player[nr]->iptr += size;
+        if (player[nr]->iptr == OBUFSIZE) player[nr]->iptr = 0;
+        buf += size;
+        len -= size;
+
+        if (player[nr]->iptr == player[nr]->optr) {
+            kick_player(nr, NULL);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void rec_player(int nr) {
+    int len;
+
+    len = recv(player[nr]->sock, (char *)player[nr]->inbuf + player[nr]->in_len, 256 - player[nr]->in_len, 0);
+
+    if (len < 1) { // receive failure
+        if (sock_errno != SOCK_EWOULDBLOCK) {
+            kick_player(nr, NULL);
+        }
+        return;
+    }
+    player[nr]->in_len += len;
+
+    rec_bytes_raw += len + 60;
+    rec_bytes += len;
+}
+
+static int io_sock;
+
+void io_loop(void) {
+    int n, fmax = 0, tmp;
+    fd_set in_fd, out_fd;
+    struct timeval tv;
+    int panic = 0;
+    unsigned long long prof;
+
+    while (panic++ < 100) {
+        FD_ZERO(&in_fd);
+        FD_ZERO(&out_fd);
+        fmax = 0;
+
+        FD_SET(io_sock, &in_fd);
+        if (io_sock > fmax) fmax = io_sock;
+
+        for (n = 1; n < MAXPLAYER; n++) {
+            if (player[n]) {
+                if (player[n]->in_len < 256) {
+                    FD_SET(player[n]->sock, &in_fd);
+                    if (player[n]->sock > fmax) fmax = player[n]->sock;
+                }
+            }
+            if (player[n]) {
+                if (player[n]->iptr != player[n]->optr) {
+                    FD_SET(player[n]->sock, &out_fd);
+                    if (player[n]->sock > fmax) fmax = player[n]->sock;
+                }
+            }
+        }
+
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+
+        tmp = select(fmax + 1, &in_fd, &out_fd, NULL, &tv);
+
+        if (tmp < 1) break;
+
+        if (FD_ISSET(io_sock, &in_fd)) new_player(io_sock);
+
+        for (n = 1; n < MAXPLAYER; n++) {
+            if (!player[n]) continue;
+            if (FD_ISSET(player[n]->sock, &in_fd)) {
+                prof = prof_start(9);
+                rec_player(n);
+                prof_stop(9, prof);
+            }
+            if (!player[n]) continue; // yuck - rec_player might have kicked the player
+            if (FD_ISSET(player[n]->sock, &out_fd)) {
+                prof = prof_start(10);
+                send_player(n);
+                prof_stop(10, prof);
+            }
+        }
+    }
+}
+
+#ifdef _WIN32
+int net_startup(void) {
+    static int started = 0;
+    WSADATA wsa;
+
+    if (started) return 1;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa)) {
+        elog("WSAStartup failed: %d", WSAGetLastError());
+        return 0;
+    }
+    started = 1;
+    return 1;
+}
+#endif
+
+int init_io(void) {
+    int sock, port;
+    u_long one = 1;
+    struct sockaddr_in addr;
+
+    player = xcalloc(sizeof(struct player *) * MAXPLAYER, IM_BASE);
+    if (!player) return 0;
+
+    xlog("Allocated players: %.2fM (%d*%d)", sizeof(struct player *) * MAXPLAYER / 1024.0 / 1024.0, (int)(sizeof(struct player *)), MAXPLAYER);
+    mem_usage += sizeof(struct player *) * MAXPLAYER;
+
+    xlog("Size of player data: %d bytes", (int)(sizeof(struct player)));
+
+    if (!net_startup()) return 0;
+
+    sock = socket(PF_INET, SOCK_STREAM, 0);
+    if (sock == -1) return 0;
+
+    sock_ioctl(sock, FIONBIO, (u_long *)&one); // non-blocking mode
+#ifdef _WIN32
+    // on Windows SO_REUSEADDR would let two area servers share a port; we need the opposite
+    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(int));
+#else
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(int));
+#endif
+
+    for (port = 27584; port < 27684; port++) {
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = 0;
+
+        if (!bind(sock, (struct sockaddr *)&addr, sizeof(addr))) break;
+    }
+
+    if (listen(sock, 50)) return 0;
+
+    io_sock = sock;
+    server_port = port;
+
+    xlog("IO Init done: ID=%d", serverID);
+
+    return 1;
+}
+
+void exit_io(void) {
+    sock_close(io_sock);
+}
+
+void psend(int nr, char *buf, int len) {
+    if (!player[nr]) return;
+
+    if (player[nr]->tptr + len >= TBUFSIZE) {
+        xlog("tptr overflow!");
+        kick_player(nr, NULL);
+        return;
+    }
+    memcpy(player[nr]->tbuf + player[nr]->tptr, buf, len);
+    player[nr]->tptr += len;
+}
+
+// careful here, any csend might clear player[n]!
+void pflush(void) {
+    int n, len, low, high;
+
+    for (n = 1; n < MAXPLAYER; n++) {
+        if (!player[n]) continue;
+
+        len = player[n]->tptr;
+
+        if (len > 63) {
+            if (len > 16382) {
+                static unsigned char ff[] = {0xff, 0xff};
+
+                // this shouldn't happen, but if it does, we at least handle it gracefully.
+                if (player[n]->client_version < 3) {
+                    int cn;
+
+                    if ((cn = player[n]->cn) && cn >= 1 && cn < MAXCHARS) exit_char(cn);
+
+                    player[n]->tptr = 0;
+                    player_client_exit(n, "bigtick");
+                    elog("large tick: %d, reduced to %d, kicking player.", len, player[n]->tptr);
+                    len = player[n]->tptr;
+                }
+                csend(n, ff, 2);
+                xlog("big tick: %d", len);
+            }
+
+            high = len >> 8;
+            low = len & 255;
+
+            csend(n, (void *)(&high), 1);
+            csend(n, (void *)(&low), 1);
+        } else {
+            high = len | 0x40;
+            csend(n, (void *)(&high), 1);
+        }
+
+        if (len && player[n]) csend(n, player[n]->tbuf, len);
+
+        if (player[n]) player[n]->tptr = 0;
+    }
+}

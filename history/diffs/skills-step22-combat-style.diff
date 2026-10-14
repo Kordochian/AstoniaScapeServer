@@ -1,0 +1,354 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 23:54:11.750625188 +0000
++++ b/src/act.c	2026-10-13 23:54:11.927364963 +0000
+@@ -379,11 +379,14 @@
+                         maxhit / 1000.0,
+                         dam / 1000.0);
+ 
+-    // skill XP: the attacker gets XP for the damage done (in hurt()): Strength in fast mode, else the
+-    // weapon skill (Attack for players). The defender gets Defence XP for every attack that misses.
++    // skill XP: the attacker gets XP for the damage done (in hurt()), players by their combat style
++    // (/style: Attack, Strength, Defence or shared), NPCs none. The defender gets a little Defence XP for
++    // every attack that misses. Both pause Stealth walking XP for a while.
+     if (!dam && (ch[co].flags & CF_PLAYER)) skill_used(co, skill_for_value(V_PARRY));
++    skilling_fight(cn);
++    skilling_fight(co);
+ 
+-    skill_xp_context = ch[cn].speed_mode == SM_FAST ? skill_for_value(V_STR) : skill_weapon_id(cn);
++    skill_xp_context = SKILL_XP_MELEE;
+     hurt(co, dam, cn, ATTACK_DIV, combat_armor_soak, 90);
+     skill_xp_context = -1;
+ 
+diff -ru a/src/command.c b/src/command.c
+--- a/src/command.c	2026-10-13 23:54:11.761800203 +0000
++++ b/src/command.c	2026-10-13 23:54:11.937839398 +0000
+@@ -1425,6 +1425,10 @@
+         skilling_command(cn, "craft", ptr + len);
+         return 1;
+     }
++    if ((len = cmdcmp(ptr, "style", 5))) { // /style [shared|attack|strength|defence], melee XP
++        style_command(cn, ptr + len);
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "skills", 6))) { // /skills [group]
+         ptr += len;
+         while (isspace(*ptr)) ptr++;
+diff -ru a/src/death.c b/src/death.c
+--- a/src/death.c	2026-10-13 23:54:11.759486444 +0000
++++ b/src/death.c	2026-10-13 23:54:11.937204059 +0000
+@@ -648,8 +648,9 @@
+         }
+ 
+         // skill XP for the attacker: damage actually done, no overkill
+-        if (skill_xp_context >= 0 && cc && cc != cn && (ch[cc].flags & CF_PLAYER) && ch[cn].hp > 0) {
+-            skill_damage_xp(cc, skill_xp_context, min(dam, ch[cn].hp));
++        if (skill_xp_context != -1 && cc && cc != cn && (ch[cc].flags & CF_PLAYER) && ch[cn].hp > 0) {
++            if (skill_xp_context == SKILL_XP_MELEE) skill_melee_damage_xp(cc, min(dam, ch[cn].hp));
++            else skill_damage_xp(cc, skill_xp_context, min(dam, ch[cn].hp));
+         }
+ 
+         ch[cn].hp -= dam;
+diff -ru a/src/player.c b/src/player.c
+--- a/src/player.c	2026-10-13 23:54:11.763879100 +0000
++++ b/src/player.c	2026-10-13 23:54:11.942135646 +0000
+@@ -57,7 +57,7 @@
+ #include "config.h"
+ #include "skillreg.h"
+ 
+-#define SERVER_PROTOCOL_VERSION 10 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c), 9: workbench window, station texts in SV_CRAFTLIST, 10: effects tab (SV_EFFECTS)
++#define SERVER_PROTOCOL_VERSION 11 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material, 8: coloured speech (talk.c), 9: workbench window, station texts in SV_CRAFTLIST, 10: effects tab (SV_EFFECTS), 11: combat style (SV_COMBATSTYLE)
+ 
+ #define MAX_IDLE (TICKS * 30)
+ 
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 23:54:11.752223600 +0000
++++ b/src/skilling.c	2026-10-13 23:54:11.929685117 +0000
+@@ -109,6 +109,10 @@
+ static int spell_xp_fire = 0, spell_xp_lightning = 0;
+ // config: XP per step by speed mode. walk_xp is the base per step, the others are percent of it per skill
+ static int walk_xp = 2, fast_athletics = 50, fast_perception = 50, stealth_stealth = 100, stealth_athletics = 25;
++// config: no Stealth XP for steps within stealth_combat_pause seconds of a melee attack (made or taken), so
++// fighting in stealth mode (which trains Defence) does not train Stealth
++static int stealth_combat_pause = 5;
++static int *last_fight = NULL, last_fight_size = 0; // tick of each character's last melee attack, by cn
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ // Magic XP for one successful cast of the spell in value slot v, -1 if v is not a spell (use the skill's use_xp)
+@@ -134,14 +138,32 @@
+     if (xp >= 100) add_skill_xp(cn, skill_for_value(v), xp / 100);
+ }
+ 
++// remember that cn just made or took a melee attack (players only)
++void skilling_fight(int cn) {
++    int n;
++
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER)) return;
++    if (!last_fight) { // MAXCHARS is fixed once the server runs
++        n = MAXCHARS;
++        if (!(last_fight = xcalloc(n * sizeof(int), IM_BASE))) return;
++        last_fight_size = n;
++    }
++    if (cn < last_fight_size) last_fight[cn] = ticker;
++}
++
++static int in_fight(int cn) {
++    return cn < last_fight_size && last_fight[cn] && ticker - last_fight[cn] < stealth_combat_pause * TICKS;
++}
++
+ // XP for one step of a player: fast mode trains Athletics and Perception, stealth mode Stealth and Athletics
++// (no Stealth XP while fighting)
+ void skilling_walk_xp(int cn) {
+     if (!(ch[cn].flags & CF_PLAYER)) return;
+     if (ch[cn].speed_mode == SM_FAST) {
+         walk_xp_to(cn, V_SPEEDSKILL, fast_athletics);
+         walk_xp_to(cn, V_PERCEPT, fast_perception);
+     } else if (ch[cn].speed_mode == SM_STEALTH) {
+-        walk_xp_to(cn, V_STEALTH, stealth_stealth);
++        if (!in_fight(cn)) walk_xp_to(cn, V_STEALTH, stealth_stealth);
+         walk_xp_to(cn, V_SPEEDSKILL, stealth_athletics);
+     }
+ }
+@@ -320,6 +342,7 @@
+                 else if (!strcasecmp(name, "fast_perception")) fast_perception = max(0, atoi(value));
+                 else if (!strcasecmp(name, "stealth_stealth")) stealth_stealth = max(0, atoi(value));
+                 else if (!strcasecmp(name, "stealth_athletics")) stealth_athletics = max(0, atoi(value));
++                else if (!strcasecmp(name, "stealth_combat_pause")) stealth_combat_pause = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -574,6 +597,7 @@
+     fast_athletics = fast_perception = 50;
+     stealth_stealth = 100;
+     stealth_athletics = 25;
++    stealth_combat_pause = 5;
+     combat_settings_reset();
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+diff -ru a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 23:54:11.753756703 +0000
++++ b/src/skilling.h	2026-10-13 23:54:11.931501334 +0000
+@@ -8,6 +8,7 @@
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
++void skilling_fight(int cn); // cn made or took a melee attack (pauses Stealth walking XP)
+ void skilling_walk_xp(int cn); // XP for one step by speed mode (walk_xp ... in config:)
+ int skilling_spell_xp(int v); // Magic XP per cast of the spell in value slot v (spell_xp_* in config:), -1 = not a spell
+ 
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 23:54:11.756091335 +0000
++++ b/src/skillreg.c	2026-10-13 23:54:11.933301210 +0000
+@@ -201,8 +201,8 @@
+ static int store_block(struct skilldef *sd, int id, int is_config, int line) {
+     if (is_config) return 1;
+ 
+-    if (id < 0 || id >= MAXSKILLS) {
+-        elog("%s line %d: skill %s needs an id from 0 to %d.", SKILLS_CFG, line, sd->key, MAXSKILLS - 1);
++    if (id < 0 || id >= MAXSKILLS || id == SKILL_STYLE_SLOT) {
++        elog("%s line %d: skill %s needs an id from 0 to %d (not %d, it holds the combat style).", SKILLS_CFG, line, sd->key, MAXSKILLS - 1, SKILL_STYLE_SLOT);
+         return 0;
+     }
+     if (skilldef[id].used) {
+@@ -657,6 +657,60 @@
+     return skill_for_value(weapon_value(cn));
+ }
+ 
++// ---------- combat style ----------
++
++static const char *style_name[STYLE_MAX + 1] = {"Shared", "Attack", "Strength", "Defence"};
++
++int skill_get_style(int cn) {
++    struct skill_ppd *ppd;
++
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER) || !(ppd = get_ppd(cn))) return STYLE_SHARED;
++    return ppd->xp[SKILL_STYLE_SLOT] <= STYLE_MAX ? (int)ppd->xp[SKILL_STYLE_SLOT] : STYLE_SHARED;
++}
++
++int skill_set_style(int cn, int style) {
++    struct skill_ppd *ppd;
++
++    if (style < 0 || style > STYLE_MAX) return 0;
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER) || !(ppd = get_ppd(cn))) return 0;
++    ppd->xp[SKILL_STYLE_SLOT] = style;
++    return 1;
++}
++
++// melee damage XP by the attacker's style; shared gives a third of the damage to each skill
++void skill_melee_damage_xp(int cn, int dam) {
++    switch (skill_get_style(cn)) {
++    case STYLE_ATTACK: skill_damage_xp(cn, skill_weapon_id(cn), dam); break;
++    case STYLE_STRENGTH: skill_damage_xp(cn, skill_for_value(V_STR), dam); break;
++    case STYLE_DEFENCE: skill_damage_xp(cn, skill_for_value(V_PARRY), dam); break;
++    default:
++        skill_damage_xp(cn, skill_weapon_id(cn), dam / 3);
++        skill_damage_xp(cn, skill_for_value(V_STR), dam / 3);
++        skill_damage_xp(cn, skill_for_value(V_PARRY), dam / 3);
++        break;
++    }
++}
++
++// /style [shared|attack|strength|defence]
++void style_command(int cn, char *arg) {
++    int n;
++
++    while (isspace(*arg)) arg++;
++    if (*arg) {
++        for (n = 0; n <= STYLE_MAX; n++) {
++            if (!strncasecmp(arg, style_name[n], 3)) break;
++        }
++        if (n > STYLE_MAX) {
++            log_char(cn, LOG_SYSTEM, 0, "Usage: /style shared, attack, strength or defence.");
++            return;
++        }
++        skill_set_style(cn, n);
++    }
++    n = skill_get_style(cn);
++    if (n == STYLE_SHARED) log_char(cn, LOG_SYSTEM, 0, "Combat style: Shared (melee XP goes to Attack, Strength and Defence equally).");
++    else log_char(cn, LOG_SYSTEM, 0, "Combat style: %s (melee XP goes to %s).", style_name[n], style_name[n]);
++}
++
+ // called at every login: gives every player all starting skills and keeps XP in line
+ // with levels that were changed by other means (templates, rewards, GM commands).
+ void skills_init_player(int cn) {
+@@ -722,6 +776,7 @@
+ static unsigned int sent_xp[MAXPLAYER][MAXSKILLS];
+ static unsigned char sent_level[MAXPLAYER][MAXSKILLS];
+ static char sent_defs[MAXPLAYER];
++static unsigned char sent_style[MAXPLAYER]; // style + 1, 0 = not sent yet
+ static unsigned int sent_effects[MAXPLAYER]; // hash of the last effects packet, 0 = none sent
+ 
+ void skill_client_reset(int nr) {
+@@ -730,6 +785,7 @@
+     bzero(sent_xp[nr], sizeof(sent_xp[nr]));
+     bzero(sent_level[nr], sizeof(sent_level[nr]));
+     sent_defs[nr] = 0;
++    sent_style[nr] = 0;
+ }
+ 
+ static int skill_client_def(int nr, int id) {
+@@ -823,6 +879,13 @@
+         psend(nr, (char *)buf, 15);
+         if (!get_player_version(nr)) return 0;
+     }
++    if (get_player_version(nr) >= STYLE_CLIENT_VERSION && sent_style[nr] != skill_get_style(cn) + 1) {
++        sent_style[nr] = skill_get_style(cn) + 1;
++        buf[0] = SV_COMBATSTYLE;
++        buf[1] = sent_style[nr] - 1;
++        psend(nr, (char *)buf, 2);
++        if (!get_player_version(nr)) return 0;
++    }
+     if (get_player_version(nr) >= EFFECTS_CLIENT_VERSION) return effects_client_update(cn, nr);
+     return 1;
+ }
+diff -ru a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 23:54:11.757806639 +0000
++++ b/src/skillreg.h	2026-10-13 23:54:11.933839397 +0000
+@@ -56,7 +56,26 @@
+ };
+ 
+ extern struct skilldef skilldef[MAXSKILLS];
+-extern int skill_xp_context; // skill that gets damage XP for the next hurt() call, -1 = none
++extern int skill_xp_context; // skill that gets damage XP for the next hurt() call, -1 = none, SKILL_XP_MELEE = by style
++
++// Combat style (protocol 11): which skill melee damage XP goes to. Saved in the skill PPD in xp[SKILL_STYLE_SLOT],
++// so that registry id must never be used by a skill. 0 (the default) = shared: a third each to Attack,
++// Strength and Defence.
++#define SKILL_XP_MELEE -2
++#define SKILL_STYLE_SLOT 127
++#define STYLE_SHARED 0
++#define STYLE_ATTACK 1
++#define STYLE_STRENGTH 2
++#define STYLE_DEFENCE 3
++#define STYLE_MAX 3
++// server -> client: [SV_COMBATSTYLE][style], at login and on every change. The client sets the style with
++// the chat command "/style <shared|attack|strength|defence>".
++#define SV_COMBATSTYLE 58
++#define STYLE_CLIENT_VERSION 11
++int skill_get_style(int cn);
++int skill_set_style(int cn, int style);
++void skill_melee_damage_xp(int cn, int dam);
++void style_command(int cn, char *arg);
+ 
+ int skills_load(void);
+ int skill_lookup_key(char *key);
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 23:54:11.849870245 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 23:54:11.944343756 +0000
+@@ -138,6 +138,9 @@
+ # fast_perception to Perception. Stealth mode: stealth_stealth to Stealth and
+ # stealth_athletics to Athletics. Normal mode gives none. Fractions are given
+ # by chance (half a point = one point every second step on average).
++# stealth_combat_pause: no Stealth XP for steps within this many seconds of a
++# melee attack you made or took, so fighting in stealth mode does not train
++# Stealth.
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -173,6 +176,7 @@
+ fast_perception=50
+ stealth_stealth=100
+ stealth_athletics=25
++stealth_combat_pause=5
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 23:54:11.849390022 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 23:54:11.944060452 +0000
+@@ -9,7 +9,7 @@
+ # Smithing, Farming, Slayer. No attributes: each skill does one job.
+ #
+ #   KEY:            block name; .chr files set it with SK_KEY=level
+-#   id=             save index (0..127). NEVER change or reuse an id once
++#   id=             save index (0..126; 127 holds the combat style). NEVER change or reuse an id once
+ #                   players exist, their XP is stored by id.
+ #   name=           shown to players
+ #   group=          power, attribute, combat, magic, gathering, production, support
+@@ -28,9 +28,10 @@
+ #   description=    help text
+ #
+ # Where XP comes from in the code (search for skill_used / skill_xp_context):
+-#   melee hit -> ATTACK dmg_xp in normal/stealth mode, STRENGTH dmg_xp in
+-#   fast mode (both feed Hitpoints, Endurance, Athletics),
+-#   an attack on you misses -> DEFENCE use_xp,
++#   melee hit -> by the player's combat style (/style or the client's style
++#   panel): ATTACK, STRENGTH or DEFENCE dmg_xp, Shared = a third to each (all
++#   feed Hitpoints, Endurance, Athletics), an attack on you misses -> DEFENCE
++#   use_xp,
+ #   spell cast -> spell_xp_* in skilling.cfg, Fire/Lightning damage -> MAGIC
+ #   dmg_xp, warcry -> WARCRY, walking in fast/stealth mode -> walk_xp in
+ #   skilling.cfg (Athletics, Perception, Stealth),
+@@ -109,7 +110,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=ATHLETICS,25
+-description="Melee hit chance. Needed to wield weapons, and raises the stats of the weapon you hold. Trained by melee damage in normal and stealth mode."
++description="Melee hit chance. Needed to wield weapons, and raises the stats of the weapon you hold. Trained by melee damage with the Attack or Shared combat style (/style)."
+ ;
+ 
+ STRENGTH:
+@@ -123,7 +124,7 @@
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=ATHLETICS,25
+-description="Melee max hit. Trained by melee damage in fast mode."
++description="Melee max hit. Trained by melee damage with the Strength or Shared combat style (/style)."
+ ;
+ 
+ DEFENCE:
+@@ -134,10 +135,12 @@
+ mirror=V_ARMORSKILL
+ start=1
+ max=99
+-use_xp=5
+-feed=HP,10
++use_xp=2
++dmg_xp=12
++feed=HP,33
++feed=ENDURANCE,10
+ feed=ATHLETICS,25
+-description="Avoids melee hits and resists spells. Needed to wear armour, and raises the stats of the armour you wear. Trained when attacks on you miss."
++description="Avoids melee hits and resists spells. Needed to wear armour, and raises the stats of the armour you wear. Trained by melee damage with the Defence or Shared combat style (/style), and a little when attacks on you miss."
+ ;
+ 
+ WARCRY:

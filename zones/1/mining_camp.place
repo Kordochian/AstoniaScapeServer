@@ -1,0 +1,55 @@
+# =====================================================================
+# mining_camp.place - test mining and woodcutting camp east of the Cameron start
+# =====================================================================
+# .place files are read after the .map files of the area. They add things
+# to the map without changing the .map: at="x,y" picks a tile (the tile must
+# not have an item yet), then it=<item template> puts an item there.
+# Templates are in zones/generic/skilling.itm.
+
+at="132,181"
+it=furnace
+at="134,181"
+it=anvil
+at="129,181"
+it=mining_supplies
+
+at="136,183"
+it=rock_copper
+at="138,183"
+it=rock_copper
+at="140,183"
+it=rock_tin
+at="136,186"
+it=rock_tin
+at="138,186"
+it=rock_iron
+at="140,186"
+it=rock_coal
+
+# ---- woodcutting and crafting, west of the mining camp ----
+at="122,181"
+it=sk_woodcutting_supplies
+at="125,181"
+it=sk_workbench
+
+at="119,184"
+it=sk_tree_normal
+at="121,184"
+it=sk_tree_normal
+at="123,184"
+it=sk_tree_oak
+at="125,184"
+it=sk_tree_oak
+at="127,184"
+it=sk_tree_willow
+at="119,187"
+it=sk_tree_maple
+at="121,187"
+it=sk_tree_yew
+
+at="119,178"
+it=sk_flax_plant
+at="121,178"
+it=sk_flax_plant
+at="123,178"
+it=sk_flax_plant

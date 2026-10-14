@@ -1,0 +1,217 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 19:59:37.884572532 +0000
++++ b/src/act.c	2026-10-13 19:59:37.886938844 +0000
+@@ -27,6 +27,7 @@
+ #include "area.h"
+ #include "date.h"
+ #include "balance.h"
++#include "skilling.h"
+ #include "player.h"
+ #include "clan.h"
+ #include "act.h"
+@@ -354,6 +355,7 @@
+ 
+     if ((tmp = die(1, 100)) < chance) {
+         dam = ch[cn].value[0][V_WEAPON] * POWERSCALE / 20 + die(3, 6) * POWERSCALE;
++        dam = (long long)dam * damage_percent(cn, weapon_value(cn), 1) / 100; // weapon skill level and gear bonuses
+         if (dam < 0) dam = 0;
+         if (direct) sound_area(ch[cn].x, ch[cn].y, 7);
+     } else {
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 19:59:37.889699738 +0000
++++ b/src/balance.c	2026-10-13 19:59:37.894915739 +0000
+@@ -7,6 +7,7 @@
+ #include "talk.h"
+ #include "btrace.h"
+ #include "balance.h"
++#include "skilling.h"
+ 
+ int get_fight_skill(int cn) {
+     int in, m = 0;
+@@ -298,12 +299,17 @@
+     return immunity_reduction(cn, co, pwr);
+ }
+ 
++// damage percent from gear on that spell skill (damage_percent in skilling.c)
++static int spell_damage(int cn, int co, int str, int v) {
++    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0) * damage_percent(cn, v, 0) / 100.0;
++}
++
+ int fireball_damage(int cn, int co, int str) {
+-    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0);
++    return spell_damage(cn, co, str, V_FIRE);
+ }
+ 
+ // total damage of a lightning ball or flash over its whole life: the same as
+ // one fireball (add_strike() in effect.c spreads it over the strikes)
+ int strike_damage(int cn, int co, int str) {
+-    return fireball_damage(cn, co, str);
++    return spell_damage(cn, co, str, V_FLASH);
+ }
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 19:59:37.873699737 +0000
++++ b/src/create.c	2026-10-13 19:59:37.875980117 +0000
+@@ -1589,6 +1589,7 @@
+                     if (it[in].driver == IDR_BLESS) continue; // Bless no longer changes stats: it helps gathering and crafting (skilling.c)
+                     else if (v1 == V_SPEED && it[in].driver == IDR_WARCRY) spellspeed = min(spellspeed, it[in].mod_value[m]);
+                     else if (v1 == V_SPEED && it[in].driver == IDR_FREEZE) spellspeed = min(spellspeed, it[in].mod_value[m]);
++                    else if (n < 12 && is_damage_skill(v1)) continue; // gear on weapon skills, Fire and Lightning adds damage instead (damage_percent in skilling.c)
+                     else mod[v1] += v;
+                 }
+             }
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 19:59:37.865699736 +0000
++++ b/src/skilling.c	2026-10-13 19:59:37.868693647 +0000
+@@ -99,6 +99,10 @@
+ // config: while blessed, bless_gather percent is added to the gather chance and bless_craft percent taken off fail
+ // chances, plus *_strength percent of the spell's strength on top (0 = flat bonus only)
+ static int bless_gather = 10, bless_craft = 10, bless_gather_strength = 0, bless_craft_strength = 0;
++// config: damage bonuses (percent). A player's weapon skill level adds weapon_level_damage% of the level
++// to melee damage (100 = +1% per level). Gear modifiers on a weapon skill, Fire or Lightning add
++// gear_damage% of the points (50: +20 Lightning = +10%), at most gear_damage_cap%.
++static int weapon_level_damage = 100, gear_damage = 50, gear_damage_cap = 25;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ static int is_node(int type) {
+@@ -245,6 +249,9 @@
+                 else if (!strcasecmp(name, "bless_craft")) bless_craft = max(0, atoi(value));
+                 else if (!strcasecmp(name, "bless_gather_strength")) bless_gather_strength = max(0, atoi(value));
+                 else if (!strcasecmp(name, "bless_craft_strength")) bless_craft_strength = max(0, atoi(value));
++                else if (!strcasecmp(name, "weapon_level_damage")) weapon_level_damage = max(0, atoi(value));
++                else if (!strcasecmp(name, "gear_damage")) gear_damage = max(0, atoi(value));
++                else if (!strcasecmp(name, "gear_damage_cap")) gear_damage_cap = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -492,6 +499,9 @@
+     nskdef = 0;
+     bless_gather = bless_craft = 10;
+     bless_gather_strength = bless_craft_strength = 0;
++    weapon_level_damage = 100;
++    gear_damage = 50;
++    gear_damage_cap = 25;
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+     if (!(text = skillcfg_read(SKILLING_CFG))) {
+@@ -1181,3 +1191,43 @@
+     send_craft_list(cn, rtype, 0);
+     return 1;
+ }
++
++// ---------- damage bonuses (combat) ----------
++
++// skills whose gear modifiers add damage instead of skill levels (see update_char in create.c)
++int is_damage_skill(int v) {
++    return v == V_HAND || v == V_DAGGER || v == V_STAFF || v == V_SWORD || v == V_TWOHAND || v == V_FIRE || v == V_FLASH;
++}
++
++// sum of the modifiers for value v on the items cn wears (slots 0-11), with the same quality
++// effectivity update_char uses
++static int gear_points(int cn, int v) {
++    int n, m, in, sum = 0;
++    double effectivity;
++
++    for (n = 0; n < 12; n++) {
++        if (!(in = ch[cn].item[n]) || in >= MAXITEM) continue;
++        if (it[in].complexity > 0) {
++            if ((int)(it[in].complexity * 1.2) > it[in].quality) effectivity = (double)it[in].quality / it[in].complexity;
++            else effectivity = 1.2;
++        } else effectivity = 1.0;
++        for (m = 0; m < MAXMOD; m++) {
++            if (it[in].mod_index[m] == v && it[in].mod_value[m]) sum += (int)round(it[in].mod_value[m] * effectivity);
++        }
++    }
++    return sum;
++}
++
++// damage in percent (100 = unchanged) for cn hitting with skill v. level: also add the weapon skill
++// level bonus (melee; spells already grow with their level). The level bonus is for players only:
++// NPC damage stays as their templates set it.
++int damage_percent(int cn, int v, int level) {
++    int pct = 100;
++
++    if (cn < 1 || cn >= MAXCHARS || v < 0 || v >= V_MAX) return 100;
++
++    if (level && (ch[cn].flags & CF_PLAYER)) pct += ch[cn].value[1][v] * weapon_level_damage / 100;
++    pct += min(gear_damage_cap, gear_points(cn, v) * gear_damage / 100);
++
++    return max(0, pct);
++}
+diff -ru a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 19:59:37.869699736 +0000
++++ b/src/skilling.h	2026-10-13 19:59:37.872576182 +0000
+@@ -8,6 +8,8 @@
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
++int is_damage_skill(int v); // weapon skills, Fire, Lightning: gear adds damage, not levels
++int damage_percent(int cn, int v, int level); // 100 = normal damage; skill level and gear bonuses
+ 
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 19:59:37.877426116 +0000
++++ b/src/skillreg.c	2026-10-13 19:59:37.879500144 +0000
+@@ -583,8 +583,8 @@
+     add_skill_xp(cn, id, max(1, dam * skilldef[id].dmg_xp / POWERSCALE));
+ }
+ 
+-// registry id of the weapon skill cn is fighting with
+-int skill_weapon_id(int cn) {
++// value index (V_HAND ... V_TWOHAND) of the weapon skill cn is fighting with
++int weapon_value(int cn) {
+     int in, v = V_HAND, best = -1;
+ 
+     in = ch[cn].item[WN_RHAND];
+@@ -596,7 +596,12 @@
+         if ((it[in].flags & IF_SWORD) && ch[cn].value[0][V_SWORD] > best) best = ch[cn].value[0][v = V_SWORD];
+         if ((it[in].flags & IF_TWOHAND) && ch[cn].value[0][V_TWOHAND] > best) best = ch[cn].value[0][v = V_TWOHAND];
+     }
+-    return skill_for_value(v);
++    return v;
++}
++
++// registry id of the weapon skill cn is fighting with
++int skill_weapon_id(int cn) {
++    return skill_for_value(weapon_value(cn));
+ }
+ 
+ // called at every login: gives every player all starting skills and keeps XP in line
+diff -ru a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 19:59:37.881165451 +0000
++++ b/src/skillreg.h	2026-10-13 19:59:37.882985531 +0000
+@@ -66,6 +66,7 @@
+ int skill_add_level(int cn, int id);
+ void skill_used(int cn, int id);
+ void skill_damage_xp(int cn, int id, int dam);
++int weapon_value(int cn); // V_HAND ... V_TWOHAND of the weapon cn fights with
+ int skill_weapon_id(int cn);
+ void skills_init_player(int cn);
+ int skills_show(int cn, char *filter);
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 19:59:37.897699738 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 19:59:37.899977170 +0000
+@@ -62,11 +62,23 @@
+ # of recipes that have fail=. bless_gather_strength / bless_craft_strength
+ # add that percent of the spell's strength on top (0 = flat bonus only;
+ # 10 would give a strength 60 Bless another +6%).
++#
++# Damage (combat, all percent):
++# weapon_level_damage: a player's weapon skill level adds this percent of
++#   the level to melee damage (100 = +1% per level: Sword 50 = +50%).
++#   NPCs don't get it (their damage stays as their templates set it).
++# gear_damage: modifiers on worn gear for a weapon skill (Hand, Dagger,
++#   Staff, Sword, Two-Handed), Fire or Lightning add this percent of the
++#   points to that skill's damage (50: a +20 Lightning ring = +10%) instead
++#   of raising the skill. gear_damage_cap is the most gear can add.
+ config:
+ bless_gather=10
+ bless_craft=10
+ bless_gather_strength=0
+ bless_craft_strength=0
++weapon_level_damage=100
++gear_damage=50
++gear_damage_cap=25
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------

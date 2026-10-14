@@ -1,0 +1,34 @@
+BasedOnStyle: LLVM
+
+# 4 spaces, never tabs
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Full K&R braces everywhere (structs too)
+BreakBeforeBraces: Attach
+
+# Don't wrap lines (prevents introducing '\' continuations)
+ColumnLimit: 0
+
+# Keep compact one-liners (as in your code)
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+
+# Pointer stars like: `struct item *next;`
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+# Don't reflow banners / comments
+ReflowComments: false
+
+# Don't reorder includes
+SortIncludes: false
+IncludeBlocks: Preserve
+
+# Avoid alignment churn
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignOperands: false
+AlignTrailingComments: false

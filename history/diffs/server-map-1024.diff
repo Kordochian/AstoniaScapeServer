@@ -1,0 +1,196 @@
+--- a/src/server.h	2026-10-13 00:10:23.446050238 +0000
++++ b/src/server.h	2026-10-13 00:10:56.313979895 +0000
+@@ -26,7 +26,7 @@
+ 
+ #define RANDOM(a) (rand() % (a))
+ 
+-#define MAXMAP 256
++#define MAXMAP 1024 // map width and height of every area. Zones made for 256x256 still work (see add_map_border).
+ #define TOTAL_MAXCHARS 2048
+ #define MAXITEM (maxitem) //6144	//16384
+ #define MAXCHARS (maxchars) //768	//2048		// MUST be a multiple of 8
+--- a/src/tool.h	2026-10-13 00:10:23.446812985 +0000
++++ b/src/tool.h	2026-10-13 00:11:11.620147981 +0000
+@@ -126,3 +126,10 @@
+ int has_spell(int cn, int driver);
+ int store_item(int cn, int in);
+ void update_fix_item(int in, int cn);
++
++// Number that identifies a map position in this area (for player data such as used chests).
++// Positions inside the old 256x256 map keep their old numbers, so saved data stays valid.
++static inline int map_pos_id(int x, int y) {
++    if (x < 256 && y < 256) return x + (y << 8) + (areaID << 16);
++    return (1 << 30) | (areaID << 20) | (y << 10) | x;
++}
+--- a/src/create.c	2026-10-13 00:10:23.442876240 +0000
++++ b/src/create.c	2026-10-13 00:11:11.644253476 +0000
+@@ -1073,6 +1073,19 @@
+     }
+ }
+ 
++// highest map position used by this area's .map files; see add_map_border()
++static int zone_maxx = 0, zone_maxy = 0;
++
++static int map_pos_ok(int x, int y, int line) {
++    if (x < 0 || x >= MAXMAP || y < 0 || y >= MAXMAP) {
++        elog("Error in line %d: position %d,%d is outside the %dx%d map.", line, x, y, MAXMAP, MAXMAP);
++        return 0;
++    }
++    if (x > zone_maxx) zone_maxx = x;
++    if (y > zone_maxy) zone_maxy = y;
++    return 1;
++}
++
+ static int process_map(char *ptr) {
+     char name[256], value[256], one[256], two[256];
+     int line = 1;
+@@ -1099,6 +1112,7 @@
+             }
+             x = atoi(one) + ox;
+             y = atoi(two) + oy;
++            if (!map_pos_ok(x, y, line)) return 0;
+             bzero(map + x + y * MAXMAP, sizeof(struct map));
+         } else if (!strcasecmp(name, "from")) {
+             if (!comma(one, two, value)) {
+@@ -1107,6 +1121,7 @@
+             }
+             xf = atoi(one) + ox;
+             yf = atoi(two) + oy;
++            if (!map_pos_ok(xf, yf, line)) return 0;
+         } else if (!strcasecmp(name, "to")) {
+             if (!comma(one, two, value)) {
+                 elog("Error in line %d: Expected two comma seperated values.", line);
+@@ -1114,6 +1129,7 @@
+             }
+             xt = atoi(one) + ox;
+             yt = atoi(two) + oy;
++            if (!map_pos_ok(xt, yt, line)) return 0;
+             field2square(x + y * MAXMAP, xf, yf, xt, yt);
+         } else if (!strcasecmp(name, "gsprite")) map[x + y * MAXMAP].gsprite = atoi(value);
+         else if (!strcasecmp(name, "fsprite")) map[x + y * MAXMAP].fsprite = atoi(value);
+@@ -1384,11 +1400,15 @@
+     used_items--;
+ }
+ 
++// size the zone was made for: 256x256 for the old zones, otherwise the used area rounded up
++// to a multiple of 256. Everything outside it is blocked, so old zones behave as before.
++static int zone_w = 256, zone_h = 256;
++
+ static void calc_daylight(void) {
+     int x, y;
+ 
+-    for (y = 0; y < MAXMAP; y++) {
+-        for (x = 0; x < MAXMAP; x++) {
++    for (y = 0; y < zone_h; y++) {
++        for (x = 0; x < zone_w; x++) {
+             if (map[x + y * MAXMAP].flags & MF_INDOORS) {
+                 compute_dlight(x, y);
+             } else {
+@@ -1400,34 +1420,20 @@
+ }
+ 
+ void add_map_border(void) {
+-    int x, y;
++    int x, y, m;
+ 
+-    for (x = 0; x < MAXMAP; x++) {
+-        map[x + 0 * MAXMAP].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[x + 0 * MAXMAP].flags &= ~MF_FIRETHRU;
+-
+-        map[x + 1 * MAXMAP].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[x + 1 * MAXMAP].flags &= ~MF_FIRETHRU;
+-
+-        map[x + (MAXMAP - 1) * MAXMAP].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[x + (MAXMAP - 1) * MAXMAP].flags &= ~MF_FIRETHRU;
+-
+-        map[x + (MAXMAP - 2) * MAXMAP].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[x + (MAXMAP - 2) * MAXMAP].flags &= ~MF_FIRETHRU;
+-    }
++    zone_w = min(MAXMAP, max(256, (zone_maxx + 1 + 255) / 256 * 256));
++    zone_h = min(MAXMAP, max(256, (zone_maxy + 1 + 255) / 256 * 256));
++    xlog("Zone size %dx%d (map %dx%d)", zone_w, zone_h, MAXMAP, MAXMAP);
+ 
++    // two lines of wall around the zone, and nothing beyond it
+     for (y = 0; y < MAXMAP; y++) {
+-        map[y * MAXMAP + 0].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[y * MAXMAP + 0].flags &= ~MF_FIRETHRU;
+-
+-        map[y * MAXMAP + 1].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[y * MAXMAP + 1].flags &= ~MF_FIRETHRU;
+-
+-        map[y * MAXMAP + MAXMAP - 1].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[y * MAXMAP + MAXMAP - 1].flags &= ~MF_FIRETHRU;
+-
+-        map[y * MAXMAP + MAXMAP - 2].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
+-        map[y * MAXMAP + MAXMAP - 2].flags &= ~MF_FIRETHRU;
++        for (x = 0; x < MAXMAP; x++) {
++            if (x > 1 && y > 1 && x < zone_w - 2 && y < zone_h - 2) continue;
++            m = x + y * MAXMAP;
++            map[m].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
++            map[m].flags &= ~MF_FIRETHRU;
++        }
+     }
+ }
+ 
+--- a/src/alchemy.c	2026-10-13 00:10:23.441218429 +0000
++++ b/src/alchemy.c	2026-10-13 00:10:56.314437538 +0000
+@@ -1005,7 +1005,7 @@
+     ppd = set_data(cn, DRD_FLOWER_PPD, sizeof(struct flower_ppd));
+     if (!ppd) return; // oops...
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXFLOWER; n++) {
+         if (ppd->ID[n] == ID) break;
+--- a/src/base.c	2026-10-13 00:10:23.441695478 +0000
++++ b/src/base.c	2026-10-13 00:10:56.315013262 +0000
+@@ -1478,7 +1478,7 @@
+     ppd = set_data(cn, DRD_RANDCHEST_PPD, sizeof(struct randchest_ppd));
+     if (!ppd) return; // oops...
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXRANDCHEST; n++) {
+         if (ppd->ID[n] == ID) break;
+@@ -2016,7 +2016,7 @@
+     ppd = set_data(cn, DRD_DEMONSHRINE_PPD, sizeof(struct demonshrine_ppd));
+     if (!ppd) return; // oops...
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXDEMONSHRINE; n++) {
+         if (ppd->ID[n] == ID) break;
+@@ -2361,7 +2361,7 @@
+     ppd = set_data(cn, DRD_EXPLORE_PPD, sizeof(struct explore_ppd));
+     if (!ppd) return; // oops...
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXEXPLORE; n++) {
+         if (ppd->ID[n] == ID) {
+--- a/src/sewers.c	2026-10-13 00:10:23.446069855 +0000
++++ b/src/sewers.c	2026-10-13 00:10:56.315284317 +0000
+@@ -190,7 +190,7 @@
+         return;
+     }
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXRATCHEST; n++) {
+         if (ppd->ID[n] == ID) break;
+--- a/src/warped.c	2026-10-13 00:10:23.447056196 +0000
++++ b/src/warped.c	2026-10-13 00:10:56.315487851 +0000
+@@ -273,7 +273,7 @@
+         return;
+     }
+ 
+-    ID = (int)it[in].x + ((int)(it[in].y) << 8) + (areaID << 16);
++    ID = map_pos_id(it[in].x, it[in].y);
+ 
+     for (n = 0; n < MAXWARPBONUS; n++) {
+         if (ppd->bonusID[n] == ID) break;

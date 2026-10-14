@@ -1,0 +1,288 @@
+diff -ru a/arena.c b/arena.c
+--- a/arena.c	2026-10-13 11:18:18.670221647 +0000
++++ b/arena.c	2026-10-13 11:18:18.763921047 +0000
+@@ -106,7 +106,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/arkhata.c b/arkhata.c
+--- a/arkhata.c	2026-10-13 11:18:18.674371181 +0000
++++ b/arkhata.c	2026-10-13 11:18:18.769234949 +0000
+@@ -159,7 +159,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/aston.c b/aston.c
+--- a/aston.c	2026-10-13 11:18:18.677332209 +0000
++++ b/aston.c	2026-10-13 11:18:18.773886546 +0000
+@@ -120,7 +120,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/bank.c b/bank.c
+--- a/bank.c	2026-10-13 11:18:18.679582535 +0000
++++ b/bank.c	2026-10-13 11:18:18.778598674 +0000
+@@ -110,7 +110,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/base.c b/base.c
+--- a/base.c	2026-10-13 11:18:18.681652578 +0000
++++ b/base.c	2026-10-13 11:18:18.786380662 +0000
+@@ -132,7 +132,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/below_aston2.c b/below_aston2.c
+--- a/below_aston2.c	2026-10-13 11:18:18.683848310 +0000
++++ b/below_aston2.c	2026-10-13 11:18:18.791715149 +0000
+@@ -116,7 +116,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/bran_forest.c b/bran_forest.c
+--- a/bran_forest.c	2026-10-13 11:18:18.687931093 +0000
++++ b/bran_forest.c	2026-10-13 11:18:18.796545194 +0000
+@@ -109,7 +109,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/brannington.c b/brannington.c
+--- a/brannington.c	2026-10-13 11:18:18.690414691 +0000
++++ b/brannington.c	2026-10-13 11:18:18.802026169 +0000
+@@ -121,7 +121,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/caligar.c b/caligar.c
+--- a/caligar.c	2026-10-13 11:18:18.696282595 +0000
++++ b/caligar.c	2026-10-13 11:18:18.807857159 +0000
+@@ -116,7 +116,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/cameron.c b/cameron.c
+--- a/cameron.c	2026-10-13 11:18:18.698406249 +0000
++++ b/cameron.c	2026-10-13 11:18:18.812595561 +0000
+@@ -120,7 +120,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/clanmaster.c b/clanmaster.c
+--- a/clanmaster.c	2026-10-13 11:18:18.701115380 +0000
++++ b/clanmaster.c	2026-10-13 11:18:18.818869745 +0000
+@@ -126,7 +126,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/clubmaster.c b/clubmaster.c
+--- a/clubmaster.c	2026-10-13 11:18:18.704605638 +0000
++++ b/clubmaster.c	2026-10-13 11:18:18.823655663 +0000
+@@ -110,7 +110,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/exkordon.c b/exkordon.c
+--- a/exkordon.c	2026-10-13 11:18:18.706829109 +0000
++++ b/exkordon.c	2026-10-13 11:18:18.828811371 +0000
+@@ -125,7 +125,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/fdemon.c b/fdemon.c
+--- a/fdemon.c	2026-10-13 11:18:18.709889002 +0000
++++ b/fdemon.c	2026-10-13 11:18:18.833679747 +0000
+@@ -201,7 +201,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 } else name = 1;
+             }
+             n = 0;
+diff -ru a/forest.c b/forest.c
+--- a/forest.c	2026-10-13 11:18:18.714024714 +0000
++++ b/forest.c	2026-10-13 11:18:18.838834445 +0000
+@@ -106,7 +106,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/gatekeeper.c b/gatekeeper.c
+--- a/gatekeeper.c	2026-10-13 11:18:18.716184303 +0000
++++ b/gatekeeper.c	2026-10-13 11:18:18.843272974 +0000
+@@ -130,7 +130,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/merchant.c b/merchant.c
+--- a/merchant.c	2026-10-13 11:18:18.718015087 +0000
++++ b/merchant.c	2026-10-13 11:18:18.847809232 +0000
+@@ -103,7 +103,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/military.c b/military.c
+--- a/military.c	2026-10-13 11:18:18.721029582 +0000
++++ b/military.c	2026-10-13 11:18:18.852497586 +0000
+@@ -132,7 +132,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/minoa.c b/minoa.c
+--- a/minoa.c	2026-10-13 11:18:18.722974612 +0000
++++ b/minoa.c	2026-10-13 11:18:18.856829264 +0000
+@@ -121,7 +121,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/nomad.c b/nomad.c
+--- a/nomad.c	2026-10-13 11:18:18.724948797 +0000
++++ b/nomad.c	2026-10-13 11:18:18.862508088 +0000
+@@ -115,7 +115,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/professor.c b/professor.c
+--- a/professor.c	2026-10-13 11:18:18.727287429 +0000
++++ b/professor.c	2026-10-13 11:18:18.867804693 +0000
+@@ -112,7 +112,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/random.c b/random.c
+--- a/random.c	2026-10-13 11:18:18.729130638 +0000
++++ b/random.c	2026-10-13 11:18:18.873081190 +0000
+@@ -261,7 +261,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/swamp.c b/swamp.c
+--- a/swamp.c	2026-10-13 11:18:18.731685982 +0000
++++ b/swamp.c	2026-10-13 11:18:18.878007090 +0000
+@@ -108,7 +108,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
+diff -ru a/warped.c b/warped.c
+--- a/warped.c	2026-10-13 11:18:18.733497854 +0000
++++ b/warped.c	2026-10-13 11:18:18.882473871 +0000
+@@ -114,7 +114,7 @@
+                 word[n] = 0;
+                 lowerstrcpy(wordlist[w], word);
+                 if (strcasecmp(wordlist[w], ch[cn].name)) {
+-                    if (w < 20) w++;
++                    if (w < 19) w++; // wordlist has 20 entries: more words reuse the last one
+                 }
+             }
+             n = 0;
