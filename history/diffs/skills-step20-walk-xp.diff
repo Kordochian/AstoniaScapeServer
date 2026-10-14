@@ -1,0 +1,147 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 23:28:35.173748048 +0000
++++ b/src/act.c	2026-10-13 23:28:35.179043853 +0000
+@@ -176,7 +176,7 @@
+         }
+     }
+ 
+-    if ((ch[cn].flags & CF_PLAYER) && ch[cn].speed_mode == SM_STEALTH) skill_used(cn, skill_for_value(V_STEALTH));
++    skilling_walk_xp(cn); // fast / stealth mode steps train Athletics, Perception, Stealth
+ 
+     reduce_rage(cn);
+     if (has_spell(cn, IDR_FLASH)) hurt_equipment(cn, 1);
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 23:28:35.176234704 +0000
++++ b/src/skilling.c	2026-10-13 23:28:35.179359101 +0000
+@@ -107,6 +107,8 @@
+ // damage they deal (dmg_xp of MAGIC in skills.cfg)
+ static int spell_xp_heal = 15, spell_xp_bless = 15, spell_xp_freeze = 15, spell_xp_magicshield = 15;
+ static int spell_xp_fire = 0, spell_xp_lightning = 0;
++// config: XP per step by speed mode. walk_xp is the base per step, the others are percent of it per skill
++static int walk_xp = 2, fast_athletics = 50, fast_perception = 50, stealth_stealth = 100, stealth_athletics = 25;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ // Magic XP for one successful cast of the spell in value slot v, -1 if v is not a spell (use the skill's use_xp)
+@@ -122,6 +124,28 @@
+     }
+ }
+ 
++// pct percent of walk_xp to the skill in value slot v; a fraction of a point is given by chance (half a
++// point = one point every second step on average)
++static void walk_xp_to(int cn, int v, int pct) {
++    int xp = walk_xp * pct;
++
++    if (xp <= 0) return;
++    if (RANDOM(100) < xp % 100) xp += 100;
++    if (xp >= 100) add_skill_xp(cn, skill_for_value(v), xp / 100);
++}
++
++// XP for one step of a player: fast mode trains Athletics and Perception, stealth mode Stealth and Athletics
++void skilling_walk_xp(int cn) {
++    if (!(ch[cn].flags & CF_PLAYER)) return;
++    if (ch[cn].speed_mode == SM_FAST) {
++        walk_xp_to(cn, V_SPEEDSKILL, fast_athletics);
++        walk_xp_to(cn, V_PERCEPT, fast_perception);
++    } else if (ch[cn].speed_mode == SM_STEALTH) {
++        walk_xp_to(cn, V_STEALTH, stealth_stealth);
++        walk_xp_to(cn, V_SPEEDSKILL, stealth_athletics);
++    }
++}
++
+ static int is_node(int type) {
+     return type == SKT_ROCK || type == SKT_TREE || type == SKT_PLANT;
+ }
+@@ -291,6 +315,11 @@
+                 else if (!strcasecmp(name, "spell_xp_magicshield")) spell_xp_magicshield = max(0, atoi(value));
+                 else if (!strcasecmp(name, "spell_xp_fire")) spell_xp_fire = max(0, atoi(value));
+                 else if (!strcasecmp(name, "spell_xp_lightning")) spell_xp_lightning = max(0, atoi(value));
++                else if (!strcasecmp(name, "walk_xp")) walk_xp = max(0, atoi(value));
++                else if (!strcasecmp(name, "fast_athletics")) fast_athletics = max(0, atoi(value));
++                else if (!strcasecmp(name, "fast_perception")) fast_perception = max(0, atoi(value));
++                else if (!strcasecmp(name, "stealth_stealth")) stealth_stealth = max(0, atoi(value));
++                else if (!strcasecmp(name, "stealth_athletics")) stealth_athletics = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -541,6 +570,10 @@
+     body_control_gather = clarity_luck = 2;
+     spell_xp_heal = spell_xp_bless = spell_xp_freeze = spell_xp_magicshield = 15;
+     spell_xp_fire = spell_xp_lightning = 0;
++    walk_xp = 2;
++    fast_athletics = fast_perception = 50;
++    stealth_stealth = 100;
++    stealth_athletics = 25;
+     combat_settings_reset();
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+diff -ru a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 23:28:35.176571854 +0000
++++ b/src/skilling.h	2026-10-13 23:28:35.179597127 +0000
+@@ -8,6 +8,7 @@
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
++void skilling_walk_xp(int cn); // XP for one step by speed mode (walk_xp ... in config:)
+ int skilling_spell_xp(int v); // Magic XP per cast of the spell in value slot v (spell_xp_* in config:), -1 = not a spell
+ 
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 23:28:41.669530344 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 23:28:41.757944883 +0000
+@@ -132,6 +132,12 @@
+ # spell_xp_magicshield give this much XP every cast. spell_xp_fire and
+ # spell_xp_lightning are 0, so Fire and Lightning only give XP for the
+ # damage they do to an enemy (dmg_xp of MAGIC in skills.cfg, per hitpoint).
++#
++# Walking XP per step (players): walk_xp is the base, the others are the
++# percent of it each skill gets. Fast mode: fast_athletics to Athletics and
++# fast_perception to Perception. Stealth mode: stealth_stealth to Stealth and
++# stealth_athletics to Athletics. Normal mode gives none. Fractions are given
++# by chance (half a point = one point every second step on average).
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -162,6 +168,11 @@
+ spell_xp_magicshield=15
+ spell_xp_fire=0
+ spell_xp_lightning=0
++walk_xp=2
++fast_athletics=50
++fast_perception=50
++stealth_stealth=100
++stealth_athletics=25
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 23:28:41.669384637 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 23:28:41.757267741 +0000
+@@ -156,7 +156,7 @@
+ value=V_SPEEDSKILL
+ start=1
+ max=99
+-description="Movement and attack speed. Gets a quarter of Attack, Defence, Warcry, Mining and Woodcutting XP."
++description="Movement and attack speed. Trained by walking in fast or stealth mode, and gets a quarter of Attack, Defence, Warcry, Mining and Woodcutting XP."
+ ;
+ 
+ SLAYER:
+@@ -210,8 +210,8 @@
+ value=V_STEALTH
+ start=1
+ max=99
+-use_xp=2
+-feed=PERCEPTION,25
++# walking XP is set in skilling.cfg (walk_xp, stealth_stealth ... in config:)
++use_xp=0
+ description="Stay hidden in stealth mode. Trained by walking in stealth mode."
+ ;
+ 
+@@ -223,7 +223,7 @@
+ start=1
+ max=99
+ use_xp=20
+-description="See characters in stealth mode. Trained by spotting them, and gets a quarter of Stealth XP."
++description="See characters in stealth mode. Trained by spotting them and by walking in fast mode."
+ ;
+ 
+ # ---- gathering ----

@@ -1,0 +1,1382 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 22:48:59.137409872 +0000
++++ b/src/act.c	2026-10-13 22:48:59.139317357 +0000
+@@ -71,7 +71,7 @@
+             }
+         } else {
+             if (ch[cn].hp < ch[cn].value[0][V_HP] * POWERSCALE && areaID != 33) {
+-                if (!(val = ch[cn].value[0][V_REGENERATE])) val = 7;
++                val = 7 + ch[cn].value[0][V_REGENERATE]; // step 18: Regenerate adds to the base rate
+                 ch[cn].hp = min(ch[cn].value[0][V_HP] * POWERSCALE, ch[cn].hp + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
+                 if ((ch[cn].flags & CF_PLAYER) && RANDOM(TICKS) < ch[cn].act1) skill_used(cn, skill_for_value(V_REGENERATE)); // about once per second
+@@ -79,13 +79,13 @@
+ 
+             // step 16: players do not get endurance back while in stealth mode
+             if (ch[cn].endurance < ch[cn].value[0][V_ENDURANCE] * POWERSCALE && !(ch[cn].speed_mode == SM_STEALTH && (ch[cn].flags & CF_PLAYER))) {
+-                val = 150;
++                val = 150 + ch[cn].value[0][V_REGENERATE] * 3 / 2; // step 18: +1% per Regenerate level
+                 ch[cn].endurance = min(ch[cn].value[0][V_ENDURANCE] * POWERSCALE, ch[cn].endurance + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
+             }
+ 
+             if (ch[cn].mana < ch[cn].value[0][V_MANA] * POWERSCALE) {
+-                if (!(val = ch[cn].value[0][V_MEDITATE])) val = 7;
++                val = 7 + ch[cn].value[0][V_MEDITATE]; // step 18: Meditate follows Regenerate for players
+                 val += wisdom_boost(cn); // Wisdom helps mana regeneration
+                 ch[cn].mana = min(ch[cn].value[0][V_MANA] * POWERSCALE, ch[cn].mana + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 22:48:59.141711387 +0000
++++ b/src/balance.c	2026-10-13 22:48:59.144122789 +0000
+@@ -52,12 +52,14 @@
+ }
+ 
+ // ---------- RuneScape-style melee (step 14, George 2026-10-13) ----------
+-// Effective levels: accuracy = (weapon skill + Attack) / 2, strength = (weapon skill + STR) / 2,
+-// defence = (weapon skill + Parry) / 2, surround = (weapon skill + Surround) / 2, each plus
+-// combat_tactics_boost percent of Tactics, then raised by Body Control (step 15). Gear adds
++// Effective levels (step 18, George: one skill, one job): accuracy = Attack, strength = Strength,
++// defence = Defence (V_PARRY), surround = (weapon skill + Surround) / 2. For players the weapon skills
++// mirror Attack (skills.cfg). Enemies use the same values from their .chr files (V_ATTACK, V_STR,
++// V_PARRY). Each plus combat_tactics_boost percent of Tactics (enemies only now, players have no
++// Tactics; default 0), then raised by Body Control (players: retired, 0). Gear adds
+ // Melee Accuracy / Strength / Defence bonuses.
+ 
+-int combat_tactics_boost = 10, combat_min_hit = 20, combat_armor_soak = 75, combat_magic_damage_cap = 50;
++int combat_tactics_boost = 0, combat_min_hit = 20, combat_armor_soak = 75, combat_magic_damage_cap = 50;
+ int combat_body_control = 3, combat_clarity = 3; // step 15: tenths of a percent per skill level
+ int combat_armor_class_percent = 5; // tenths of a percent per Armor Class level on worn armour's stats
+ int combat_weapon_skill_percent = 5; // tenths of a percent per weapon skill level on the wielded weapon's stats
+@@ -65,13 +67,15 @@
+ // mode and lowered this percent in fast mode; stealth walking costs this percent of a fast step's endurance
+ int perception_stealth = 25, perception_fast = 25, stealth_endurance = 100;
+ 
+-// Attributes, one job each (George 2026-10-13). They never change skill levels (the skills menu shows the
+-// trained level); they work inside the formulas, each adding this percent of the attribute:
+-// Strength -> the melee strength level ((weapon skill + STR) / 2 below)
+-// Agility -> the melee accuracy and defence levels (agility_bonus) and Speed (agility_speed, update_char)
+-// Intuition -> spell power of Bless, Heal, Freeze, Magic Shield, Lightning and Fire (spellpower())
+-// Wisdom -> Meditate's mana regeneration and Immunity against spells (wisdom_bonus)
+-int attr_agility = 10, attr_agility_speed = 40, attr_intuition = 20, attr_wisdom = 20;
++// Old attributes (step 17). Step 18 removed them from players (skills.cfg retire=); these percents
++// still work for enemies whose .chr files give them Agility / Intuition / Wisdom, default 0 (off):
++// Agility -> melee accuracy and defence levels (agility_bonus) and Speed (agility_speed)
++// Intuition -> spell power (spellpower()), Wisdom -> mana regeneration and Immunity (wisdom_bonus)
++int attr_agility = 0, attr_agility_speed = 0, attr_intuition = 0, attr_wisdom = 0;
++// Athletics (V_SPEEDSKILL, step 18): adds this percent of its level to Speed (movement and attack speed)
++int athletics_speed = 50;
++// Immunity against spells (step 18): at least this percent of Defence
++int immunity_defence = 50;
+ 
+ // what the attributes add to a value in update_char(): only Speed now
+ int attribute_bonus(int cn, int v) {
+@@ -91,9 +95,10 @@
+     return ch[cn].value[0][V_INT] * attr_intuition / 100;
+ }
+ 
+-// Immunity against spells: the skill plus Wisdom
++// Immunity against spells: the Immunity value (enemies) or immunity_defence percent of Defence,
++// whichever is higher, plus Wisdom
+ int immunity_value(int cn) {
+-    return ch[cn].value[0][V_IMMUNITY] + wisdom_boost(cn);
++    return max(ch[cn].value[0][V_IMMUNITY], ch[cn].value[0][V_PARRY] * immunity_defence / 100) + wisdom_boost(cn);
+ }
+ 
+ // Perception after the looker's speed mode (cautious in stealth, careless when running)
+@@ -106,7 +111,7 @@
+ }
+ 
+ void combat_settings_reset(void) {
+-    combat_tactics_boost = 10;
++    combat_tactics_boost = 0;
+     combat_min_hit = 20;
+     combat_armor_soak = 75;
+     combat_magic_damage_cap = 50;
+@@ -117,10 +122,12 @@
+     perception_stealth = 25;
+     perception_fast = 25;
+     stealth_endurance = 100;
+-    attr_agility = 10;
+-    attr_agility_speed = 40;
+-    attr_intuition = 20;
+-    attr_wisdom = 20;
++    attr_agility = 0;
++    attr_agility_speed = 0;
++    attr_intuition = 0;
++    attr_wisdom = 0;
++    athletics_speed = 50;
++    immunity_defence = 50;
+ }
+ 
+ // the skill an item's level requirement is on, when that skill boosts the item: Armor Class for
+@@ -175,15 +182,15 @@
+ }
+ 
+ int melee_attack_level(int cn) {
+-    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn) + agility_boost(cn));
++    return body_control(cn, ch[cn].value[0][V_ATTACK] + tactics_boost(cn) + agility_boost(cn));
+ }
+ 
+ int melee_strength_level(int cn) {
+-    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_STR]) / 2 + tactics_boost(cn));
++    return body_control(cn, ch[cn].value[0][V_STR] + tactics_boost(cn));
+ }
+ 
+ int melee_defence_level(int cn) {
+-    return body_control(cn, (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn) + agility_boost(cn));
++    return body_control(cn, ch[cn].value[0][V_PARRY] + tactics_boost(cn) + agility_boost(cn));
+ }
+ 
+ int melee_surround_level(int cn) {
+@@ -517,7 +524,7 @@
+     char desc[160];
+ 
+     if (!ch[cn].value[1][v]) return;
+-    snprintf(desc, sizeof(desc), "%s level %d, plus Intuition (+%d) and Clarity. %s", label, ch[cn].value[1][v], intuition_boost(cn), what);
++    snprintf(desc, sizeof(desc), "%s power: your Magic level (%d). %s", label, ch[cn].value[1][v], what);
+     effect_add(e, EG_MAGIC, label, desc, "%d", spellpower(cn, v));
+ }
+ 
+@@ -530,9 +537,9 @@
+     e->n = 0;
+ 
+     // melee
+-    effect_add(e, EG_MELEE, "Accuracy level", "Melee hit chance: (weapon skill + Attack) / 2, plus Agility, Tactics and Body Control.", "%d", melee_attack_level(cn));
+-    effect_add(e, EG_MELEE, "Strength level", "Melee max hit: (weapon skill + Strength) / 2, plus Tactics and Body Control.", "%d", melee_strength_level(cn));
+-    effect_add(e, EG_MELEE, "Defence level", "Chance to avoid melee hits: (weapon skill + Parry) / 2, plus Agility, Tactics and Body Control.", "%d", melee_defence_level(cn));
++    effect_add(e, EG_MELEE, "Accuracy level", "Melee hit chance: your Attack level.", "%d", melee_attack_level(cn));
++    effect_add(e, EG_MELEE, "Strength level", "Melee max hit: your Strength level.", "%d", melee_strength_level(cn));
++    effect_add(e, EG_MELEE, "Defence level", "Chance to avoid melee hits: your Defence level.", "%d", melee_defence_level(cn));
+     effect_add(e, EG_MELEE, "Max hit", "Highest damage one melee hit can do, in HP, before the enemy's armour.", "%.1f", melee_max_hit(cn) / (double)POWERSCALE);
+     effect_add(e, EG_MELEE, "Gear accuracy", "Melee accuracy bonus from your equipment (raises hit chance).", "%+d", ch[cn].value[0][V_MELEE_ACC]);
+     effect_add(e, EG_MELEE, "Gear strength", "Melee strength bonus from your equipment (raises max hit).", "%+d", ch[cn].value[0][V_MELEE_STR]);
+@@ -543,7 +550,7 @@
+         effect_add(e, EG_MELEE, "Weapon bonus", desc, "%+.1f%%", permille_pct(item_skill_permille(cn, sk)));
+     }
+     if (ch[cn].value[1][V_ARMORSKILL]) {
+-        snprintf(desc, sizeof(desc), "Your Armor Class level raises the stats of the armour you wear by %.1f%% per level, on you only.", combat_armor_class_percent / 10.0);
++        snprintf(desc, sizeof(desc), "Your Defence level raises the stats of the armour you wear by %.1f%% per level, on you only.", combat_armor_class_percent / 10.0);
+         effect_add(e, EG_MELEE, "Armor bonus", desc, "%+.1f%%", permille_pct(item_skill_permille(cn, V_ARMORSKILL)));
+     }
+     if (ch[cn].value[1][V_BODYCONTROL]) {
+@@ -553,6 +560,8 @@
+     if (ch[cn].value[1][V_TACTICS]) effect_add(e, EG_MELEE, "Tactics", "Your Tactics level adds to your melee accuracy, strength and defence levels.", "%+d", tactics_boost(cn));
+     snprintf(desc, sizeof(desc), "Armour from your gear. Each melee hit on you is reduced by up to %.1f HP, at most %d%% of the hit.", ch[cn].value[0][V_ARMOR] / 20.0 / ATTACK_DIV, combat_armor_soak);
+     effect_add(e, EG_MELEE, "Armor", desc, "%d", ch[cn].value[0][V_ARMOR]);
++    snprintf(desc, sizeof(desc), "Movement and attack speed. Athletics adds %d%% of its level (+%d now); heavy gear can lower it.", athletics_speed, ch[cn].value[0][V_SPEEDSKILL] * athletics_speed / 100);
++    effect_add(e, EG_MELEE, "Speed", desc, "%d", ch[cn].value[0][V_SPEED]);
+ 
+     // magic
+     spell_line(cn, e, V_FIRE, "Fire", "Raises fire damage and fireball hit chance.");
+@@ -570,15 +579,9 @@
+         snprintf(desc, sizeof(desc), "Your Clarity level raises spell power, spell damage and immunity by %.1f%% per level.", combat_clarity / 10.0);
+         effect_add(e, EG_MAGIC, "Clarity", desc, "%+.1f%%", permille_pct(clarity_permille(cn)));
+     }
+-    effect_add(e, EG_MAGIC, "Immunity", "Resistance to enemy spells: Immunity level plus Wisdom, and Clarity.", "%d", immunity_value(cn));
+-    effect_add(e, EG_MAGIC, "Mana regen", "Mana regained while resting: Meditate level plus Wisdom.", "%d", (ch[cn].value[0][V_MEDITATE] ? ch[cn].value[0][V_MEDITATE] : 7) + wisdom_boost(cn));
+-
+-    // attributes, one job each
+-    effect_add(e, EG_ATTRIBUTE, "Strength", "Half of your Strength is added to your melee strength level.", "%+d", ch[cn].value[0][V_STR] / 2);
+-    snprintf(desc, sizeof(desc), "Adds +%d to your melee accuracy and defence levels and +%d speed.", agility_boost(cn), attribute_bonus(cn, V_SPEED));
+-    effect_add(e, EG_ATTRIBUTE, "Agility", desc, "%+d", agility_boost(cn));
+-    effect_add(e, EG_ATTRIBUTE, "Intuition", "Added to the power of every spell you know.", "%+d", intuition_boost(cn));
+-    effect_add(e, EG_ATTRIBUTE, "Wisdom", "Added to your mana regeneration and immunity.", "%+d", wisdom_boost(cn));
++    snprintf(desc, sizeof(desc), "Resistance to enemy spells: %d%% of your Defence level, raised by magic gear.", immunity_defence);
++    effect_add(e, EG_MAGIC, "Spell resist", desc, "%d", immunity_value(cn));
++    effect_add(e, EG_MAGIC, "Mana regen", "Mana regained while resting: 7 plus your Regenerate level (HP regen works the same).", "%d", 7 + ch[cn].value[0][V_MEDITATE] + wisdom_boost(cn));
+ 
+     // gathering
+     skilling_effects(cn, e);
+diff -ru a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 22:48:59.146032230 +0000
++++ b/src/balance.h	2026-10-13 22:48:59.147818343 +0000
+@@ -22,6 +22,7 @@
+ extern int perception_stealth, perception_fast, stealth_endurance; // step 16, see balance.c
+ int perception_value(int cn); // Perception after the speed mode
+ extern int attr_agility, attr_agility_speed, attr_intuition, attr_wisdom; // percent of the attribute, see balance.c
++extern int athletics_speed, immunity_defence;
+ int attribute_bonus(int cn, int v); // what the attributes add to value v (update_char): Speed only
+ int wisdom_boost(int cn);
+ int intuition_boost(int cn);
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 22:48:59.149600660 +0000
++++ b/src/create.c	2026-10-13 22:48:59.151567743 +0000
+@@ -830,7 +830,10 @@
+                 return 0;
+             }
+             // NPCs may go past the player maximum (harder enemies); skills without a value slot stay <= SKILL_MAXLEVEL
+-            if (skilldef[tmp].value >= 0) cht.ch.value[1][skilldef[tmp].value] = max(0, min(30000, atoi(value)));
++            if (skilldef[tmp].value >= 0) {
++                cht.ch.value[1][skilldef[tmp].value] = max(0, min(30000, atoi(value)));
++                for (int m = 0; m < skilldef[tmp].nmirror; m++) cht.ch.value[1][skilldef[tmp].mirror[m]] = cht.ch.value[1][skilldef[tmp].value];
++            }
+             else cht.sk_level[tmp] = max(0, min(SKILL_MAXLEVEL, atoi(value)));
+         } else if ((tmp = lookup_V(name)) != -1) {
+             cht.ch.value[1][tmp] = atoi(value);
+@@ -1692,7 +1695,8 @@
+ 
+     // Tactics no longer adds to other skills (George 2026-10-13: how attacks and spells get stronger comes later)
+ 
+-    if (ch[cn].value[1][V_SPEEDSKILL]) ch[cn].value[0][V_SPEED] += ch[cn].value[0][V_SPEEDSKILL] / 2;
++    // Athletics (V_SPEEDSKILL, step 18): athletics_speed percent of it is added to Speed (movement and attacks)
++    if (ch[cn].value[1][V_SPEEDSKILL]) ch[cn].value[0][V_SPEED] += ch[cn].value[0][V_SPEEDSKILL] * athletics_speed / 100;
+ 
+     if (ch[cn].x && oldlight != ch[cn].value[0][V_LIGHT]) {
+         newlight = ch[cn].value[0][V_LIGHT];
+diff -ru a/src/see.c b/src/see.c
+--- a/src/see.c	2026-10-13 22:48:59.318643156 +0000
++++ b/src/see.c	2026-10-13 22:48:59.321093947 +0000
+@@ -10,6 +10,44 @@
+ #include "date.h"
+ #include "btrace.h"
+ #include "see.h"
++#include "skillreg.h"
++#include "player.h"
++
++// Perception XP (George 2026-10-13, step 18): a player who sees a character in stealth mode
++// (further than 2 tiles, so the stealth roll mattered) gets Perception use_xp scaled by the
++// hider's Stealth, +50% while in stealth mode himself. The same hider counts again only after
++// SPOT_COOLDOWN, so standing next to one does not farm XP.
++#define SPOT_SLOTS 8
++#define SPOT_COOLDOWN (TICKS * 60)
++
++static struct {
++    int co;
++    unsigned int serial;
++    int when;
++} spotted[MAXPLAYER][SPOT_SLOTS];
++
++static void perception_spot(int cn, int co, int stealth) {
++    int nr = ch[cn].player, n, old = 0, id, xp;
++
++    if (nr < 1 || nr >= MAXPLAYER || (ch[co].flags & CF_GOD)) return;
++    if ((id = skill_for_value(V_PERCEPT)) < 0) return;
++
++    for (n = 0; n < SPOT_SLOTS; n++) {
++        if (spotted[nr][n].co == co && spotted[nr][n].serial == ch[co].serial) {
++            if (ticker - spotted[nr][n].when < SPOT_COOLDOWN) return;
++            old = n;
++            break;
++        }
++        if (spotted[nr][n].when < spotted[nr][old].when) old = n;
++    }
++    spotted[nr][old].co = co;
++    spotted[nr][old].serial = ch[co].serial;
++    spotted[nr][old].when = ticker;
++
++    xp = skilldef[id].use_xp * (stealth + 10) / 20;
++    if (ch[cn].speed_mode == SM_STEALTH) xp = xp * 3 / 2;
++    add_skill_xp(cn, id, xp);
++}
+ 
+ static inline int check_lightm(int m) {
+ 
+@@ -60,7 +98,10 @@
+ 
+     vcn = perception_value(cn) + 16 + 49; // higher in stealth mode, lower in fast mode (step 16)
+ 
+-    if (vcn >= vco) return 1;
++    if (vcn >= vco) {
++        if (stealth && (ch[cn].flags & CF_PLAYER)) perception_spot(cn, co, stealth);
++        return 1;
++    }
+ 
+     return 0;
+ }
+diff -ru a/src/skill.c b/src/skill.c
+--- a/src/skill.c	2026-10-13 22:48:59.323332537 +0000
++++ b/src/skill.c	2026-10-13 22:48:59.325464372 +0000
+@@ -97,6 +97,7 @@
+     for (v = 0; v < V_MAX; v++) {
+         if (!ch[cn].value[1][v]) continue;
+         if (!skill[v].cost) continue;
++        if ((ch[cn].flags & CF_PLAYER) && skill_is_mirror(v)) continue; // Attack's weapon skills, Magic's spells: count once
+ 
+         for (n = skill[v].start + 1; n <= ch[cn].value[1][v]; n++) {
+             exp += raise_cost(v, n - 1);
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 22:48:59.327294869 +0000
++++ b/src/skilling.c	2026-10-13 22:48:59.329338046 +0000
+@@ -264,6 +264,8 @@
+                 else if (!strcasecmp(name, "agility_speed")) attr_agility_speed = max(0, atoi(value));
+                 else if (!strcasecmp(name, "intuition_bonus")) attr_intuition = max(0, atoi(value));
+                 else if (!strcasecmp(name, "wisdom_bonus")) attr_wisdom = max(0, atoi(value));
++                else if (!strcasecmp(name, "athletics_speed")) athletics_speed = max(0, atoi(value));
++                else if (!strcasecmp(name, "immunity_defence")) immunity_defence = max(0, atoi(value));
+                 else if (!strcasecmp(name, "body_control_gather")) body_control_gather = max(0, atoi(value));
+                 else if (!strcasecmp(name, "clarity_luck")) clarity_luck = max(0, atoi(value));
+                 else {
+@@ -1217,11 +1219,11 @@
+     char desc[160];
+ 
+     snprintf(desc, sizeof(desc), "Extra chance to gather from rocks and trees: %.1f%% per Body Control level.", body_control_gather / 10.0);
+-    effect_add(e, EG_GATHERING, "Gather chance", desc, "%+.1f%%", ch[cn].value[0][V_BODYCONTROL] * body_control_gather / 10.0);
++    if (ch[cn].value[0][V_BODYCONTROL]) effect_add(e, EG_GATHERING, "Gather chance", desc, "%+.1f%%", ch[cn].value[0][V_BODYCONTROL] * body_control_gather / 10.0);
+     if ((b = bless_bonus(cn, bless_gather, bless_gather_strength))) {
+         snprintf(desc, sizeof(desc), "Bless adds %d%% gather chance and lowers craft failure by %d%%.", b, bless_bonus(cn, bless_craft, bless_craft_strength));
+         effect_add(e, EG_GATHERING, "Bless", desc, "%+d%%", b);
+     }
+     snprintf(desc, sizeof(desc), "Chance to get one extra resource when gathering: %.1f%% per Clarity level.", clarity_luck / 10.0);
+-    effect_add(e, EG_GATHERING, "Extra resource", desc, "%.1f%%", min(1000, ch[cn].value[0][V_CLARITY] * clarity_luck) / 10.0);
++    if (ch[cn].value[0][V_CLARITY]) effect_add(e, EG_GATHERING, "Extra resource", desc, "%.1f%%", min(1000, ch[cn].value[0][V_CLARITY] * clarity_luck) / 10.0);
+ }
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 22:48:59.331103631 +0000
++++ b/src/skillreg.c	2026-10-13 22:48:59.332995840 +0000
+@@ -35,6 +35,7 @@
+ static int xp_rate = 100; // global XP rate in percent
+ static unsigned int xp_table[SKILL_MAXLEVEL + 2]; // xp_table[l] = total XP needed for level l
+ static int value_skill[V_MAX]; // V_* slot -> registry id, -1 = none
++static int nretired, retired[MAXRETIRED]; // config retire=V_X: value slots of removed skills, zeroed for players at login
+ 
+ static char *group_name[SG_MAX] = {"power", "attribute", "combat", "magic", "gathering", "production", "support"};
+ 
+@@ -222,6 +223,17 @@
+         }
+         value_skill[sd->value] = id;
+     }
++    for (int n = 0; n < sd->nmirror; n++) {
++        if (sd->value < 0) {
++            elog("%s line %d: skill %s has mirror= but no value=.", SKILLS_CFG, line, sd->key);
++            return 0;
++        }
++        if (value_skill[sd->mirror[n]] != -1) {
++            elog("%s line %d: value %s mirrored by two skills.", SKILLS_CFG, line, V_name[sd->mirror[n]]);
++            return 0;
++        }
++        value_skill[sd->mirror[n]] = id;
++    }
+     sd->used = 1;
+     skilldef[id] = *sd;
+     return 1;
+@@ -234,6 +246,7 @@
+ 
+     bzero(skilldef, sizeof(skilldef));
+     for (n = 0; n < V_MAX; n++) value_skill[n] = -1;
++    nretired = 0;
+ 
+     if (!(text = skillcfg_read(SKILLS_CFG))) {
+         elog("Could not read %s. The skill system needs it.", SKILLS_CFG);
+@@ -289,7 +302,14 @@
+             if (!strcasecmp(name, "xp_base")) xp_base = max(1, atoi(value));
+             else if (!strcasecmp(name, "xp_growth")) xp_growth = max(100, atoi(value));
+             else if (!strcasecmp(name, "rate")) xp_rate = max(0, atoi(value));
+-            else {
++            else if (!strcasecmp(name, "retire")) { // retire=V_X: a removed skill's value, set to 0 for players
++                if ((tmp = lookup_value_name(value)) == -1 || nretired >= MAXRETIRED) {
++                    elog("%s line %d: retire needs a V_ name (at most %d).", SKILLS_CFG, line, MAXRETIRED);
++                    xfree(text);
++                    return 0;
++                }
++                retired[nretired++] = tmp;
++            } else {
+                 elog("%s line %d: unknown config setting %s.", SKILLS_CFG, line, name);
+                 xfree(text);
+                 return 0;
+@@ -317,6 +337,13 @@
+                 xfree(text);
+                 return 0;
+             }
++        } else if (!strcasecmp(name, "mirror")) { // mirror=V_X: this slot gets the same level
++            if ((tmp = lookup_value_name(value)) == -1 || sd.nmirror >= MAXSKILLMIRROR) {
++                elog("%s line %d: unknown mirror value %s (at most %d per skill).", SKILLS_CFG, line, value, MAXSKILLMIRROR);
++                xfree(text);
++                return 0;
++            }
++            sd.mirror[sd.nmirror++] = tmp;
+         } else if (!strcasecmp(name, "feed")) { // feed=KEY,percent
+             char *comma = strchr(value, ',');
+             if (!comma || sd.nfeed >= MAXSKILLFEED) {
+@@ -353,6 +380,13 @@
+         }
+     }
+ 
++    for (n = 0; n < nretired; n++) {
++        if (value_skill[retired[n]] != -1) {
++            elog("%s: retire=%s is still used by skill %s.", SKILLS_CFG, V_name[retired[n]], skilldef[value_skill[retired[n]]].key);
++            return 0;
++        }
++    }
++
+     build_xp_table();
+ 
+     for (n = tmp = 0; n < MAXSKILLS; n++)
+@@ -469,6 +503,23 @@
+     }
+ }
+ 
++// writes a skill's level into its value slot and every mirror= slot
++void skill_store_level(int cn, int id, int level) {
++    struct skilldef *sd;
++    int n;
++
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used || skilldef[id].value < 0) return;
++    sd = skilldef + id;
++    ch[cn].value[1][sd->value] = level;
++    for (n = 0; n < sd->nmirror; n++) ch[cn].value[1][sd->mirror[n]] = level;
++}
++
++int skill_is_mirror(int v) {
++    int id = skill_for_value(v);
++
++    return id >= 0 && skilldef[id].value != v;
++}
++
+ static struct skill_ppd *get_ppd(int cn) {
+     return set_data(cn, DRD_SKILL_PPD, sizeof(struct skill_ppd));
+ }
+@@ -499,7 +550,7 @@
+     if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return;
+     level = max(0, min(level, skilldef[id].max));
+ 
+-    if (skilldef[id].value >= 0) ch[cn].value[1][skilldef[id].value] = level;
++    skill_store_level(cn, id, level);
+     if ((ppd = get_ppd(cn))) ppd->xp[id] = skill_xp_for_level(level);
+ }
+ 
+@@ -526,7 +577,7 @@
+     newlevel = min(sd->max, skill_level_for_xp(ppd->xp[id]));
+ 
+     if (newlevel > oldlevel) {
+-        if (sd->value >= 0) ch[cn].value[1][sd->value] = newlevel;
++        skill_store_level(cn, id, newlevel);
+         log_char(cn, LOG_SYSTEM, 0, "\260c3Congratulations! Your %s level is now %d.", sd->name, newlevel);
+         dlog(cn, 0, "skill %s reached level %d", sd->name, newlevel);
+         if (sd->value >= 0) {
+@@ -616,13 +667,15 @@
+     if (!(ch[cn].flags & CF_PLAYER)) return;
+     if (!(ppd = get_ppd(cn))) return;
+ 
++    for (id = 0; id < nretired; id++) ch[cn].value[1][retired[id]] = 0; // removed skills
++
+     for (id = 0; id < MAXSKILLS; id++) {
+         sd = skilldef + id;
+         if (!sd->used) continue;
+ 
+         if (sd->value >= 0) {
+-            level = ch[cn].value[1][sd->value];
+-            if (level < sd->start) level = ch[cn].value[1][sd->value] = sd->start;
++            level = max(ch[cn].value[1][sd->value], sd->start);
++            skill_store_level(cn, id, level);
+         } else {
+             level = skill_level_for_xp(ppd->xp[id]);
+             if (!ppd->xp[id] && !sd->start) continue;
+@@ -642,12 +695,14 @@
+     if (!(ppd = get_ppd(cn))) return 0;
+ 
+     for (g = 0; g < SG_MAX; g++) {
++        int head = 0;
++
+         if (filter && *filter && strncasecmp(group_name[g], filter, strlen(filter))) continue;
+-        log_char(cn, LOG_SYSTEM, 0, "\260c3%c%s:", toupper(group_name[g][0]), group_name[g] + 1);
+         for (id = 0; id < MAXSKILLS; id++) {
+             sd = skilldef + id;
+             if (!sd->used || sd->group != g) continue;
+             if (!(level = skill_get_level(cn, id))) continue;
++            if (!head++) log_char(cn, LOG_SYSTEM, 0, "\260c3%c%s:", toupper(group_name[g][0]), group_name[g] + 1);
+             xp = ppd->xp[id];
+             if (level >= sd->max) log_char(cn, LOG_SYSTEM, 0, "  %s %d (%u XP, max)", sd->name, level, xp);
+             else {
+diff -ru a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 22:48:59.334818263 +0000
++++ b/src/skillreg.h	2026-10-13 22:48:59.336616725 +0000
+@@ -20,6 +20,8 @@
+ #define SG_MAX 7
+ 
+ #define MAXSKILLFEED 8
++#define MAXSKILLMIRROR 8
++#define MAXRETIRED 16
+ 
+ struct skilldef {
+     int used;
+@@ -28,6 +30,8 @@
+     char desc[160];
+     int group; // SG_*
+     int value; // V_* slot this skill mirrors into, -1 = none
++    int nmirror; // more V_* slots that get the same level (Attack -> the weapon skills, Magic -> every spell)
++    int mirror[MAXSKILLMIRROR];
+     int start; // level every player starts with (0 = player does not have the skill)
+     int max; // highest level
+     int rate; // XP multiplier in percent
+@@ -57,6 +61,8 @@
+ int skills_load(void);
+ int skill_lookup_key(char *key);
+ int skill_for_value(int v);
++void skill_store_level(int cn, int id, int level); // value slot and mirrors
++int skill_is_mirror(int v); // v only copies another skill's level (mirror=)
+ unsigned int skill_xp_for_level(int level);
+ int skill_level_for_xp(unsigned int xp);
+ int skill_get_level(int cn, int id);
+diff -ru a/zones/generic/player.chr b/zones/generic/player.chr
+--- a/zones/generic/player.chr	2026-10-13 22:48:59.344944034 +0000
++++ b/zones/generic/player.chr	2026-10-13 22:48:59.348226380 +0000
+@@ -22,46 +22,26 @@
+ SK_ENDURANCE=25
+ SK_MANA=25
+ 
+-# attributes
+-SK_WISDOM=10
+-SK_INTUITION=10
+-SK_AGILITY=10
+-SK_STRENGTH=10
+-
+-# weapon skills
+-SK_DAGGER=1
+-SK_HAND=1
+-SK_STAFF=1
+-SK_SWORD=1
+-SK_TWOHAND=1
+-
+-# fighting skills
++# combat (no attributes: each skill does one job)
+ SK_ATTACK=1
+-SK_PARRY=1
++SK_STRENGTH=1
++SK_DEFENCE=1
+ SK_WARCRY=1
+-SK_TACTICS=1
+-SK_SURROUND=1
+-SK_SPEEDSKILL=1
+-
+-# misc skills
+-SK_BARTER=1
+-SK_PERCEPTION=1
+-SK_STEALTH=1
++SK_ATHLETICS=1
++SK_SLAYER=1
+ 
+-# spells
+-SK_BLESS=1
+-SK_HEAL=1
+-SK_FREEZE=1
+-SK_MAGICSHIELD=1
+-SK_LIGHTNING=1
+-SK_FIRE=1
++# magic and support
++SK_MAGIC=1
+ SK_REGENERATE=1
+-SK_MEDITATE=1
+-SK_IMMUNITY=1
++SK_STEALTH=1
++SK_PERCEPTION=1
+ 
+ # gathering and production
+ SK_MINING=1
++SK_WOODCUTTING=1
++SK_FARMING=1
+ SK_SMITHING=1
++SK_CRAFTING=1
+ 
+ WN_RHAND=sword1q1
+ WN_BODY=armor1q1
+@@ -95,46 +75,26 @@
+ SK_ENDURANCE=25
+ SK_MANA=25
+ 
+-# attributes
+-SK_WISDOM=10
+-SK_INTUITION=10
+-SK_AGILITY=10
+-SK_STRENGTH=10
+-
+-# weapon skills
+-SK_DAGGER=1
+-SK_HAND=1
+-SK_STAFF=1
+-SK_SWORD=1
+-SK_TWOHAND=1
+-
+-# fighting skills
++# combat (no attributes: each skill does one job)
+ SK_ATTACK=1
+-SK_PARRY=1
++SK_STRENGTH=1
++SK_DEFENCE=1
+ SK_WARCRY=1
+-SK_TACTICS=1
+-SK_SURROUND=1
+-SK_SPEEDSKILL=1
+-
+-# misc skills
+-SK_BARTER=1
+-SK_PERCEPTION=1
+-SK_STEALTH=1
++SK_ATHLETICS=1
++SK_SLAYER=1
+ 
+-# spells
+-SK_BLESS=1
+-SK_HEAL=1
+-SK_FREEZE=1
+-SK_MAGICSHIELD=1
+-SK_LIGHTNING=1
+-SK_FIRE=1
++# magic and support
++SK_MAGIC=1
+ SK_REGENERATE=1
+-SK_MEDITATE=1
+-SK_IMMUNITY=1
++SK_STEALTH=1
++SK_PERCEPTION=1
+ 
+ # gathering and production
+ SK_MINING=1
++SK_WOODCUTTING=1
++SK_FARMING=1
+ SK_SMITHING=1
++SK_CRAFTING=1
+ 
+ WN_RHAND=sword1q1
+ WN_BODY=armor1q1
+diff -ru a/zones/generic/quests.cfg b/zones/generic/quests.cfg
+--- a/zones/generic/quests.cfg	2026-10-13 22:48:59.345102775 +0000
++++ b/zones/generic/quests.cfg	2026-10-13 22:48:59.348244504 +0000
+@@ -11,8 +11,8 @@
+ # (questlog_scale in questlog.c). The global rate= in skills.cfg applies.
+ # Read when an area starts. A quest with no block here gives no XP.
+ # For scale (XP for one more level): skills starting at 1 need 80 for level 2
+-# and 88 more for level 3; attributes (start 10) need about 190 for 11;
+-# powers like Hitpoints (start 25) need about 790 for 26. /questxp <nr>
++# and 88 more for level 3; powers like Hitpoints (start 25) need about 790
++# for 26. /questxp <nr>
+ # (god) gives a quest's XP without doing it, for testing.
+ 
+ 
+@@ -20,23 +20,23 @@
+ #     0  Lydia's Potion                   James (Cameron)
+ LYDIAS_POTION:
+ quest=0
+-xp=WISDOM,100
+-xp=INTUITION,100
+-xp=AGILITY,100
++# step 18 (one skill list): Wisdom + Intuition -> Magic, Agility -> Athletics,
++# Dagger + Attack -> Attack, Parry -> Defence
++xp=MAGIC,200
++xp=ATHLETICS,100
+ xp=STRENGTH,100
+-xp=DAGGER,100
+-xp=ATTACK,100
+-xp=PARRY,100
++xp=ATTACK,200
++xp=DEFENCE,100
+ 
+ ;
+ #     1  Find the Magic Item              Gwendylon (Cameron)
+ FIRST_SKULL:
+ quest=1
+-xp=LIGHTNING,150
+-xp=FIRE,150
+-xp=SWORD,150
+-xp=TWO-HANDED,150
+-xp=TACTICS,150
++# step 18: Lightning + Fire -> Magic, Sword + Two-Handed -> Attack, Tactics -> Strength
++xp=MAGIC,300
++xp=ATTACK,300
++xp=STRENGTH,150
++;
+ #     2  The Second Skull                 Gwendylon (Cameron)
+ #     3  The Third Skull                  Gwendylon (Cameron)
+ #     4  Kill the Foul Magician           Gwendylon (Cameron)
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 22:48:59.345184381 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 22:48:59.348068329 +0000
+@@ -65,9 +65,12 @@
+ # 10 would give a strength 60 Bless another +6%).
+ #
+ # Combat (RuneScape-style hits, step 14; all percent):
++# Effective melee levels (step 18): accuracy = Attack, strength = Strength,
++#   defence = Defence. Enemies use V_ATTACK, V_STR and V_PARRY from their
++#   .chr files the same way.
+ # tactics_boost: this percent of Tactics is added to the effective melee
+-#   levels (accuracy = (weapon skill + Attack) / 2, strength = (weapon
+-#   skill + STR) / 2, defence = (weapon skill + Parry) / 2).
++#   levels. Players have no Tactics any more; only enemies with V_TACTICS
++#   are affected (0 = off).
+ # min_hit: a melee hit that lands rolls between this percent of the max hit
+ #   and the max hit, so a hit always does something.
+ # armor_soak: armor takes off at most this percent of a melee hit.
+@@ -76,7 +79,9 @@
+ # Melee Strength, Melee Defence, Magic Accuracy, Magic Damage and Magic
+ # Defence (mod_index=V_MELEE_ACC ... in the .itm files).
+ #
+-# Body Control and Clarity (step 15; gear cannot raise them; all in TENTHS
++# Body Control and Clarity were removed as player skills in step 18; the
++# settings below stay for enemies that are given them.
++# (step 15; gear cannot raise them; all in TENTHS
+ # of a percent per skill level, so 3 = 0.3% per level, 30% at level 99):
+ # body_control: raises the effective melee levels (accuracy, strength,
+ #   defence, surround) after Tactics.
+@@ -87,15 +92,16 @@
+ # clarity_luck: chance per resource gathered of one extra (2 = 0.2% per
+ #   level, about 20% at level 99). The extra gives no XP and does not use
+ #   up the rock or tree.
+-# armor_class_percent: each Armor Class level raises the Armor, Melee
++# armor_class_percent: each Defence level (it is also the armour
++#   requirement, called Armor Class before step 18) raises the Armor, Melee
+ #   Defence and Magic Defence of the armour you wear (items that need Armor
+ #   Class) by this many tenths of a percent (5 = 0.5% per level, +49.5% at
+ #   99). Negative values (the Magic Defence penalty on melee armour) are not
+ #   changed.
+-# weapon_skill_percent: the same for the weapon you wield: each level of the
+-#   skill it needs (Dagger, Sword, Staff, Two-Handed, Hand to Hand) raises its
++# weapon_skill_percent: the same for the weapon you wield: each Attack level
++#   (players' weapon skills all follow Attack since step 18) raises its
+ #   Melee Accuracy, Melee Strength, Magic Accuracy and Magic Damage by this
+-#   many tenths of a percent. Dagger level only helps daggers.
++#   many tenths of a percent.
+ # Both are worked out on you, never stored on the item: gear you trade away
+ # keeps only its own values, and better gear always stays better for the
+ # same player.
+@@ -109,22 +115,23 @@
+ #   step's endurance (players). Players get no endurance back while in
+ #   stealth mode, and drop to normal mode when exhausted. 0 = sneaking free.
+ #
+-# Attributes, one job each (players and enemies). They no longer raise any
+-# skill level, the skills menu shows the trained level; each works inside
+-# the formulas, adding this percent of itself:
+-# Strength: goes into the melee strength level (weapon skill + STR) / 2.
++# Skills, one job each (step 18). Players have no attributes; Strength is a
++# skill (melee max hit). The old attribute settings only matter for enemies
++# that still have Agility / Intuition / Wisdom in their .chr files (0 = off):
+ # agility_bonus: to the melee accuracy and defence levels.
+ # agility_speed: to Speed (movement and action speed).
+-# intuition_bonus: to the spell power of Bless, Heal, Freeze, Magic Shield,
+-#   Lightning and Fire.
+-# wisdom_bonus: to Meditate's mana regeneration and to Immunity against
+-#   spells.
++# intuition_bonus: to the spell power of every spell.
++# wisdom_bonus: to mana regeneration and to Immunity against spells.
++# athletics_speed: this percent of Athletics is added to Speed (movement
++#   and attack speed; 50 = +49 Speed at Athletics 99).
++# immunity_defence: resistance to spells is at least this percent of your
++#   Defence (enemies: or their Immunity value, whichever is higher).
+ config:
+ bless_gather=10
+ bless_craft=10
+ bless_gather_strength=0
+ bless_craft_strength=0
+-tactics_boost=10
++tactics_boost=0
+ min_hit=20
+ armor_soak=75
+ magic_damage_cap=50
+@@ -137,10 +144,12 @@
+ perception_stealth=25
+ perception_fast=25
+ stealth_endurance=100
+-agility_bonus=10
+-agility_speed=40
+-intuition_bonus=20
+-wisdom_bonus=20
++agility_bonus=0
++agility_speed=0
++intuition_bonus=0
++wisdom_bonus=0
++athletics_speed=50
++immunity_defence=50
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 22:48:59.345334552 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 22:48:59.348107794 +0000
+@@ -3,42 +3,60 @@
+ # =====================================================================
+ #
+ # Every skill in the game is a block here. Skills level 1..max by use.
++# George 2026-10-13 (step 18): one short RuneScape-style list. Attack,
++# Strength, Defence, Magic, Hitpoints, Mana, Endurance, Athletics,
++# Regenerate, Stealth, Perception, Warcry, Woodcutting, Crafting, Mining,
++# Smithing, Farming, Slayer. No attributes: each skill does one job.
+ #
+ #   KEY:            block name; .chr files set it with SK_KEY=level
+ #   id=             save index (0..127). NEVER change or reuse an id once
+ #                   players exist, their XP is stored by id.
+-#                   Skills with value= use the V_ number as id.
+ #   name=           shown to players
+ #   group=          power, attribute, combat, magic, gathering, production, support
+ #   value=          V_* slot the level is copied into (combat maths use it).
+ #                   Leave out for skills that only exist here (Mining ...).
++#   mirror=V_X      the same level is also copied into this slot (up to 8),
++#                   e.g. Attack -> every weapon skill, Magic -> every spell.
++#                   XP the code gives to a mirrored slot goes to this skill.
+ #   start=          level every player starts with (0 = does not start with it)
+ #   max=            highest level (default 99)
+ #   rate=           XP multiplier for this skill in percent (default 100)
+-#   use_xp=         XP per use (spell cast, warcry, parry, trade, ...)
++#   use_xp=         XP per use (spell cast, warcry, parry, ...)
+ #   dmg_xp=         XP per hitpoint of damage done with this skill
+ #   feed=KEY,pct    also give pct percent of every XP gain to skill KEY
+ #                   (up to 8 per skill; feeds do not chain)
+ #   description=    help text
+ #
+ # Where XP comes from in the code (search for skill_used / skill_xp_context):
+-#   melee hit -> weapon skill dmg_xp, missed attack on you -> PARRY use_xp,
+-#   melee hit on you while wearing armour -> ARMORCLASS use_xp,
+-#   surround hit -> SURROUND, spell cast -> that spell, spell damage ->
+-#   FIRE/LIGHTNING dmg_xp, warcry -> WARCRY, buying/selling -> BARTER,
+-#   sneaking (stealth mode walk) -> STEALTH per step, resting while hurt ->
+-#   REGENERATE, resting with low mana -> MEDITATE (about once per second).
+-#   MINING, WOODCUTTING (per ore / log), SMITHING and CRAFTING (per thing
+-#   made) get their XP from zones/generic/skilling.cfg. Not hooked yet: PERCEPTION, IMMUNITY.
++#   melee hit -> ATTACK dmg_xp (feeds Strength, Hitpoints, Athletics),
++#   an attack on you misses or hits your armour -> DEFENCE use_xp,
++#   spell cast -> MAGIC use_xp, Fire/Lightning damage -> MAGIC dmg_xp,
++#   warcry -> WARCRY, sneaking (stealth mode walk) -> STEALTH per step,
++#   spotting a character in stealth mode -> PERCEPTION use_xp (see.c),
++#   resting while hurt or with low mana -> REGENERATE (about once per second).
++#   MINING, WOODCUTTING, FARMING (per resource), SMITHING and CRAFTING (per
++#   thing made) get their XP from zones/generic/skilling.cfg.
+ #
+ # XP curve: level 2 needs xp_base XP, every further level needs xp_growth
+ # percent of the step before (80 / 110 -> level 99 needs about 9.1 million).
+ # rate= is the global XP multiplier in percent (use it for XP events).
++# retire=V_X: value slot of a removed skill; players get 0 there at login
++# (old attributes, Tactics, Surround Hit, Barter, Immunity, Body Control,
++# Clarity). Enemies keep whatever their .chr files give them.
+ 
+ config:
+ xp_base=80
+ xp_growth=110
+ rate=100
++retire=V_WIS
++retire=V_INT
++retire=V_AGI
++retire=V_TACTICS
++retire=V_SURROUND
++retire=V_BARTER
++retire=V_IMMUNITY
++retire=V_BODYCONTROL
++retire=V_CLARITY
+ ;
+ 
+ # ---- powers ----
+@@ -49,7 +67,7 @@
+ value=V_HP
+ start=25
+ max=99
+-description="Your health. Trained by fighting."
++description="Your health. Trained by dealing damage in combat."
+ ;
+ 
+ ENDURANCE:
+@@ -59,7 +77,7 @@
+ value=V_ENDURANCE
+ start=25
+ max=99
+-description="Stamina for running and fighting."
++description="Stamina for running and fighting. Trained by fighting and warcry."
+ ;
+ 
+ MANA:
+@@ -72,166 +90,49 @@
+ description="Magical energy. Trained by casting."
+ ;
+ 
+-# ---- attributes ----
+-WISDOM:
+-id=3
+-name="Wisdom"
+-group=attribute
+-value=V_WIS
+-start=10
+-max=99
+-description="Trained by casting spells."
+-;
+-
+-INTUITION:
+-id=4
+-name="Intuition"
+-group=attribute
+-value=V_INT
+-start=10
+-max=99
+-description="Trained by casting spells and trading."
+-;
+-
+-AGILITY:
+-id=5
+-name="Agility"
+-group=attribute
+-value=V_AGI
+-start=10
+-max=99
+-description="Trained by fighting, parrying and sneaking."
+-;
+-
+-STRENGTH:
+-id=6
+-name="Strength"
+-group=attribute
+-value=V_STR
+-start=10
+-max=99
+-description="Trained by melee fighting."
+-;
+-
+-# ---- weapon skills ----
+-DAGGER:
+-id=13
+-name="Dagger"
+-group=combat
+-value=V_DAGGER
+-start=1
+-max=99
+-dmg_xp=12
+-feed=ATTACK,50
+-feed=TACTICS,25
+-feed=STRENGTH,25
+-feed=AGILITY,15
+-feed=HP,33
+-feed=ENDURANCE,10
+-feed=SPEEDSKILL,10
+-feed=BODYCONTROL,15
+-description="Trained by hitting with dagger weapons."
+-;
+-
+-HAND:
+-id=14
+-name="Hand to Hand"
+-group=combat
+-value=V_HAND
+-start=1
+-max=99
+-dmg_xp=12
+-feed=ATTACK,50
+-feed=TACTICS,25
+-feed=STRENGTH,25
+-feed=AGILITY,15
+-feed=HP,33
+-feed=ENDURANCE,10
+-feed=SPEEDSKILL,10
+-feed=BODYCONTROL,15
+-description="Trained by fighting unarmed or with claws."
+-;
+-
+-STAFF:
+-id=15
+-name="Staff"
+-group=combat
+-value=V_STAFF
+-start=1
+-max=99
+-dmg_xp=12
+-feed=ATTACK,50
+-feed=TACTICS,25
+-feed=STRENGTH,25
+-feed=AGILITY,15
+-feed=HP,33
+-feed=ENDURANCE,10
+-feed=SPEEDSKILL,10
+-feed=BODYCONTROL,15
+-description="Trained by hitting with staff weapons."
+-;
+-
+-SWORD:
+-id=16
+-name="Sword"
+-group=combat
+-value=V_SWORD
+-start=1
+-max=99
+-dmg_xp=12
+-feed=ATTACK,50
+-feed=TACTICS,25
+-feed=STRENGTH,25
+-feed=AGILITY,15
+-feed=HP,33
+-feed=ENDURANCE,10
+-feed=SPEEDSKILL,10
+-feed=BODYCONTROL,15
+-description="Trained by hitting with sword weapons."
+-;
+-
+-TWOHAND:
+-id=17
+-name="Two-Handed"
++# ---- combat ----
++ATTACK:
++id=18
++name="Attack"
+ group=combat
+-value=V_TWOHAND
++value=V_ATTACK
++mirror=V_DAGGER
++mirror=V_HAND
++mirror=V_STAFF
++mirror=V_SWORD
++mirror=V_TWOHAND
+ start=1
+ max=99
+ dmg_xp=12
+-feed=ATTACK,50
+-feed=TACTICS,25
+-feed=STRENGTH,25
+-feed=AGILITY,15
++feed=STRENGTH,100
+ feed=HP,33
+ feed=ENDURANCE,10
+-feed=SPEEDSKILL,10
+-feed=BODYCONTROL,15
+-description="Trained by hitting with two-handed weapons."
++feed=ATHLETICS,25
++description="Melee hit chance. Needed to wield weapons, and raises the stats of the weapon you hold. Trained by melee damage."
+ ;
+ 
+-# ---- fighting skills ----
+-ATTACK:
+-id=18
+-name="Attack"
++STRENGTH:
++id=6
++name="Strength"
+ group=combat
+-value=V_ATTACK
++value=V_STR
+ start=1
+ max=99
+-description="Gets part of all melee weapon XP."
++description="Melee max hit. Gets the same XP as Attack."
+ ;
+ 
+-PARRY:
++DEFENCE:
+ id=19
+-name="Parry"
++name="Defence"
+ group=combat
+ value=V_PARRY
++mirror=V_ARMORSKILL
+ start=1
+ max=99
+-use_xp=4
+-feed=AGILITY,25
+-feed=ENDURANCE,10
++use_xp=5
+ feed=HP,10
+-description="Trained when an attack on you misses."
++feed=ATHLETICS,25
++description="Avoids melee hits and resists spells. Needed to wear armour, and raises the stats of the armour you wear. Trained when attacks on you miss or hit your armour."
+ ;
+ 
+ WARCRY:
+@@ -243,257 +144,94 @@
+ max=99
+ use_xp=12
+ dmg_xp=8
+-feed=STRENGTH,25
+ feed=ENDURANCE,25
++feed=ATHLETICS,25
+ description="Trained by using warcry."
+ ;
+ 
+-TACTICS:
+-id=21
+-name="Tactics"
+-group=combat
+-value=V_TACTICS
+-start=1
+-max=99
+-description="Gets part of all melee weapon XP."
+-;
+-
+-SURROUND:
+-id=22
+-name="Surround Hit"
+-group=combat
+-value=V_SURROUND
+-start=1
+-max=99
+-use_xp=10
+-feed=STRENGTH,25
+-description="Trained when your attacks hit the enemies around you."
+-;
+-
+-SPEEDSKILL:
++ATHLETICS:
+ id=23
+-name="Speed Skill"
++name="Athletics"
+ group=combat
+ value=V_SPEEDSKILL
+ start=1
+ max=99
+-description="Gets part of all melee weapon XP."
++description="Movement and attack speed. Gets a quarter of Attack, Defence, Warcry, Mining and Woodcutting XP."
+ ;
+ 
+-# ---- misc skills ----
+-BARTER:
+-id=24
+-name="Bartering"
+-group=support
+-value=V_BARTER
+-start=1
+-max=99
+-use_xp=15
+-feed=INTUITION,25
+-description="Trained by buying and selling."
+-;
+-
+-PERCEPTION:
+-id=25
+-name="Perception"
+-group=support
+-value=V_PERCEPT
+-start=1
+-max=99
+-description="Not trained yet."
+-;
+-
+-STEALTH:
+-id=26
+-name="Stealth"
+-group=support
+-value=V_STEALTH
+-start=1
+-max=99
+-use_xp=2
+-feed=AGILITY,10
+-description="Trained by walking in stealth mode."
+-;
+-
+-# ---- spells ----
+-BLESS:
+-id=27
+-name="Bless"
+-group=magic
+-value=V_BLESS
+-start=1
+-max=99
+-use_xp=15
+-feed=INTUITION,25
+-feed=WISDOM,25
+-feed=MANA,25
+-feed=CLARITY,15
+-description="Raises your chance to gather and craft. Does not help in combat."
+-;
+-
+-HEAL:
+-id=28
+-name="Heal"
+-group=magic
+-value=V_HEAL
+-start=1
+-max=99
+-use_xp=15
+-feed=INTUITION,25
+-feed=WISDOM,25
+-feed=MANA,25
+-feed=CLARITY,15
+-;
+-
+-FREEZE:
+-id=29
+-name="Freeze"
+-group=magic
+-value=V_FREEZE
+-start=1
+-max=99
+-use_xp=15
+-feed=INTUITION,25
+-feed=WISDOM,25
+-feed=MANA,25
+-feed=CLARITY,15
+-;
+-
+-MAGICSHIELD:
+-id=30
+-name="Magic Shield"
+-group=magic
+-value=V_MAGICSHIELD
++SLAYER:
++id=54
++name="Slayer"
++group=combat
+ start=1
+ max=99
+-use_xp=12
+-feed=INTUITION,25
+-feed=WISDOM,25
+-feed=MANA,25
+-feed=CLARITY,15
++description="Not set up yet."
+ ;
+ 
+-LIGHTNING:
+-id=31
+-name="Lightning"
+-group=magic
+-value=V_FLASH
+-start=1
+-max=99
+-use_xp=15
+-dmg_xp=8
+-feed=INTUITION,25
+-feed=WISDOM,25
+-feed=MANA,25
+-feed=CLARITY,15
+-;
+-
+-FIRE:
++# ---- magic ----
++MAGIC:
+ id=32
+-name="Fire"
++name="Magic"
+ group=magic
+ value=V_FIRE
++mirror=V_FLASH
++mirror=V_FREEZE
++mirror=V_HEAL
++mirror=V_BLESS
++mirror=V_MAGICSHIELD
+ start=1
+ max=99
+-use_xp=18
++use_xp=15
+ dmg_xp=8
+-feed=INTUITION,25
+-feed=WISDOM,25
+ feed=MANA,25
+-feed=CLARITY,15
++description="The power of every spell: Fire, Lightning, Freeze, Heal, Bless and Magic Shield. Trained by casting."
+ ;
+ 
++# ---- support ----
+ REGENERATE:
+ id=33
+ name="Regenerate"
+ group=support
+ value=V_REGENERATE
++mirror=V_MEDITATE
+ start=1
+ max=99
+ use_xp=2
+-feed=HP,25
+-description="Trained by resting while hurt."
+-;
+-
+-MEDITATE:
+-id=34
+-name="Meditate"
+-group=magic
+-value=V_MEDITATE
+-start=1
+-max=99
+-use_xp=2
+-feed=MANA,25
+-description="Trained by resting with low mana."
+-;
+-
+-IMMUNITY:
+-id=35
+-name="Immunity"
+-group=magic
+-value=V_IMMUNITY
+-start=1
+-max=99
+-description="Not trained yet."
+-;
+-
+-# ---- pure skills (step 15): trained only, gear and spells never raise them ----
+-ARMORCLASS:
+-id=47
+-name="Armor Class"
+-group=combat
+-value=V_ARMORSKILL
+-start=1
+-max=99
+-use_xp=6
+ feed=HP,10
+-description="Lets you wear armour up to this level. Trained by taking hits while wearing armour."
++description="Regain hitpoints, endurance and mana faster while resting. Trained by resting while hurt or low on mana."
+ ;
+ 
+-BODYCONTROL:
+-id=48
+-name="Body Control"
+-group=combat
+-value=V_BODYCONTROL
+-start=1
+-max=99
+-description="Flat bonus per level to melee and gathering chance. Gear cannot raise it. Gets part of melee and gathering XP."
+-;
+-
+-CLARITY:
+-id=49
+-name="Clarity"
+-group=magic
+-value=V_CLARITY
++STEALTH:
++id=26
++name="Stealth"
++group=support
++value=V_STEALTH
+ start=1
+ max=99
+-description="Flat bonus per level to magic, chance of an extra resource. Gear cannot raise it. Gets part of spell and gathering XP."
++use_xp=2
++feed=PERCEPTION,25
++description="Stay hidden in stealth mode. Trained by walking in stealth mode."
+ ;
+ 
+-# Not registered (they are computed or arch-only): V_ARMOR, V_WEAPON, V_OFFENSE,
+-# V_DEFENSE, V_LIGHT, V_SPEED, V_DEMON, V_DURATION, V_RAGE, V_COLD, V_PROFESSION,
+-# and the equipment bonuses V_MELEE_ACC ... V_MAGIC_DEF.
+-
+-# ---- gathering (ids 50+ have no value slot) ----
+-FARMING:
+-id=64
+-name="Farming"
+-group=gathering
++PERCEPTION:
++id=25
++name="Perception"
++group=support
++value=V_PERCEPT
+ start=1
+ max=99
+-feed=BODYCONTROL,10
+-feed=CLARITY,10
+-description="Grow and harvest various plants."
++use_xp=20
++description="See characters in stealth mode. Trained by spotting them, and gets a quarter of Stealth XP."
+ ;
+ 
++# ---- gathering ----
+ MINING:
+ id=50
+ name="Mining"
+ group=gathering
+ start=1
+ max=99
+-feed=BODYCONTROL,10
+-feed=CLARITY,10
++feed=ATHLETICS,25
+ description="Mine ore from rocks."
+ ;
+ 
+@@ -503,11 +241,19 @@
+ group=gathering
+ start=1
+ max=99
+-feed=BODYCONTROL,10
+-feed=CLARITY,10
++feed=ATHLETICS,25
+ description="Cut logs from trees."
+ ;
+ 
++FARMING:
++id=64
++name="Farming"
++group=gathering
++start=1
++max=99
++description="Grow and harvest various plants."
++;
++
+ # ---- production ----
+ SMITHING:
+ id=51

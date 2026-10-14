@@ -1,0 +1,1882 @@
+diff -ruN a/Makefile.win b/Makefile.win
+--- a/Makefile.win	2026-10-13 08:51:26.512595990 +0000
++++ b/Makefile.win	2026-10-13 08:51:26.516437346 +0000
+@@ -40,7 +40,7 @@
+ .wobj/respawn.o .wobj/poison.o .wobj/swear.o .wobj/lab.o \
+ .wobj/consistency.o .wobj/btrace.o .wobj/club.o .wobj/balance.o \
+ .wobj/questlog.o .wobj/badip.o .wobj/escape.o .wobj/argon.o \
+-.wobj/config.o .wobj/skillreg.o .wobj/version.o
++.wobj/config.o .wobj/skillreg.o .wobj/skilling.o .wobj/version.o
+ 
+ DLLS= \
+ runtime/generic/base.dll \
+diff -ruN a/src/command.c b/src/command.c
+--- a/src/command.c	2026-10-13 08:51:26.505556876 +0000
++++ b/src/command.c	2026-10-13 08:51:26.507844990 +0000
+@@ -17,6 +17,7 @@
+ #include "do.h"
+ #include "chat.h"
+ #include "create.h"
++#include "skilling.h"
+ #include "drvlib.h"
+ #include "player.h"
+ #include "clan.h"
+@@ -1411,6 +1412,14 @@
+         return 1;
+     }
+ 
++    if ((len = cmdcmp(ptr, "smelt", 5))) { // /smelt [bar] [count|all], next to a furnace
++        skilling_command(cn, "smelt", ptr + len);
++        return 1;
++    }
++    if ((len = cmdcmp(ptr, "smith", 5))) { // /smith [item] [count|all], next to an anvil
++        skilling_command(cn, "smith", ptr + len);
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "skills", 6))) { // /skills [group]
+         ptr += len;
+         while (isspace(*ptr)) ptr++;
+diff -ruN a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 08:51:26.467759318 +0000
++++ b/src/create.c	2026-10-13 08:51:26.469942553 +0000
+@@ -31,6 +31,7 @@
+ #include "area.h"
+ #include "create.h"
+ #include "skillreg.h"
++#include "skilling.h"
+ #include "respawn.h"
+ #include "balance.h"
+ #include "map.h"
+@@ -515,6 +516,10 @@
+     return 1;
+ }
+ 
++struct item *item_template(int tmp) {
++    return &it_temp[tmp].item;
++}
++
+ int lookup_item(char *name) {
+     int n;
+ 
+@@ -1128,6 +1133,18 @@
+             y = atoi(two) + oy;
+             if (!map_pos_ok(x, y, line)) return 0;
+             bzero(map + x + y * MAXMAP, sizeof(struct map));
++        } else if (!strcasecmp(name, "at")) { // like field, but keeps the tile (for .place files)
++            if (!comma(one, two, value)) {
++                elog("Error in line %d: Expected two comma seperated values.", line);
++                return 0;
++            }
++            x = atoi(one) + ox;
++            y = atoi(two) + oy;
++            if (!map_pos_ok(x, y, line)) return 0;
++            if (map[x + y * MAXMAP].it) {
++                elog("Error in line %d: %d,%d already has item %s.", line, x, y, it[map[x + y * MAXMAP].it].name);
++                return 0;
++            }
+         } else if (!strcasecmp(name, "from")) {
+             if (!comma(one, two, value)) {
+                 elog("Error in line %d: Expected two comma seperated values.", line);
+@@ -1235,7 +1252,9 @@
+ 
+     sprintf(dirname, "zones/%d", areaID);
+ 
+-    return load_zones(dirname, ".map", process_map);
++    if (!load_zones(dirname, ".map", process_map)) return 0;
++
++    return load_zones(dirname, ".place", process_map); // additions to the map (mining camp ...), use at=x,y
+ }
+ 
+ static void update_chars(void) {
+@@ -1495,6 +1514,7 @@
+ 
+     if (!skills_load()) return 0; // before the .chr files, they use SK_ names
+     if (!create_items()) return 0;
++    if (!skilling_load()) return 0; // patches the item templates it uses
+     if (!create_characters()) return 0;
+     if (!create_map()) return 0;
+     add_map_border();
+diff -ruN a/src/create.h b/src/create.h
+--- a/src/create.h	2026-10-13 08:51:26.477777621 +0000
++++ b/src/create.h	2026-10-13 08:51:26.480062296 +0000
+@@ -22,3 +22,4 @@
+ int lookup_char(char *name);
+ int lookup_item(char *name);
+ int create_item_nr(int tmp);
++struct item *item_template(int tmp); // for patching templates after loading (skilling.c)
+diff -ruN a/src/drvlib.h b/src/drvlib.h
+--- a/src/drvlib.h	2026-10-13 08:51:26.496357841 +0000
++++ b/src/drvlib.h	2026-10-13 08:51:26.498564144 +0000
+@@ -332,6 +332,9 @@
+ #define IDR_SIGN 150 // generic sign
+ #define IDR_ARKHATA 151 //
+ #define IDR_MINOASTACK 152 // base: stackables
++#define IDR_SKROCK 153 // skilling.c: rock to mine
++#define IDR_SKSTACK 154 // skilling.c: stack of ore / bars
++#define IDR_SKSTATION 155 // skilling.c: furnace, anvil, supply cart
+ 
+ #define IDR_DOUBLE_DOOR 187 // double door driver (in base.c)
+ #define IDR_SALTMINE_ITEM 188 // nomads plain (saltmine) items
+diff -ruN a/src/libload.c b/src/libload.c
+--- a/src/libload.c	2026-10-13 08:51:26.487463174 +0000
++++ b/src/libload.c	2026-10-13 08:51:26.489024398 +0000
+@@ -44,6 +44,7 @@
+ #include "libload.h"
+ #include "drvlib.h"
+ #include "talk.h"
++#include "skilling.h"
+ 
+ #define MAXLIB 100
+ #define MAXDRV 200
+@@ -215,6 +216,8 @@
+         return 0;
+     }
+ 
++    if (nr == IDR_SKROCK || nr == IDR_SKSTACK || nr == IDR_SKSTATION) return skilling_item_driver(nr, in, cn); // core, all areas
++
+     switch (nr) {
+     case IDR_BONEBRIDGE:
+         if (areaID != 18) {
+diff -ruN a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	1970-01-01 00:00:00.000000000 +0000
++++ b/src/skilling.c	2026-10-13 08:51:26.530465576 +0000
+@@ -0,0 +1,838 @@
++/*
++ * Gathering and production skills: Mining -> Smithing.
++ * Everything is defined in zones/generic/skilling.cfg, see the header of that file.
++ *
++ * Item drivers (core, not in a DLL, so they work in every area):
++ *   IDR_SKROCK     rock on the map, mine it with a pickaxe
++ *   IDR_SKSTACK    stackable resource (ore, bar), drdata[0..3] = count
++ *   IDR_SKSTATION  furnace, anvil or supply crate
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <ctype.h>
++
++#include "server.h"
++#include "log.h"
++#include "talk.h"
++#include "create.h"
++#include "tool.h"
++#include "drvlib.h"
++#include "map.h"
++#include "player_driver.h"
++#include "sector.h"
++#include "mem.h"
++#include "database.h"
++#include "item_id.h"
++#include "skillreg.h"
++#include "skilling.h"
++
++#define SKILLING_CFG "zones/generic/skilling.cfg"
++
++#define SKT_RESOURCE 1
++#define SKT_ROCK 2
++#define SKT_PICKAXE 3
++#define SKT_HAMMER 4
++#define SKT_FURNACE 5
++#define SKT_ANVIL 6
++#define SKT_SMELT 7
++#define SKT_SMITH 8
++#define SKT_SUPPLY 9
++#define SKT_MAX 9
++
++#define MAXSKDEF 256
++#define MAXNEED 4
++#define STATION_RANGE 3 // /smelt and /smith work this many tiles from a furnace / anvil
++#define MAXMAKE 100 // most items one /smelt or /smith command makes
++
++static char *type_name[] = {"", "resource", "rock", "pickaxe", "hammer", "furnace", "anvil", "smelt", "smith", "supply"};
++
++struct skdef {
++    char key[32];
++    int type; // SKT_*
++    int id; // item ID number (item-bearing types), saved with the items: never change
++    char item[80]; // item template
++    int tmp; // template number
++
++    int level; // skill level needed
++    int xp; // XP per ore / per item made
++    int power; // pickaxe power
++    int ores, respawn, empty_sprite; // rock
++
++    char ore_key[32];
++    int ore; // rock: resource def it gives
++
++    char make_key[80];
++    int make_res; // recipe: resource def it makes, or -1
++    int make_tmp; // recipe: item template it makes
++    char name[40], desc[80]; // recipe: name/description of the made item (empty = template's)
++    int fail; // recipe: fail chance in percent at its level, 2 less per level above
++
++    int nneed;
++    char need_key[MAXNEED][32];
++    int need[MAXNEED], needcnt[MAXNEED];
++};
++
++static struct skdef skdef[MAXSKDEF];
++static int nskdef = 0;
++static int sk_mining = -1, sk_smithing = -1;
++
++// ---------- config ----------
++
++static int lookup_def(char *key) {
++    int n;
++
++    for (n = 0; n < nskdef; n++)
++        if (!strcasecmp(skdef[n].key, key)) return n;
++    return -1;
++}
++
++static int def_by_item(int in) {
++    int n, id;
++
++    if ((it[in].ID >> 24) != DEV_ID_SKILLING) return -1;
++    id = it[in].ID & 0xFFFFFF;
++    for (n = 0; n < nskdef; n++)
++        if (skdef[n].tmp && skdef[n].id == id) return n;
++    return -1;
++}
++
++static int is_item_type(int type) {
++    return type == SKT_RESOURCE || type == SKT_ROCK || type == SKT_PICKAXE || type == SKT_HAMMER || type == SKT_FURNACE || type == SKT_ANVIL || type == SKT_SUPPLY;
++}
++
++static void cfgcopy(char *dst, char *src, int size) {
++    int n;
++
++    for (n = 0; n < size - 1 && src[n]; n++) dst[n] = src[n];
++    dst[n] = 0;
++}
++
++static int parse_cfg(char *text) {
++    char *ptr = text, name[64], value[256], *comma;
++    struct skdef *d = NULL;
++    int line = 1, n;
++
++    while ((ptr = skillcfg_line(ptr, name, value, &line))) {
++        if (name[0] == '#') continue;
++
++        if (value[0] == '!') {
++            elog("%s line %d: syntax error near \"%s\".", SKILLING_CFG, line, name);
++            return 0;
++        }
++        if (value[0] == ':') {
++            if (d) {
++                elog("%s line %d: missing ; before %s:", SKILLING_CFG, line, name);
++                return 0;
++            }
++            if (nskdef >= MAXSKDEF) {
++                elog("%s line %d: more than %d blocks.", SKILLING_CFG, line, MAXSKDEF);
++                return 0;
++            }
++            if (lookup_def(name) != -1) {
++                elog("%s line %d: %s is defined twice.", SKILLING_CFG, line, name);
++                return 0;
++            }
++            d = skdef + nskdef;
++            bzero(d, sizeof(*d));
++            cfgcopy(d->key, name, sizeof(d->key));
++            d->ore = d->make_res = -1;
++            d->power = 1;
++            d->ores = 1;
++            d->respawn = 30;
++            continue;
++        }
++        if (value[0] == ';') {
++            if (!d) {
++                elog("%s line %d: ; without block.", SKILLING_CFG, line);
++                return 0;
++            }
++            if (!d->type) {
++                elog("%s line %d: %s has no type=.", SKILLING_CFG, line, d->key);
++                return 0;
++            }
++            if (is_item_type(d->type) && (d->id < 1 || d->id > 0xFFFFFF || !d->item[0])) {
++                elog("%s line %d: %s needs id= (1 to 16777215) and item=.", SKILLING_CFG, line, d->key);
++                return 0;
++            }
++            nskdef++;
++            d = NULL;
++            continue;
++        }
++        if (!d) {
++            elog("%s line %d: %s outside of a block.", SKILLING_CFG, line, name);
++            return 0;
++        }
++
++        if (!strcasecmp(name, "type")) {
++            for (n = 1; n <= SKT_MAX; n++)
++                if (!strcasecmp(value, type_name[n])) break;
++            if (n > SKT_MAX) {
++                elog("%s line %d: unknown type %s.", SKILLING_CFG, line, value);
++                return 0;
++            }
++            d->type = n;
++        } else if (!strcasecmp(name, "id")) d->id = atoi(value);
++        else if (!strcasecmp(name, "item")) cfgcopy(d->item, value, sizeof(d->item));
++        else if (!strcasecmp(name, "level")) d->level = atoi(value);
++        else if (!strcasecmp(name, "xp")) d->xp = max(0, atoi(value));
++        else if (!strcasecmp(name, "power")) d->power = max(1, atoi(value));
++        else if (!strcasecmp(name, "ores")) d->ores = max(1, atoi(value));
++        else if (!strcasecmp(name, "respawn")) d->respawn = max(1, atoi(value));
++        else if (!strcasecmp(name, "empty_sprite")) d->empty_sprite = atoi(value);
++        else if (!strcasecmp(name, "ore")) cfgcopy(d->ore_key, value, sizeof(d->ore_key));
++        else if (!strcasecmp(name, "make")) cfgcopy(d->make_key, value, sizeof(d->make_key));
++        else if (!strcasecmp(name, "name")) cfgcopy(d->name, value, sizeof(d->name));
++        else if (!strcasecmp(name, "description")) cfgcopy(d->desc, value, sizeof(d->desc));
++        else if (!strcasecmp(name, "fail")) d->fail = max(0, min(100, atoi(value)));
++        else if (!strcasecmp(name, "need") || !strcasecmp(name, "give")) { // need=KEY,count  give=KEY (supply)
++            if (d->nneed >= MAXNEED) {
++                elog("%s line %d: at most %d need= per recipe.", SKILLING_CFG, line, MAXNEED);
++                return 0;
++            }
++            if ((comma = strchr(value, ','))) *comma = 0;
++            cfgcopy(d->need_key[d->nneed], value, sizeof(d->need_key[0]));
++            d->needcnt[d->nneed] = comma ? max(1, atoi(comma + 1)) : 1;
++            d->nneed++;
++        } else {
++            elog("%s line %d: unknown setting %s.", SKILLING_CFG, line, name);
++            return 0;
++        }
++    }
++    if (d) {
++        elog("%s: missing ; at end of file.", SKILLING_CFG);
++        return 0;
++    }
++    return 1;
++}
++
++// links keys and templates, stamps driver and ID into the item templates
++static int resolve_defs(void) {
++    struct skdef *d;
++    struct item *ti;
++    int n, m, k;
++
++    for (n = 0; n < nskdef; n++) {
++        d = skdef + n;
++
++        if (is_item_type(d->type)) {
++            for (m = 0; m < n; m++) {
++                if (is_item_type(skdef[m].type) && skdef[m].id == d->id) {
++                    elog("%s: %s and %s have the same id %d.", SKILLING_CFG, skdef[m].key, d->key, d->id);
++                    return 0;
++                }
++                if (is_item_type(skdef[m].type) && !strcmp(skdef[m].item, d->item)) {
++                    elog("%s: %s and %s use the same item %s.", SKILLING_CFG, skdef[m].key, d->key, d->item);
++                    return 0;
++                }
++            }
++            if (!(d->tmp = lookup_item(d->item))) {
++                elog("%s: %s: unknown item template %s.", SKILLING_CFG, d->key, d->item);
++                return 0;
++            }
++            ti = item_template(d->tmp);
++            ti->ID = MAKE_ITEMID(DEV_ID_SKILLING, d->id);
++            switch (d->type) {
++            case SKT_RESOURCE:
++                ti->driver = IDR_SKSTACK;
++                ti->flags |= IF_TAKE | IF_USE;
++                *(unsigned int *)(ti->drdata) = 1;
++                sprintf(ti->description, "1 %.70s.", ti->name);
++                break;
++            case SKT_ROCK:
++                ti->driver = IDR_SKROCK;
++                ti->flags |= IF_USE;
++                ti->flags &= ~IF_TAKE;
++                if (!d->empty_sprite) d->empty_sprite = ti->sprite;
++                break;
++            case SKT_FURNACE:
++            case SKT_ANVIL:
++            case SKT_SUPPLY:
++                ti->driver = IDR_SKSTATION;
++                ti->flags |= IF_USE;
++                ti->flags &= ~IF_TAKE;
++                break;
++            }
++        }
++
++        if (d->type == SKT_ROCK) {
++            if ((d->ore = lookup_def(d->ore_key)) == -1 || skdef[d->ore].type != SKT_RESOURCE) {
++                elog("%s: rock %s: ore=%s is not a resource.", SKILLING_CFG, d->key, d->ore_key);
++                return 0;
++            }
++        }
++
++        if (d->type == SKT_SUPPLY) {
++            for (m = 0; m < d->nneed; m++) {
++                if ((k = lookup_def(d->need_key[m])) == -1 || (skdef[k].type != SKT_PICKAXE && skdef[k].type != SKT_HAMMER)) {
++                    elog("%s: supply %s: give=%s is not a pickaxe or hammer.", SKILLING_CFG, d->key, d->need_key[m]);
++                    return 0;
++                }
++                d->need[m] = k;
++            }
++        }
++
++        if (d->type == SKT_SMELT || d->type == SKT_SMITH) {
++            if ((k = lookup_def(d->make_key)) != -1) {
++                if (skdef[k].type != SKT_RESOURCE) {
++                    elog("%s: recipe %s: make=%s is not a resource.", SKILLING_CFG, d->key, d->make_key);
++                    return 0;
++                }
++                d->make_res = k;
++            } else if (!(d->make_tmp = lookup_item(d->make_key))) {
++                elog("%s: recipe %s: make=%s is neither a resource nor an item template.", SKILLING_CFG, d->key, d->make_key);
++                return 0;
++            }
++            if (!d->nneed) {
++                elog("%s: recipe %s needs at least one need=.", SKILLING_CFG, d->key);
++                return 0;
++            }
++            for (m = 0; m < d->nneed; m++) {
++                if ((k = lookup_def(d->need_key[m])) == -1 || skdef[k].type != SKT_RESOURCE) {
++                    elog("%s: recipe %s: need=%s is not a resource.", SKILLING_CFG, d->key, d->need_key[m]);
++                    return 0;
++                }
++                d->need[m] = k;
++            }
++            if (!d->name[0]) {
++                if (d->make_res != -1) cfgcopy(d->name, item_template(skdef[d->make_res].tmp)->name, sizeof(d->name));
++                else cfgcopy(d->name, item_template(d->make_tmp)->name, sizeof(d->name));
++            }
++        }
++    }
++    return 1;
++}
++
++int skilling_load(void) {
++    char *text;
++    int ok, n, cnt[SKT_MAX + 1];
++
++    nskdef = 0;
++    sk_mining = skill_lookup_key("MINING");
++    sk_smithing = skill_lookup_key("SMITHING");
++
++    if (!(text = skillcfg_read(SKILLING_CFG))) {
++        elog("Could not read %s. Mining and smithing are off.", SKILLING_CFG);
++        return 1;
++    }
++    ok = parse_cfg(text);
++    xfree(text);
++    if (!ok || !resolve_defs()) {
++        nskdef = 0;
++        return 0;
++    }
++
++    bzero(cnt, sizeof(cnt));
++    for (n = 0; n < nskdef; n++) cnt[skdef[n].type]++;
++    xlog("Loaded %s: %d resources, %d rocks, %d tools, %d stations, %d recipes.", SKILLING_CFG,
++         cnt[SKT_RESOURCE], cnt[SKT_ROCK], cnt[SKT_PICKAXE] + cnt[SKT_HAMMER], cnt[SKT_FURNACE] + cnt[SKT_ANVIL] + cnt[SKT_SUPPLY], cnt[SKT_SMELT] + cnt[SKT_SMITH]);
++    if (sk_mining == -1 || sk_smithing == -1) elog("skills.cfg has no MINING or SMITHING skill. Those give no XP.");
++    return 1;
++}
++
++static int skill_level(int cn, int sk) {
++    if (sk == -1) return 1;
++    return skill_get_level(cn, sk);
++}
++
++static void give_xp(int cn, int sk, int xp) {
++    if (sk != -1 && xp > 0) add_skill_xp(cn, sk, xp);
++}
++
++// ---------- resource stacks ----------
++
++static unsigned int stack_count(int in) {
++    return *(unsigned int *)(it[in].drdata);
++}
++
++static void stack_set(int in, unsigned int cnt) {
++    int tmp, d;
++
++    *(unsigned int *)(it[in].drdata) = cnt;
++    if ((d = def_by_item(in)) != -1 && (tmp = skdef[d].tmp)) it[in].value = item_template(tmp)->value * cnt;
++    sprintf(it[in].description, "%s %.60s.", bignumber(cnt), it[in].name);
++    it[in].flags |= IF_FORCEUPDATE;
++}
++
++static int is_res(int in, int d) {
++    return in && it[in].ID == MAKE_ITEMID(DEV_ID_SKILLING, skdef[d].id);
++}
++
++static int res_count(int cn, int d) {
++    int n, cnt = 0;
++
++    for (n = 30; n < INVENTORYSIZE; n++)
++        if (is_res(ch[cn].item[n], d)) cnt += stack_count(ch[cn].item[n]);
++    if (is_res(ch[cn].citem, d)) cnt += stack_count(ch[cn].citem);
++    return cnt;
++}
++
++static void res_take(int cn, int d, int cnt) {
++    int n, in, have;
++
++    for (n = 29; n < INVENTORYSIZE && cnt > 0; n++) { // 29 = the item in hand, then the inventory
++        in = (n == 29) ? ch[cn].citem : ch[cn].item[n];
++        if (!is_res(in, d)) continue;
++        have = stack_count(in);
++        if (have > cnt) {
++            stack_set(in, have - cnt);
++            cnt = 0;
++        } else {
++            cnt -= have;
++            remove_item_char(in);
++            destroy_item(in);
++        }
++    }
++    ch[cn].flags |= CF_ITEMS;
++}
++
++// is there room for the result of one resource?
++static int res_room(int cn, int d) {
++    int n;
++
++    for (n = 30; n < INVENTORYSIZE; n++)
++        if (!ch[cn].item[n] || is_res(ch[cn].item[n], d)) return 1;
++    return 0;
++}
++
++static int free_slot(int cn) {
++    int n;
++
++    for (n = 30; n < INVENTORYSIZE; n++)
++        if (!ch[cn].item[n]) return 1;
++    return 0;
++}
++
++static int res_give(int cn, int d, int cnt) {
++    int n, in;
++
++    for (n = 30; n < INVENTORYSIZE; n++) {
++        if (is_res(ch[cn].item[n], d)) {
++            stack_set(ch[cn].item[n], stack_count(ch[cn].item[n]) + cnt);
++            ch[cn].flags |= CF_ITEMS;
++            return 1;
++        }
++    }
++    if (!(in = create_item_nr(skdef[d].tmp))) return 0;
++    stack_set(in, cnt);
++    if (!store_item(cn, in)) {
++        destroy_item(in);
++        return 0;
++    }
++    ch[cn].flags |= CF_ITEMS;
++    return 1;
++}
++
++static void stack_driver(int in, int cn) {
++    int in2, d;
++    unsigned int a, b;
++
++    if (!cn) { // created: make sure the count and description are set
++        if (!stack_count(in)) stack_set(in, 1);
++        return;
++    }
++    if (!it[in].carried) return;
++
++    if (!(in2 = ch[cn].citem)) { // split off half
++        a = stack_count(in);
++        if (a < 2) {
++            log_char(cn, LOG_SYSTEM, 0, "You cannot split 1 %s.", it[in].name);
++            return;
++        }
++        b = a / 2;
++        if ((d = def_by_item(in)) == -1 || !(in2 = create_item_nr(skdef[d].tmp))) {
++            log_char(cn, LOG_SYSTEM, 0, "Bug: cannot split %s.", it[in].name);
++            return;
++        }
++        stack_set(in, a - b);
++        stack_set(in2, b);
++        ch[cn].citem = in2;
++        it[in2].carried = cn;
++        ch[cn].flags |= CF_ITEMS;
++        log_char(cn, LOG_SYSTEM, 0, "Split into %u and %u %s.", a - b, b, it[in].name);
++        return;
++    }
++    if (in2 == in) return;
++    if (it[in2].ID != it[in].ID) {
++        log_char(cn, LOG_SYSTEM, 0, "You cannot mix those.");
++        return;
++    }
++    stack_set(in, stack_count(in) + stack_count(in2));
++    remove_item_char(in2);
++    destroy_item(in2);
++    ch[cn].flags |= CF_ITEMS;
++    log_char(cn, LOG_SYSTEM, 0, "%s", it[in].description);
++}
++
++// ---------- mining ----------
++
++#define ROCK_COUNT(in) (*(unsigned int *)(it[in].drdata))
++#define ROCK_STATE(in) (it[in].drdata[4]) // 0 = new, 1 = has ore, 2 = empty
++
++// best pickaxe the character carries and may use, -1 = none; *need = lowest level of the ones carried
++static int best_tool(int cn, int type, int lvl, int *need) {
++    int n, in, d, best = -1;
++
++    *need = 0;
++    for (n = 0; n <= INVENTORYSIZE; n++) {
++        if (n >= 12 && n < 30) continue; // spells
++        in = (n == INVENTORYSIZE) ? ch[cn].citem : ch[cn].item[n];
++        if (!in || (d = def_by_item(in)) == -1 || skdef[d].type != type) continue;
++        if (skdef[d].level > lvl) {
++            if (!*need || skdef[d].level < *need) *need = skdef[d].level;
++            continue;
++        }
++        if (best == -1 || skdef[d].power > skdef[best].power) best = d;
++    }
++    return best;
++}
++
++static void rock_refill(int in, int d) {
++    ROCK_COUNT(in) = skdef[d].ores;
++    ROCK_STATE(in) = 1;
++    it[in].sprite = item_template(skdef[d].tmp)->sprite;
++    if (it[in].x) set_sector(it[in].x, it[in].y);
++}
++
++static void rock_driver(int in, int cn) {
++    int d, ore, lvl, pick, need, chance;
++
++    if ((d = def_by_item(in)) == -1) return;
++    ore = skdef[d].ore;
++
++    if (!cn) { // timer: first call after creation, or respawn
++        if (ROCK_STATE(in) != 1) rock_refill(in, d);
++        return;
++    }
++
++    if (ROCK_STATE(in) != 1) {
++        log_char(cn, LOG_SYSTEM, 0, "There is no ore left in this rock.");
++        player_driver_dig_off(cn);
++        return;
++    }
++    if (ch[cn].citem) {
++        log_char(cn, LOG_SYSTEM, 0, "Please empty your hand (mouse cursor) first.");
++        player_driver_dig_off(cn);
++        return;
++    }
++    lvl = skill_level(cn, sk_mining);
++    if (lvl < skdef[d].level) {
++        log_char(cn, LOG_SYSTEM, 0, "You need Mining level %d to mine %s.", skdef[d].level, it[in].name);
++        player_driver_dig_off(cn);
++        return;
++    }
++    if ((pick = best_tool(cn, SKT_PICKAXE, lvl, &need)) == -1) {
++        if (need) log_char(cn, LOG_SYSTEM, 0, "You need Mining level %d to use your pickaxe.", need);
++        else log_char(cn, LOG_SYSTEM, 0, "You need a pickaxe to mine here.");
++        player_driver_dig_off(cn);
++        return;
++    }
++    if (!res_room(cn, ore)) {
++        log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
++        player_driver_dig_off(cn);
++        return;
++    }
++
++    chance = 35 + 2 * (lvl - skdef[d].level) + 10 * (skdef[pick].power - 1);
++    chance = max(5, min(95, chance));
++    if (RANDOM(100) >= chance) { // no luck this swing, keep going
++        player_driver_dig_on(cn);
++        return;
++    }
++
++    if (!res_give(cn, ore, 1)) {
++        log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
++        player_driver_dig_off(cn);
++        return;
++    }
++    log_char(cn, LOG_SYSTEM, 0, "You mine some %s.", item_template(skdef[ore].tmp)->name);
++    give_xp(cn, sk_mining, skdef[d].xp);
++
++    if (ROCK_COUNT(in) > 1) {
++        ROCK_COUNT(in)--;
++        player_driver_dig_on(cn);
++        return;
++    }
++
++    ROCK_COUNT(in) = 0;
++    ROCK_STATE(in) = 2;
++    it[in].sprite = skdef[d].empty_sprite;
++    set_sector(it[in].x, it[in].y);
++    call_item(it[in].driver, in, 0, ticker + skdef[d].respawn * TICKS);
++    player_driver_dig_off(cn);
++}
++
++// ---------- smelting and smithing ----------
++
++static int station_type(int recipe_type) {
++    return recipe_type == SKT_SMELT ? SKT_FURNACE : SKT_ANVIL;
++}
++
++static int recipe_skill(void) {
++    return sk_smithing;
++}
++
++// how many the character could make right now from what they carry
++static int can_make(int cn, int r) {
++    int m, best = MAXMAKE;
++
++    for (m = 0; m < skdef[r].nneed; m++) best = min(best, res_count(cn, skdef[r].need[m]) / skdef[r].needcnt[m]);
++    return best;
++}
++
++static void need_text(int r, char *buf) {
++    int m;
++
++    buf[0] = 0;
++    for (m = 0; m < skdef[r].nneed; m++)
++        sprintf(buf + strlen(buf), "%s%d %s", m ? " + " : "", skdef[r].needcnt[m], item_template(skdef[skdef[r].need[m]].tmp)->name);
++}
++
++static void list_recipes(int cn, int rtype) {
++    int r, lvl;
++    char buf[256];
++
++    lvl = skill_level(cn, recipe_skill());
++    log_char(cn, LOG_SYSTEM, 0, "\260c3%s (your Smithing level is %d):", rtype == SKT_SMELT ? "Smelting" : "Smithing", lvl);
++    for (r = 0; r < nskdef; r++) {
++        if (skdef[r].type != rtype) continue;
++        need_text(r, buf);
++        log_char(cn, LOG_SYSTEM, 0, "%s%s (level %d, %d XP): %s", skdef[r].level > lvl ? "\260c1" : "", skdef[r].name, skdef[r].level, skdef[r].xp, buf);
++    }
++    log_char(cn, LOG_SYSTEM, 0, "Use /%s <name> [count|all], or click the %s holding the material.", rtype == SKT_SMELT ? "smelt" : "smith", rtype == SKT_SMELT ? "furnace" : "anvil");
++}
++
++// makes up to cnt of recipe r; returns how many were made
++static int make_recipe(int cn, int r, int cnt) {
++    struct skdef *d = skdef + r;
++    int lvl, done = 0, failed = 0, m, in, need, fail, xp = 0;
++    char buf[256];
++
++    lvl = skill_level(cn, recipe_skill());
++    if (lvl < d->level) {
++        log_char(cn, LOG_SYSTEM, 0, "You need Smithing level %d to make %s.", d->level, d->name);
++        return 0;
++    }
++    if (d->type == SKT_SMITH && best_tool(cn, SKT_HAMMER, lvl, &need) == -1) {
++        log_char(cn, LOG_SYSTEM, 0, "You need a hammer to work the anvil.");
++        return 0;
++    }
++    if (can_make(cn, r) < 1) {
++        need_text(r, buf);
++        log_char(cn, LOG_SYSTEM, 0, "You need %s to make %s.", buf, d->name);
++        return 0;
++    }
++    fail = max(0, d->fail - 2 * (lvl - d->level));
++
++    while (done + failed < cnt && can_make(cn, r) > 0) {
++        if (d->make_res != -1 ? !res_room(cn, d->make_res) : !free_slot(cn)) {
++            log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
++            break;
++        }
++        for (m = 0; m < d->nneed; m++) res_take(cn, d->need[m], d->needcnt[m]);
++
++        if (fail && RANDOM(100) < fail) {
++            failed++;
++            continue;
++        }
++        if (d->make_res != -1) {
++            if (!res_give(cn, d->make_res, 1)) break; // checked above, cannot happen
++        } else {
++            if (!(in = create_item_nr(d->make_tmp))) break;
++            if (d->name[0]) cfgcopy(it[in].name, d->name, sizeof(it[in].name));
++            if (d->desc[0]) cfgcopy(it[in].description, d->desc, sizeof(it[in].description));
++            if (!store_item(cn, in)) {
++                destroy_item(in);
++                break;
++            }
++            ch[cn].flags |= CF_ITEMS;
++            if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "made by %s", d->type == SKT_SMELT ? "smelting" : "smithing");
++        }
++        done++;
++        xp += d->xp;
++    }
++
++    if (done) log_char(cn, LOG_SYSTEM, 0, "You make %d %s.", done, d->name);
++    if (failed) log_char(cn, LOG_SYSTEM, 0, "%d %s failed and the materials were lost.", failed, failed == 1 ? "attempt" : "attempts");
++    give_xp(cn, recipe_skill(), xp);
++    return done;
++}
++
++// station clicked with a resource in hand: best recipe that uses it
++static void station_use_with(int cn, int rtype, int in) {
++    int r, best = -1, m, lvl, res;
++
++    if ((res = def_by_item(in)) == -1 || skdef[res].type != SKT_RESOURCE) {
++        log_char(cn, LOG_SYSTEM, 0, "You cannot use that here.");
++        return;
++    }
++    lvl = skill_level(cn, recipe_skill());
++    for (r = 0; r < nskdef; r++) {
++        if (skdef[r].type != rtype || skdef[r].level > lvl) continue;
++        for (m = 0; m < skdef[r].nneed; m++)
++            if (skdef[r].need[m] == res) break;
++        if (m == skdef[r].nneed || can_make(cn, r) < 1) continue;
++        if (best == -1 || skdef[r].level > skdef[best].level) best = r;
++    }
++    if (best == -1) {
++        log_char(cn, LOG_SYSTEM, 0, "You cannot make anything here from what you carry.");
++        list_recipes(cn, rtype);
++        return;
++    }
++    make_recipe(cn, best, 1);
++}
++
++// gives each listed tool the character does not carry yet
++static void supply_driver(int cn, int d) {
++    int m, n, in, t, have, given = 0;
++
++    for (m = 0; m < skdef[d].nneed; m++) {
++        t = skdef[d].need[m];
++        for (have = 0, n = 0; n <= INVENTORYSIZE && !have; n++) {
++            if (n >= 12 && n < 30) continue;
++            in = (n == INVENTORYSIZE) ? ch[cn].citem : ch[cn].item[n];
++            if (in && it[in].ID == MAKE_ITEMID(DEV_ID_SKILLING, skdef[t].id)) have = 1;
++        }
++        if (have) continue;
++        if (!free_slot(cn)) {
++            log_char(cn, LOG_SYSTEM, 0, "Your inventory is full.");
++            return;
++        }
++        if (!(in = create_item_nr(skdef[t].tmp))) continue;
++        store_item(cn, in);
++        ch[cn].flags |= CF_ITEMS;
++        if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "took from %s", skdef[d].key);
++        log_char(cn, LOG_SYSTEM, 0, "You take a %s.", it[in].name);
++        given++;
++    }
++    if (!given) log_char(cn, LOG_SYSTEM, 0, "You already have the tools from here.");
++}
++
++static void station_driver(int in, int cn) {
++    int d, rtype;
++
++    if (!cn) return;
++    if ((d = def_by_item(in)) == -1) return;
++    if (skdef[d].type == SKT_SUPPLY) {
++        supply_driver(cn, d);
++        return;
++    }
++    rtype = skdef[d].type == SKT_FURNACE ? SKT_SMELT : SKT_SMITH;
++
++    if (ch[cn].citem) station_use_with(cn, rtype, ch[cn].citem);
++    else list_recipes(cn, rtype);
++}
++
++int skilling_item_driver(int nr, int in, int cn) {
++    switch (nr) {
++    case IDR_SKROCK:
++        rock_driver(in, cn);
++        break;
++    case IDR_SKSTACK:
++        stack_driver(in, cn);
++        break;
++    case IDR_SKSTATION:
++        station_driver(in, cn);
++        break;
++    default:
++        return 0;
++    }
++    return 1;
++}
++
++// ---------- /smelt and /smith ----------
++
++static int near_station(int cn, int type) {
++    int x, y, in, d;
++
++    for (y = max(1, ch[cn].y - STATION_RANGE); y <= min(MAXMAP - 2, ch[cn].y + STATION_RANGE); y++) {
++        for (x = max(1, ch[cn].x - STATION_RANGE); x <= min(MAXMAP - 2, ch[cn].x + STATION_RANGE); x++) {
++            if (!(in = map[x + y * MAXMAP].it) || it[in].driver != IDR_SKSTATION) continue;
++            if ((d = def_by_item(in)) != -1 && skdef[d].type == type) return 1;
++        }
++    }
++    return 0;
++}
++
++// lowercase, letters and digits only
++static void squash(char *dst, char *src, int size) {
++    int n = 0;
++
++    for (; *src && n < size - 1; src++)
++        if (isalnum(*src)) dst[n++] = tolower(*src);
++    dst[n] = 0;
++}
++
++static int find_recipe(int cn, int rtype, char *what) {
++    char want[80], have[80];
++    int r, found = -1, many = 0;
++
++    squash(want, what, sizeof(want));
++    if (!want[0]) return -1;
++    for (r = 0; r < nskdef; r++) {
++        if (skdef[r].type != rtype) continue;
++        squash(have, skdef[r].name, sizeof(have));
++        if (!strcmp(have, want)) return r;
++        squash(have, skdef[r].key, sizeof(have));
++        if (!strcmp(have, want)) return r;
++        squash(have, skdef[r].name, sizeof(have));
++        if (strstr(have, want)) {
++            if (found == -1) found = r;
++            else many = 1;
++        }
++    }
++    if (many) {
++        log_char(cn, LOG_SYSTEM, 0, "\"%s\" matches more than one recipe, please be more exact.", what);
++        return -2;
++    }
++    return found;
++}
++
++// /smelt [what] [count|all], /smith [what] [count|all]; returns 1 if cmd was one of ours
++int skilling_command(int cn, char *cmd, char *args) {
++    int rtype, r, cnt = 1, len;
++    char what[80], *last;
++
++    if (!strcasecmp(cmd, "smelt")) rtype = SKT_SMELT;
++    else if (!strcasecmp(cmd, "smith")) rtype = SKT_SMITH;
++    else return 0;
++
++    if (!nskdef) {
++        log_char(cn, LOG_SYSTEM, 0, "Smithing is not set up on this server.");
++        return 1;
++    }
++    if (!near_station(cn, station_type(rtype))) {
++        log_char(cn, LOG_SYSTEM, 0, "You need to stand next to %s.", rtype == SKT_SMELT ? "a furnace" : "an anvil");
++        return 1;
++    }
++
++    while (isspace(*args)) args++;
++    cfgcopy(what, args, sizeof(what));
++    len = strlen(what);
++    while (len && isspace(what[len - 1])) what[--len] = 0;
++
++    if ((last = strrchr(what, ' '))) { // trailing count or "all"
++        if (!strcasecmp(last + 1, "all")) {
++            cnt = MAXMAKE;
++            *last = 0;
++        } else if (isdigit(last[1])) {
++            cnt = max(1, min(MAXMAKE, atoi(last + 1)));
++            *last = 0;
++        }
++    }
++
++    if (!what[0]) {
++        list_recipes(cn, rtype);
++        return 1;
++    }
++    if ((r = find_recipe(cn, rtype, what)) == -2) return 1;
++    if (r == -1) {
++        log_char(cn, LOG_SYSTEM, 0, "There is no recipe called \"%s\".", what);
++        list_recipes(cn, rtype);
++        return 1;
++    }
++    make_recipe(cn, r, cnt);
++    return 1;
++}
+diff -ruN a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/skilling.h	2026-10-13 08:51:26.535800237 +0000
+@@ -0,0 +1,10 @@
++/*
++ * Gathering and production skills (Mining -> Smithing first).
++ * Everything is defined in zones/generic/skilling.cfg, see the header of that file.
++ */
++
++#define DEV_ID_SKILLING 0x52 // item IDs of skilling items: MAKE_ITEMID(DEV_ID_SKILLING, def id)
++
++int skilling_load(void); // after the item templates are loaded
++int skilling_item_driver(int nr, int in, int cn);
++int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith
+diff -ruN a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 08:51:26.448253773 +0000
++++ b/src/skillreg.c	2026-10-13 08:51:26.450249080 +0000
+@@ -115,7 +115,7 @@
+ 
+ // reads "name=value" (value may be quoted), "name:" (block start) or ";" (block end).
+ // returns pointer after the line, or NULL at end of text
+-static char *cfg_line(char *ptr, char *name, char *value, int *line) {
++char *skillcfg_line(char *ptr, char *name, char *value, int *line) {
+     int len;
+ 
+     *name = *value = 0;
+@@ -172,7 +172,7 @@
+     return ptr;
+ }
+ 
+-static char *read_file(char *filename) {
++char *skillcfg_read(char *filename) {
+     FILE *fp;
+     long len;
+     char *text;
+@@ -233,13 +233,13 @@
+     bzero(skilldef, sizeof(skilldef));
+     for (n = 0; n < V_MAX; n++) value_skill[n] = -1;
+ 
+-    if (!(text = read_file(SKILLS_CFG))) {
++    if (!(text = skillcfg_read(SKILLS_CFG))) {
+         elog("Could not read %s. The skill system needs it.", SKILLS_CFG);
+         return 0;
+     }
+ 
+     ptr = text;
+-    while ((ptr = cfg_line(ptr, name, value, &line))) {
++    while ((ptr = skillcfg_line(ptr, name, value, &line))) {
+         if (name[0] == '#') continue;
+ 
+         if (value[0] == '!') {
+@@ -372,13 +372,13 @@
+ 
+     bzero(quest_reward, sizeof(quest_reward));
+ 
+-    if (!(text = read_file(QUESTS_CFG))) {
++    if (!(text = skillcfg_read(QUESTS_CFG))) {
+         elog("Could not read %s. Quests give no skill XP.", QUESTS_CFG);
+         return 1;
+     }
+ 
+     ptr = text;
+-    while ((ptr = cfg_line(ptr, name, value, &line))) {
++    while ((ptr = skillcfg_line(ptr, name, value, &line))) {
+         if (name[0] == '#') continue;
+ 
+         if (value[0] == '!') {
+diff -ruN a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 08:51:26.456781795 +0000
++++ b/src/skillreg.h	2026-10-13 08:51:26.459029887 +0000
+@@ -70,6 +70,10 @@
+ void skills_init_player(int cn);
+ int skills_show(int cn, char *filter);
+ int quests_load(void);
++
++// shared config reader (block files: KEY: ... ;, name=value, # comments)
++char *skillcfg_line(char *ptr, char *name, char *value, int *line);
++char *skillcfg_read(char *filename); // xfree() the result
+ void skill_quest_reward(int cn, int qnr, int cnt);
+ 
+ // client skills panel (protocol 5): skill list and per-skill XP for the client.
+diff -ruN a/zones/1/mining_camp.place b/zones/1/mining_camp.place
+--- a/zones/1/mining_camp.place	1970-01-01 00:00:00.000000000 +0000
++++ b/zones/1/mining_camp.place	2026-10-13 08:51:26.551946611 +0000
+@@ -0,0 +1,27 @@
++# =====================================================================
++# mining_camp.place - test mining camp east of the Cameron start
++# =====================================================================
++# .place files are read after the .map files of the area. They add things
++# to the map without changing the .map: at="x,y" picks a tile (the tile must
++# not have an item yet), then it=<item template> puts an item there.
++# Templates are in zones/generic/skilling.itm.
++
++at="132,181"
++it=furnace
++at="134,181"
++it=anvil
++at="129,181"
++it=mining_supplies
++
++at="136,183"
++it=rock_copper
++at="138,183"
++it=rock_copper
++at="140,183"
++it=rock_tin
++at="136,186"
++it=rock_tin
++at="138,186"
++it=rock_iron
++at="140,186"
++it=rock_coal
+diff -ruN a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	1970-01-01 00:00:00.000000000 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 08:51:26.540878432 +0000
+@@ -0,0 +1,510 @@
++# =====================================================================
++# skilling.cfg - Mining and Smithing (Astonia rebuild)
++# =====================================================================
++#
++# Every block is   KEY:  setting=value ...  ;     (# starts a comment)
++# Items are templates from zones/generic/skilling.itm (or any other .itm).
++#
++# type=resource   something that stacks in the inventory (ore, coal, bars)
++#     id=  item=
++# type=rock       a rock on the map, mined with a pickaxe
++#     id=  item=  ore=RESOURCE  level= (Mining)  xp= (per ore)
++#     ores= (ores before it is empty)  respawn= (seconds until it refills)
++#     empty_sprite= (sprite while empty)
++# type=pickaxe    id=  item=  level= (Mining to use it)  power= (1 = basic,
++#                 each point is +10% chance per swing)
++# type=hammer     id=  item=   (needed to use an anvil)
++# type=furnace    id=  item=   (/smelt works within 3 tiles)
++# type=anvil      id=  item=   (/smith works within 3 tiles)
++# type=supply     id=  item=  give=TOOL ...  (click it to get the listed
++#                 tools you do not carry yet)
++# type=smelt      recipe at a furnace: make=RESOURCE  need=RESOURCE,count ...
++#                 level= (Smithing)  xp= (per bar)  fail= (percent chance to
++#                 lose the ores at that level, 2 less per level above)
++# type=smith      recipe at an anvil: make=RESOURCE or item template
++#                 need=RESOURCE,count ...  level=  xp=  name= description=
++#                 (name and description of the made item, default: template's)
++#
++# id= is saved with the items players carry: NEVER change or reuse an id
++# once players have the items. Ids must be unique over all blocks with item=.
++# Recipes have no id, add or change them any time.
++#
++# Mining chance per swing: 35% + 2% per Mining level above the rock's level
++# + 10% per pickaxe power above 1, from 5% to 95%.
++#
++# Players: click a rock to mine (repeats until the rock is empty or the
++# inventory is full). Click ore in the inventory with an empty hand to split
++# a stack, with the same ore in hand to join stacks. At a furnace or anvil
++# type /smelt or /smith to see the recipes, "/smelt bronze bar 10",
++# "/smith bronze dagger all", or click the furnace holding ore.
++
++# ---------- resources (ids 1-99) ----------
++
++COPPER_ORE:
++type=resource
++id=1
++item=ore_copper
++;
++
++TIN_ORE:
++type=resource
++id=2
++item=ore_tin
++;
++
++IRON_ORE:
++type=resource
++id=3
++item=ore_iron
++;
++
++COAL:
++type=resource
++id=4
++item=coal
++;
++
++METAL_PLACEHOLDER_1_ORE:
++type=resource
++id=5
++item=ore_metal_placeholder_1
++;
++
++METAL_PLACEHOLDER_2_ORE:
++type=resource
++id=6
++item=ore_metal_placeholder_2
++;
++
++METAL_PLACEHOLDER_3_ORE:
++type=resource
++id=7
++item=ore_metal_placeholder_3
++;
++
++METAL_PLACEHOLDER_4_ORE:
++type=resource
++id=8
++item=ore_metal_placeholder_4
++;
++
++BRONZE_BAR:
++type=resource
++id=20
++item=bar_bronze
++;
++
++IRON_BAR:
++type=resource
++id=21
++item=bar_iron
++;
++
++STEEL_BAR:
++type=resource
++id=22
++item=bar_steel
++;
++
++METAL_PLACEHOLDER_1_BAR:
++type=resource
++id=23
++item=bar_metal_placeholder_1
++;
++
++METAL_PLACEHOLDER_2_BAR:
++type=resource
++id=24
++item=bar_metal_placeholder_2
++;
++
++METAL_PLACEHOLDER_3_BAR:
++type=resource
++id=25
++item=bar_metal_placeholder_3
++;
++
++METAL_PLACEHOLDER_4_BAR:
++type=resource
++id=26
++item=bar_metal_placeholder_4
++;
++
++# ---------- rocks (ids 100-199) ----------
++
++COPPER_ROCK:
++type=rock
++id=100
++item=rock_copper
++ore=COPPER_ORE
++level=1
++xp=18
++ores=3
++respawn=20
++empty_sprite=15077
++;
++
++TIN_ROCK:
++type=rock
++id=101
++item=rock_tin
++ore=TIN_ORE
++level=1
++xp=18
++ores=3
++respawn=20
++empty_sprite=15085
++;
++
++IRON_ROCK:
++type=rock
++id=102
++item=rock_iron
++ore=IRON_ORE
++level=15
++xp=35
++ores=2
++respawn=40
++empty_sprite=15093
++;
++
++COAL_ROCK:
++type=rock
++id=103
++item=rock_coal
++ore=COAL
++level=30
++xp=50
++ores=2
++respawn=60
++empty_sprite=15077
++;
++
++METAL_PLACEHOLDER_1_ROCK:
++type=rock
++id=104
++item=rock_metal_placeholder_1
++ore=METAL_PLACEHOLDER_1_ORE
++level=40
++xp=80
++ores=2
++respawn=90
++empty_sprite=15085
++;
++
++METAL_PLACEHOLDER_2_ROCK:
++type=rock
++id=105
++item=rock_metal_placeholder_2
++ore=METAL_PLACEHOLDER_2_ORE
++level=50
++xp=100
++ores=2
++respawn=90
++empty_sprite=15085
++;
++
++METAL_PLACEHOLDER_3_ROCK:
++type=rock
++id=106
++item=rock_metal_placeholder_3
++ore=METAL_PLACEHOLDER_3_ORE
++level=60
++xp=120
++ores=2
++respawn=90
++empty_sprite=15085
++;
++
++METAL_PLACEHOLDER_4_ROCK:
++type=rock
++id=107
++item=rock_metal_placeholder_4
++ore=METAL_PLACEHOLDER_4_ORE
++level=70
++xp=140
++ores=2
++respawn=90
++empty_sprite=15085
++;
++
++# ---------- tools and stations (ids 200-299) ----------
++
++BRONZE_PICKAXE:
++type=pickaxe
++id=200
++item=pickaxe_bronze
++level=1
++power=1
++;
++
++IRON_PICKAXE:
++type=pickaxe
++id=201
++item=pickaxe_iron
++level=5
++power=2
++;
++
++STEEL_PICKAXE:
++type=pickaxe
++id=202
++item=pickaxe_steel
++level=10
++power=3
++;
++
++HAMMER:
++type=hammer
++id=210
++item=smith_hammer
++;
++
++FURNACE:
++type=furnace
++id=250
++item=furnace
++;
++
++ANVIL:
++type=anvil
++id=251
++item=anvil
++;
++
++MINING_SUPPLIES:
++type=supply
++id=260
++item=mining_supplies
++give=BRONZE_PICKAXE
++give=HAMMER
++;
++
++# ---------- smelting ----------
++
++SMELT_BRONZE:
++type=smelt
++make=BRONZE_BAR
++need=COPPER_ORE,1
++need=TIN_ORE,1
++level=1
++xp=6
++;
++
++SMELT_IRON:
++type=smelt
++make=IRON_BAR
++need=IRON_ORE,1
++level=15
++xp=12
++fail=50
++;
++
++SMELT_STEEL:
++type=smelt
++make=STEEL_BAR
++need=IRON_ORE,1
++need=COAL,2
++level=30
++xp=17
++;
++
++# ---------- smithing ----------
++# Gear uses the existing weapon and armor templates: bronze = tier 1,
++# iron = tier 3, steel = tier 5. Pickaxes can be smithed too.
++
++SMITH_BRONZE_DAGGER:
++type=smith
++make=dagger1q1
++name="Bronze Dagger"
++description="A dagger made of bronze."
++need=BRONZE_BAR,1
++level=1
++xp=12
++;
++
++SMITH_BRONZE_HELMET:
++type=smith
++make=helmet1q1
++name="Bronze Helmet"
++description="A helmet made of bronze."
++need=BRONZE_BAR,1
++level=3
++xp=12
++;
++
++SMITH_BRONZE_SWORD:
++type=smith
++make=sword1q1
++name="Bronze Sword"
++description="A sword made of bronze."
++need=BRONZE_BAR,1
++level=4
++xp=12
++;
++
++SMITH_BRONZE_LEGGINGS:
++type=smith
++make=leggings1q1
++name="Bronze Leggings"
++description="Leggings made of bronze."
++need=BRONZE_BAR,3
++level=8
++xp=36
++;
++
++SMITH_BRONZE_ARMOR:
++type=smith
++make=armor1q1
++name="Bronze Armor"
++description="Armor made of bronze."
++need=BRONZE_BAR,5
++level=11
++xp=60
++;
++
++SMITH_BRONZE_TWOHANDED:
++type=smith
++make=twohanded1q1
++name="Bronze Two-Handed Sword"
++description="A two-handed sword made of bronze."
++need=BRONZE_BAR,3
++level=14
++xp=36
++;
++
++SMITH_IRON_DAGGER:
++type=smith
++make=dagger3q1
++name="Iron Dagger"
++description="An dagger made of iron."
++need=IRON_BAR,1
++level=15
++xp=25
++;
++
++SMITH_IRON_HELMET:
++type=smith
++make=helmet3q1
++name="Iron Helmet"
++description="An helmet made of iron."
++need=IRON_BAR,1
++level=17
++xp=25
++;
++
++SMITH_IRON_SWORD:
++type=smith
++make=sword3q1
++name="Iron Sword"
++description="An sword made of iron."
++need=IRON_BAR,1
++level=18
++xp=25
++;
++
++SMITH_IRON_LEGGINGS:
++type=smith
++make=leggings3q1
++name="Iron Leggings"
++description="Leggings made of iron."
++need=IRON_BAR,3
++level=22
++xp=75
++;
++
++SMITH_IRON_ARMOR:
++type=smith
++make=armor3q1
++name="Iron Armor"
++description="Armor made of iron."
++need=IRON_BAR,5
++level=25
++xp=125
++;
++
++SMITH_IRON_TWOHANDED:
++type=smith
++make=twohanded3q1
++name="Iron Two-Handed Sword"
++description="An two-handed sword made of iron."
++need=IRON_BAR,3
++level=28
++xp=75
++;
++
++SMITH_IRON_PICKAXE:
++type=smith
++make=pickaxe_iron
++need=IRON_BAR,2
++level=20
++xp=50
++;
++
++SMITH_STEEL_DAGGER:
++type=smith
++make=dagger5q1
++name="Steel Dagger"
++description="A dagger made of steel."
++need=STEEL_BAR,1
++level=30
++xp=37
++;
++
++SMITH_STEEL_HELMET:
++type=smith
++make=helmet5q1
++name="Steel Helmet"
++description="A helmet made of steel."
++need=STEEL_BAR,1
++level=32
++xp=37
++;
++
++SMITH_STEEL_SWORD:
++type=smith
++make=sword5q1
++name="Steel Sword"
++description="A sword made of steel."
++need=STEEL_BAR,1
++level=33
++xp=37
++;
++
++SMITH_STEEL_LEGGINGS:
++type=smith
++make=leggings5q1
++name="Steel Leggings"
++description="Leggings made of steel."
++need=STEEL_BAR,3
++level=37
++xp=111
++;
++
++SMITH_STEEL_ARMOR:
++type=smith
++make=armor5q1
++name="Steel Armor"
++description="Armor made of steel."
++need=STEEL_BAR,5
++level=40
++xp=185
++;
++
++SMITH_STEEL_TWOHANDED:
++type=smith
++make=twohanded5q1
++name="Steel Two-Handed Sword"
++description="A two-handed sword made of steel."
++need=STEEL_BAR,3
++level=43
++xp=111
++;
++
++SMITH_STEEL_PICKAXE:
++type=smith
++make=pickaxe_steel
++need=STEEL_BAR,2
++level=35
++xp=74
++;
+diff -ruN a/zones/generic/skilling.itm b/zones/generic/skilling.itm
+--- a/zones/generic/skilling.itm	1970-01-01 00:00:00.000000000 +0000
++++ b/zones/generic/skilling.itm	2026-10-13 08:51:26.546556190 +0000
+@@ -0,0 +1,258 @@
++# =====================================================================
++# skilling.itm - items of Mining and Smithing
++# =====================================================================
++# Plain item templates. skilling.cfg says what each one is (rock, ore,
++# tool ...) and the server sets their driver and item ID when it starts,
++# so do not set driver=, ID= or arg= here.
++# Rocks need flag=IF_MOVEBLOCK, ores, bars and tools need flag=IF_TAKE.
++#
++
++# ---- rocks (placed on the map with zones/<area>/*.place) ----
++
++rock_copper:
++name="Copper Rock"
++description="A rock with veins of copper ore."
++sprite=15076
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_tin:
++name="Tin Rock"
++description="A rock with veins of tin ore."
++sprite=15084
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_iron:
++name="Iron Rock"
++description="A rock with veins of iron ore."
++sprite=15092
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_coal:
++name="Coal Rock"
++description="A rock with seams of coal."
++sprite=15076
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_metal_placeholder_1:
++name="Placeholder Rock 1"
++description="A rock with placeholder metal 1. Rename me in skilling.itm."
++sprite=15084
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_metal_placeholder_2:
++name="Placeholder Rock 2"
++description="A rock with placeholder metal 2. Rename me in skilling.itm."
++sprite=15084
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_metal_placeholder_3:
++name="Placeholder Rock 3"
++description="A rock with placeholder metal 3. Rename me in skilling.itm."
++sprite=15084
++value=0
++flag=IF_MOVEBLOCK
++;
++
++rock_metal_placeholder_4:
++name="Placeholder Rock 4"
++description="A rock with placeholder metal 4. Rename me in skilling.itm."
++sprite=15084
++value=0
++flag=IF_MOVEBLOCK
++;
++
++# ---- ores (stack in the inventory) ----
++
++ore_copper:
++name="Copper Ore"
++description="1 Copper Ore."
++sprite=51099
++value=2
++flag=IF_TAKE
++;
++
++ore_tin:
++name="Tin Ore"
++description="1 Tin Ore."
++sprite=51100
++value=2
++flag=IF_TAKE
++;
++
++ore_iron:
++name="Iron Ore"
++description="1 Iron Ore."
++sprite=51101
++value=5
++flag=IF_TAKE
++;
++
++coal:
++name="Coal"
++description="1 Coal."
++sprite=51102
++value=6
++flag=IF_TAKE
++;
++
++ore_metal_placeholder_1:
++name="Placeholder Ore 1"
++description="1 Placeholder Ore 1."
++sprite=51103
++value=10
++flag=IF_TAKE
++;
++
++ore_metal_placeholder_2:
++name="Placeholder Ore 2"
++description="1 Placeholder Ore 2."
++sprite=51103
++value=10
++flag=IF_TAKE
++;
++
++ore_metal_placeholder_3:
++name="Placeholder Ore 3"
++description="1 Placeholder Ore 3."
++sprite=51103
++value=10
++flag=IF_TAKE
++;
++
++ore_metal_placeholder_4:
++name="Placeholder Ore 4"
++description="1 Placeholder Ore 4."
++sprite=51103
++value=10
++flag=IF_TAKE
++;
++
++# ---- bars ----
++
++bar_bronze:
++name="Bronze Bar"
++description="1 Bronze Bar."
++sprite=15117
++value=8
++flag=IF_TAKE
++;
++
++bar_iron:
++name="Iron Bar"
++description="1 Iron Bar."
++sprite=15118
++value=15
++flag=IF_TAKE
++;
++
++bar_steel:
++name="Steel Bar"
++description="1 Steel Bar."
++sprite=15118
++value=30
++flag=IF_TAKE
++;
++
++bar_metal_placeholder_1:
++name="Placeholder Bar 1"
++description="1 Placeholder Bar 1."
++sprite=15117
++value=40
++flag=IF_TAKE
++;
++
++bar_metal_placeholder_2:
++name="Placeholder Bar 2"
++description="1 Placeholder Bar 2."
++sprite=15117
++value=40
++flag=IF_TAKE
++;
++
++bar_metal_placeholder_3:
++name="Placeholder Bar 3"
++description="1 Placeholder Bar 3."
++sprite=15117
++value=40
++flag=IF_TAKE
++;
++
++bar_metal_placeholder_4:
++name="Placeholder Bar 4"
++description="1 Placeholder Bar 4."
++sprite=15117
++value=40
++flag=IF_TAKE
++;
++
++# ---- tools ----
++
++pickaxe_bronze:
++name="Bronze Pickaxe"
++description="A pickaxe with a bronze head."
++sprite=15107
++value=10
++flag=IF_TAKE
++;
++
++pickaxe_iron:
++name="Iron Pickaxe"
++description="A pickaxe with an iron head."
++sprite=15108
++value=40
++flag=IF_TAKE
++;
++
++pickaxe_steel:
++name="Steel Pickaxe"
++description="A pickaxe with a steel head."
++sprite=15109
++value=150
++flag=IF_TAKE
++;
++
++smith_hammer:
++name="Hammer"
++description="A smith's hammer."
++sprite=15112
++value=10
++flag=IF_TAKE
++;
++
++# ---- stations ----
++
++furnace:
++name="Furnace"
++description="A hot furnace for smelting ore into bars."
++sprite=15214
++value=0
++flag=IF_MOVEBLOCK
++;
++
++anvil:
++name="Anvil"
++description="An anvil for forging bars into gear."
++sprite=15101
++value=0
++flag=IF_MOVEBLOCK
++;
++
++mining_supplies:
++name="Mining Supplies"
++description="A cart with pickaxes and hammers. Take what you need."
++sprite=15098
++value=0
++flag=IF_MOVEBLOCK
++;
+diff -ruN a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 08:51:26.523693423 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 08:51:26.525306630 +0000
+@@ -27,7 +27,8 @@
+ #   FIRE/LIGHTNING dmg_xp, warcry -> WARCRY, buying/selling -> BARTER,
+ #   sneaking (stealth mode walk) -> STEALTH per step, resting while hurt ->
+ #   REGENERATE, resting with low mana -> MEDITATE (about once per second).
+-#   Not hooked yet: PERCEPTION, IMMUNITY, MINING, SMITHING.
++#   MINING (per ore) and SMITHING (per bar or item made) get their XP from
++#   zones/generic/skilling.cfg. Not hooked yet: PERCEPTION, IMMUNITY.
+ #
+ # XP curve: level 2 needs xp_base XP, every further level needs xp_growth
+ # percent of the step before (80 / 110 -> level 99 needs about 9.1 million).

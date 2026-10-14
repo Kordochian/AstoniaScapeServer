@@ -1,0 +1,123 @@
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 18:55:44.603996652 +0000
++++ b/src/create.c	2026-10-13 18:55:44.606911161 +0000
+@@ -1656,15 +1656,7 @@
+         else if (n <= V_STR && ch[cn].value[0][n] < 0) ch[cn].value[0][n] = 0;
+     }
+ 
+-    // add tactics bonuses, to the combat skills only (group=combat in skills.cfg)
+-    if (ch[cn].value[1][V_TACTICS]) {
+-        int skill_bonus = tactics2skill(ch[cn].value[0][V_TACTICS]), sk;
+-        for (n = V_DAGGER; n < V_DEMON; n++) {
+-            if (n == V_TACTICS || n == V_BLESS || n == V_MAGICSHIELD || !ch[cn].value[1][n]) continue;
+-            if ((sk = skill_for_value(n)) != -1 && skilldef[sk].group != SG_COMBAT) continue;
+-            ch[cn].value[0][n] += skill_bonus;
+-        }
+-    }
++    // Tactics no longer adds to other skills (George 2026-10-13: how attacks and spells get stronger comes later)
+ 
+     if (ch[cn].value[1][V_SPEEDSKILL]) ch[cn].value[0][V_SPEED] += ch[cn].value[0][V_SPEEDSKILL] / 2;
+ 
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 18:55:44.608804260 +0000
++++ b/src/skilling.c	2026-10-13 18:55:44.610968880 +0000
+@@ -96,7 +96,9 @@
+ 
+ static struct skdef skdef[MAXSKDEF];
+ static int nskdef = 0;
+-static int bless_gather = 20, bless_craft = 20; // config: percent of the Bless strength added to gather chance / taken off fail chance
++// config: while blessed, bless_gather percent is added to the gather chance and bless_craft percent taken off fail
++// chances, plus *_strength percent of the spell's strength on top (0 = flat bonus only)
++static int bless_gather = 10, bless_craft = 10, bless_gather_strength = 0, bless_craft_strength = 0;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ static int is_node(int type) {
+@@ -241,6 +243,8 @@
+                 if (value[0] == ';') break;
+                 if (!strcasecmp(name, "bless_gather")) bless_gather = max(0, atoi(value));
+                 else if (!strcasecmp(name, "bless_craft")) bless_craft = max(0, atoi(value));
++                else if (!strcasecmp(name, "bless_gather_strength")) bless_gather_strength = max(0, atoi(value));
++                else if (!strcasecmp(name, "bless_craft_strength")) bless_craft_strength = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -486,7 +490,8 @@
+     int ok, n, cnt[SKT_MAX + 1];
+ 
+     nskdef = 0;
+-    bless_gather = bless_craft = 20;
++    bless_gather = bless_craft = 10;
++    bless_gather_strength = bless_craft_strength = 0;
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+     if (!(text = skillcfg_read(SKILLING_CFG))) {
+@@ -522,6 +527,13 @@
+     return 0;
+ }
+ 
++// gather chance bonus / fail chance reduction from Bless, in percent
++static int bless_bonus(int cn, int flat, int per_strength) {
++    int str = bless_strength(cn);
++
++    return str ? flat + str * per_strength / 100 : 0;
++}
++
+ static void give_xp(int cn, int sk, int xp) {
+     if (sk != -1 && xp > 0) add_skill_xp(cn, sk, xp);
+ }
+@@ -741,7 +753,7 @@
+         return;
+     }
+ 
+-    chance = skdef[d].chance + 2 * (lvl - skdef[d].level) + 10 * (power - 1) + bless_strength(cn) * bless_gather / 100;
++    chance = skdef[d].chance + 2 * (lvl - skdef[d].level) + 10 * (power - 1) + bless_bonus(cn, bless_gather, bless_gather_strength);
+     chance = max(5, min(95, chance));
+     if (RANDOM(100) >= chance) { // no luck this swing, keep going
+         player_driver_dig_on(cn);
+@@ -854,7 +866,7 @@
+         log_char(cn, LOG_SYSTEM, 0, "You need %s to make %s.", buf, d->name);
+         return 0;
+     }
+-    fail = d->fail ? max(0, d->fail - 2 * (lvl - d->level) - bless_strength(cn) * bless_craft / 100) : 0;
++    fail = d->fail ? max(0, d->fail - 2 * (lvl - d->level) - bless_bonus(cn, bless_craft, bless_craft_strength)) : 0;
+ 
+     while (done + failed < cnt && can_make(cn, r) > 0) {
+         if (d->make_res != -1 ? !res_room(cn, d->make_res) : !free_slot(cn)) {
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 18:55:44.613449220 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 18:55:44.615274688 +0000
+@@ -57,13 +57,16 @@
+ # workbench window needs protocol 9).
+ 
+ # Bless (the spell) does not change combat stats any more. While blessed,
+-# a character gets bless_gather percent of the spell's strength added to the
+-# chance per try at rocks, trees and plants, and bless_craft percent of it
+-# taken off the fail chance of recipes that have fail=. A strength 60 Bless
+-# with 20 gives +12% per try and -12% fail.
++# a character gets bless_gather percent added to the chance per try at
++# rocks, trees and plants, and bless_craft percent taken off the fail chance
++# of recipes that have fail=. bless_gather_strength / bless_craft_strength
++# add that percent of the spell's strength on top (0 = flat bonus only;
++# 10 would give a strength 60 Bless another +6%).
+ config:
+-bless_gather=20
+-bless_craft=20
++bless_gather=10
++bless_craft=10
++bless_gather_strength=0
++bless_craft_strength=0
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 18:55:44.617662134 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 18:55:44.619454912 +0000
+@@ -249,7 +249,7 @@
+ value=V_TACTICS
+ start=1
+ max=99
+-description="Gets part of all melee weapon XP. Adds 15% of your Tactics to every combat skill."
++description="Gets part of all melee weapon XP."
+ ;
+ 
+ SURROUND:

@@ -1,0 +1,3719 @@
+/*
+ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+#include <mysql/mysql.h>
+#include <mysql/mysqld_error.h>
+#include <mysql/errmsg.h>
+#include <pthread.h>
+#include <ctype.h>
+#include <zlib.h>
+#include <math.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include "server.h"
+#include "log.h"
+#include "create.h"
+#include "tool.h"
+#include "drdata.h"
+#include "drvlib.h"
+#include "direction.h"
+#include "map.h"
+#include "mem.h"
+#include "lookup.h"
+#include "chat.h"
+#include "database.h"
+#include "skillreg.h"
+#include "task.h"
+#include "skill.h"
+#include "talk.h"
+#include "sleep.h"
+#include "clan.h"
+#include "io.h"
+#include "player.h"
+#include "btrace.h"
+#include "date.h"
+#include "club.h"
+#include "badip.h"
+#include "depot.h"
+#include "note.h"
+#include "argon.h"
+#include "config.h"
+#include "dbconnect.h"
+
+#define DT_QUERY 1
+#define DT_LOAD 2
+#define DT_AREA 3
+#define DT_LOOKUP_ID 4
+#define DT_LOOKUP_NAME 5
+#define DT_PUNISH 6
+#define DT_CLANLOG 7
+#define DT_EXTERMINATE 8
+#define DT_CHECK_TASK 9
+#define DT_RENAME 10
+#define DT_RESCUE 11
+#define DT_STAT_UPDATE 12
+#define DT_LASTSEEN 13
+#define DT_LOCKNAME 14
+#define DT_UNLOCKNAME 15
+#define DT_CLUBS 16
+#define DT_CLANS 17
+#define DT_CLANMEMBERS 18
+#define DT_WARN 19
+#define DT_READNOTES 20
+#define DT_KARMALOG 21
+#define DT_PLRNOTES 22
+#define DT_SHOWALTS 23
+#define DT_SUMMARY 24
+#define DT_UPDATEGLOBAL 25
+#define DT_LOADDEPOT 26
+
+#define MAXAREA 60
+#define MAXMIRROR 27
+
+#define SAVEBLOCKSIZE 4096
+
+MYSQL mysql;
+
+static void *db_thread(void *);
+static int add_query(int type, char *opt1, char *opt2, int nolock);
+static void load_char(char *name, char *password);
+static void update_arealist(void);
+void db_readnotes(int masterID, int victimID);
+void db_showalts(int masterID, int victimID);
+void db_plr_notes(int victimID, int sID);
+void db_punish(char *who, char *desc);
+void db_warn(char *who, char *desc);
+void db_lookup_id(char *tID);
+void db_lookup_name(char *name);
+void db_karmalog(int masterID);
+void db_lastseen(char *suID, char *srID);
+void db_read_clanlog(char *query);
+void db_exterminate(char *name, char *master);
+void db_rename(char *name, char *master);
+void db_lockname(char *name, char *master);
+void db_unlockname(char *name, char *master);
+void db_rescue_char(char *IDstring);
+void db_stat_update(void);
+void db_read_clubs(void);
+void db_read_clans(void);
+int isbanned_iplog(int ip);
+void add_iplog(int ID, unsigned int ip);
+void db_read_clan_membercount(int cnr);
+void db_summary(char *key, int sID);
+void db_update_global(void);
+void db_load_depot_for_char(int cID, int sID);
+
+static pthread_t db_tid;
+static pthread_mutex_t data_mutex;
+static pthread_mutex_t server_mutex;
+
+volatile static int db_thread_quit = 0;
+volatile int global_online;
+
+unsigned int query_cnt = 0, query_long = 0, query_long_max = 0;
+unsigned long long query_time = 0, query_long_time = 0;
+
+int summary_query_cnt = 0, summary_query_hour = 0;
+long long summary_query_time = 0, summary_query_long = 0;
+
+unsigned int save_char_cnt = 0, save_area_cnt = 0, exit_char_cnt = 0, save_subscriber_cnt = 0, save_char_mirror_cnt = 0, load_char_cnt = 0;
+
+unsigned int query_stat[20];
+
+int mysql_query_con(MYSQL *my, const char *query) {
+    int err, ret, nr;
+    unsigned long long start, diff;
+    char buf[80];
+
+    start = timel();
+
+    while (1) {
+        ret = mysql_query(my, query);
+        err = mysql_errno(my);
+
+        if (err >= CR_MIN_ERROR && err <= CR_MAX_ERROR) {
+            elog("lost connection to server: %s", mysql_error(my));
+            mysql_close(my);
+            sleep(1);
+            mysql_init(my);
+            db_connect(my);
+        } else if (err == ER_NO_SUCH_TABLE) { // is this still needed? We are logging in with the correct database set already?
+            elog("wrong database: %s", mysql_error(my));
+            sprintf(buf, "use %s", config_data.dbname);
+            mysql_query(my, buf);
+        } else break;
+    }
+
+    diff = timel() - start;
+
+    query_cnt++;
+    query_time += diff;
+    if (diff > 10000000) {
+        query_long++;
+        query_long_time += diff;
+        if (diff > query_long_max) query_long_max = diff;
+    }
+
+    nr = diff / (500 * 1000ull);
+    if (nr >= 0 && nr < 20) {
+        query_stat[nr]++;
+    }
+
+    summary_query_long = max(diff, summary_query_long);
+    summary_query_cnt++;
+    summary_query_time += diff;
+
+    return ret;
+}
+
+volatile int db_store = 0;
+
+MYSQL_RES *mysql_store_result_cnt(MYSQL *my) {
+    db_store++;
+
+    return mysql_store_result(my);
+}
+
+void mysql_free_result_cnt(MYSQL_RES *result) {
+    db_store--;
+
+    mysql_free_result(result);
+}
+
+static int start_db_thread(void) {
+    pthread_attr_t attr;
+
+    if (pthread_mutex_init(&data_mutex, NULL)) return 0;
+    if (pthread_mutex_init(&server_mutex, NULL)) return 0;
+
+    if (pthread_attr_init(&attr)) return 0;
+    if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE)) return 0;
+
+    if (pthread_create(&db_tid, &attr, db_thread, NULL)) return 0;
+
+    xlog("Created background thread for database accesses");
+
+    return 1;
+}
+
+static void wait_db_thread(void) {
+    void *ret = NULL;
+    int exit_status;
+
+    xlog("Waiting for database thread to finish");
+    db_thread_quit = 1;
+
+    pthread_join(db_tid, &ret);
+    exit_status = (int)(intptr_t)ret;
+
+    xlog("Database thread finished with exit code %d", exit_status);
+
+    if (query_cnt == 0) query_cnt = 1; // sanity check, should never happen...
+    xlog("%d queries, %.2fs (%.2fms/q), %d long queries. Average long query: %.2fms, longest query: %.2fms.",
+         query_cnt, query_time / 1000000.0, (double)query_time / query_cnt / 1000.0,
+         query_long,
+         query_long ? query_long_time / query_long / 1000.0 : 0.0,
+         query_long_max / 1000.0);
+
+    xlog("save_char_cnt=%d, save_area_cnt=%d, exit_char_cnt=%d, save_subscriber_cnt=%d, save_char_mirror_cnt=%d, load_char_cnt=%d",
+         save_char_cnt, save_area_cnt, exit_char_cnt, save_subscriber_cnt, save_char_mirror_cnt, load_char_cnt);
+}
+
+// start connection to database and initialise database if needed
+int init_database(void) {
+    char buf[1024];
+
+    // init database client
+    if (!mysql_init(&mysql)) {
+        elog("Failed to initialise database: Error: %s", mysql_error(&mysql));
+        return 0;
+    }
+
+    // try to login as root with our password
+    if (!db_connect(&mysql)) {
+        xlog("Connect to database failed.");
+        return 0;
+    } else {
+        xlog("Login to database as root OK");
+    }
+
+    // sweep database, remove all players marked as online here. we're just starting, there shouldnt be any...
+    sprintf(buf, "update chars set current_area=0,current_mirror=0 where current_area=%d and current_mirror=%d", areaID, areaM);
+    if (mysql_query(&mysql, buf)) {
+        elog("Could not sweep database: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    xlog("sweep_database: removed %lld characters", mysql_affected_rows(&mysql));
+
+    sprintf(buf, "update depot set area=-1,mirror=-1,cID=-1 where area=%d and mirror=%d", areaID, areaM);
+    if (mysql_query(&mysql, buf)) {
+        elog("Could not sweep database(2): Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    xlog("sweep_database: removed %lld depots", mysql_affected_rows(&mysql));
+
+    sprintf(buf, "update area set players=0 where ID=%d and mirror=%d", areaID, areaM);
+    if (mysql_query(&mysql, buf)) {
+        elog("Could not reset area online count: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+
+    // we need an up to date arealist before starting
+    update_arealist();
+    db_read_clubs();
+
+    if (multi) return start_db_thread();
+    else return 1;
+}
+
+#define MAXDRDATA (1024 * 64)
+
+// ---------- on-disk character layout ----------
+// struct character contains pointers (dat, msg, msg_last, arg, next, prev), which are
+// 4 bytes in the original 32-bit server and 8 bytes on 64-bit. The database keeps the
+// 32-bit layout: the pointer slots are stored as zeros, everything else is copied in
+// three blocks whose internal layout is the same on both architectures.
+
+#define CHAR_SEG1_LEN (offsetof(struct character, store) + sizeof(((struct character *)0)->store))
+#define CHAR_SEG2_LEN (offsetof(struct character, resty) + sizeof(((struct character *)0)->resty) - offsetof(struct character, group))
+#define CHAR_SEG3_LEN (offsetof(struct character, dummy) + sizeof(((struct character *)0)->dummy) - offsetof(struct character, ef))
+
+#define DISK_SEG1_OFF 0
+#define DISK_SEG2_OFF (CHAR_SEG1_LEN + 4 * 4) // after dat, msg, msg_last, arg
+#define DISK_SEG3_OFF (DISK_SEG2_OFF + CHAR_SEG2_LEN + 2 * 4) // after next, prev
+
+_Static_assert(CHAR_SEG1_LEN == 812, "struct character changed: update the disk layout");
+_Static_assert(DISK_SEG3_OFF + CHAR_SEG3_LEN == DISK_CHAR_SIZE, "struct character changed: update the disk layout");
+
+void char_to_disk(unsigned char *dst, struct character *src) {
+    bzero(dst, DISK_CHAR_SIZE);
+    memcpy(dst + DISK_SEG1_OFF, (unsigned char *)src, CHAR_SEG1_LEN);
+    memcpy(dst + DISK_SEG2_OFF, (unsigned char *)src + offsetof(struct character, group), CHAR_SEG2_LEN);
+    memcpy(dst + DISK_SEG3_OFF, (unsigned char *)src + offsetof(struct character, ef), CHAR_SEG3_LEN);
+}
+
+// len is the stored length; shorter (older) records are zero-filled
+void char_from_disk(struct character *dst, unsigned char *src, int len) {
+    unsigned char tmp[DISK_CHAR_SIZE];
+
+    bzero(tmp, sizeof(tmp));
+    if (len > 0) memcpy(tmp, src, min(len, DISK_CHAR_SIZE));
+
+    bzero(dst, sizeof(struct character));
+    memcpy((unsigned char *)dst, tmp + DISK_SEG1_OFF, CHAR_SEG1_LEN);
+    memcpy((unsigned char *)dst + offsetof(struct character, group), tmp + DISK_SEG2_OFF, CHAR_SEG2_LEN);
+    memcpy((unsigned char *)dst + offsetof(struct character, ef), tmp + DISK_SEG3_OFF, CHAR_SEG3_LEN);
+}
+
+// save character cn to database
+// will mark cn as logged out if area is not zero
+
+#define COMPRESS_MAGIC 0x84736251
+
+int compress_escape_string(MYSQL *my, unsigned char *dst, unsigned char *src, int ilen, int *xlen) {
+    struct z_stream_s zs;
+    int ret, olen, rlen;
+    unsigned char buf[ilen * 2];
+    void *my_zlib_malloc(void *dummy, unsigned int cnt, unsigned int size);
+    void my_zlib_free(void *dummy, void *ptr);
+
+    bzero(&zs, sizeof(zs));
+    zs.zalloc = my_zlib_malloc;
+    zs.zfree = my_zlib_free;
+
+    deflateInit(&zs, 1);
+    zs.next_in = src;
+    zs.avail_in = ilen;
+
+    zs.next_out = buf + 12;
+    zs.avail_out = ilen * 2 - 12;
+
+    ret = deflate(&zs, Z_SYNC_FLUSH);
+    deflateEnd(&zs);
+
+    if (ret != Z_OK) {
+        elog("compression failure #1, database");
+        return 0;
+    }
+
+    if (zs.avail_in) {
+        elog("compression failure #2, database");
+        return 0;
+    }
+
+    olen = (ilen * 2 - 12) - zs.avail_out;
+    *(unsigned int *)(buf + 0) = COMPRESS_MAGIC;
+    *(unsigned int *)(buf + 4) = ilen;
+    *(unsigned int *)(buf + 8) = olen;
+
+    mysql_real_escape_string(my, dst, buf, olen + 12);
+
+    rlen = strlen(dst);
+
+    if (xlen) *xlen = olen + 12;
+
+    return rlen;
+}
+
+int uncompress_string(unsigned char *dst, unsigned char *src, int maxout) {
+    struct z_stream_s zs;
+    int ret, size;
+    void *my_zlib_malloc(void *dummy, unsigned int cnt, unsigned int siz);
+    void my_zlib_free(void *dummy, void *ptr);
+
+    bzero(&zs, sizeof(zs));
+    zs.zalloc = my_zlib_malloc;
+    zs.zfree = my_zlib_free;
+
+    inflateInit(&zs);
+
+    zs.next_in = src + 12;
+    zs.avail_in = *(unsigned int *)(src + 8);
+
+    zs.next_out = dst;
+    zs.avail_out = maxout;
+
+    ret = inflate(&zs, Z_SYNC_FLUSH);
+    inflateEnd(&zs);
+    if (ret != Z_OK) {
+        elog("Compression error %d\n", ret);
+        return 0;
+    }
+
+    size = maxout - zs.avail_out;
+
+    if (zs.avail_in) {
+        elog("HELP (%d, want=%d, got=%d)", zs.avail_in, maxout, size);
+        btrace("oopsie in uncompress_string()");
+    }
+
+    return size;
+}
+
+static void spec_log(unsigned char *src);
+void save_depot(int sID, struct depot_ppd *dat, int cID, int leaving) {
+    char buf[sizeof(struct depot_ppd) * 2 + 12 + 1024];
+    char query[sizeof(struct depot_ppd) * 2 + 12 + 1024 + 160];
+    int xlen = 0;
+
+    if (!dat->loaded) return;
+
+    if (dat->lastsave == dat->changes) {
+        if (leaving) {
+            sprintf(query, "update depot set area=-1,mirror=-1,cID=-1 where ID=%d and area=%d and mirror=%d and cID=%d", sID, areaID, areaM, cID);
+            if (!add_query(DT_QUERY, query, "save_depot", 0)) elog("Failed to update (small) depot (sID=%d) on logout", sID);
+        }
+        return;
+    }
+    dat->lastsave = dat->changes;
+
+    compress_escape_string(&mysql, buf, (unsigned char *)dat, sizeof(struct depot_ppd), &xlen);
+
+    if (leaving) sprintf(query, "update depot set data=\"%s\",area=-1,mirror=-1,cID=-1 where ID=%d and area=%d and mirror=%d and cID=%d", buf, sID, areaID, areaM, cID);
+    else sprintf(query, "update depot set data=\"%s\" where ID=%d and area=%d and mirror=%d and cID=%d", buf, sID, areaID, areaM, cID);
+    if (!add_query(DT_QUERY, query, "save_depot", 0)) elog("Failed to update depot (sID=%d) on logout", sID);
+}
+
+// save character cn to database
+// will mark cn as logged out if area is not zero
+int save_char(int cn, int area) {
+    unsigned char cdata[DISK_CHAR_SIZE], idata[sizeof(struct item) * (INVENTORYSIZE + 1)], ddata[MAXDRDATA];
+    unsigned char cbuf[sizeof(cdata) * 2], ibuf[sizeof(idata) * 2], dbuf[sizeof(ddata) * 2];
+    unsigned char buf[sizeof(cbuf) + sizeof(ibuf) + sizeof(dbuf) + 256];
+    int n, in, ilen = 0, dlen = 0, xilen = 0, xdlen = 0;
+    struct item *itmp;
+    struct data *dat;
+
+    // character data
+    char_to_disk(cdata, ch + cn);
+
+    // items
+    itmp = (void *)(idata);
+
+    for (n = 0; n < INVENTORYSIZE; n++) {
+        if ((in = ch[cn].item[n])) {
+            *itmp = it[in];
+            ilen += sizeof(struct item);
+            if (IDR_ISSPELL(itmp->driver)) { // make drdata contain the remaining duration
+                *(int *)(itmp->drdata) -= ticker;
+                *(int *)(itmp->drdata + 4) -= ticker;
+            }
+            itmp++;
+        }
+    }
+
+    if ((in = ch[cn].citem)) {
+        *itmp++ = it[in];
+        ilen += sizeof(struct item);
+    }
+
+    // drdata aka ppd
+    for (dat = ch[cn].dat; dat; dat = dat->next) {
+        if (!(dat->ID & PERSISTENT_PLAYER_DATA)) continue;
+        if (dat->ID == DRD_DEPOT_PPD) {
+            save_depot(ch[cn].sID, dat->data, ch[cn].ID, area);
+            continue;
+        }
+
+        *(unsigned int *)(ddata + dlen) = dat->ID;
+        dlen += 4;
+        *(unsigned int *)(ddata + dlen) = dat->size;
+        dlen += 4;
+        memcpy(ddata + dlen, dat->data, dat->size);
+        dlen += dat->size;
+    }
+
+    mysql_real_escape_string(&mysql, cbuf, cdata, DISK_CHAR_SIZE);
+    ilen = compress_escape_string(&mysql, ibuf, idata, ilen, &xilen);
+    dlen = compress_escape_string(&mysql, dbuf, ddata, dlen, &xdlen);
+
+    // note the ...and current_area=areaID and current_mirror=areaM, this makes sure that we will not overwrite
+    // the data if the character already left our area (needed because this is a delayed write)
+
+    if (!area) { // just a data backup.
+        sprintf(buf, "update chars set chr='%s',item='%s',ppd='%s',class=%u,clan=%d,clan_rank=%d,clan_serial=%d,experience=%d,mirror=%d where ID=%d and current_area=%d and current_mirror=%d",
+                cbuf,
+                ibuf,
+                dbuf,
+                (unsigned int)(ch[cn].flags & 0x0fffffff),
+                ch[cn].clan,
+                ch[cn].clan_rank,
+                ch[cn].clan_serial,
+                max(ch[cn].exp, ch[cn].exp_used),
+                ch[cn].mirror,
+                ch[cn].ID,
+                areaID,
+                areaM);
+        save_char_cnt++;
+    } else { // logout
+        sprintf(buf, "update chars set chr='%s',item='%s',ppd='%s',current_area=0,current_mirror=0,allowed_area=%d,logout_time=%d,class=%u,clan=%d,clan_rank=%d,clan_serial=%d,experience=%d,mirror=%d where ID=%d and current_area=%d and current_mirror=%d",
+                cbuf,
+                ibuf,
+                dbuf,
+                area,
+                time_now,
+                (unsigned int)(ch[cn].flags & 0x0fffffff),
+                ch[cn].clan,
+                ch[cn].clan_rank,
+                ch[cn].clan_serial,
+                max(ch[cn].exp, ch[cn].exp_used),
+                ch[cn].mirror,
+                ch[cn].ID,
+                areaID,
+                areaM);
+        exit_char_cnt++;
+    }
+
+    if (!add_query(DT_QUERY, buf, "save_char", 0)) {
+        elog("Failed to update account %s (ID=%d) on logout", ch[cn].name, ch[cn].ID);
+        return 0;
+    }
+    if (area) {
+        add_query(DT_UPDATEGLOBAL, "", "update_global", 0);
+    }
+    return 1;
+}
+
+// mark char cn as not-online without saving any other data
+int release_char(int cn) {
+    char buf[256];
+
+    xlog("release char %s (%d, ID=%d)", ch[cn].name, cn, ch[cn].ID);
+
+    sprintf(buf, "update chars set current_area=0,current_mirror=0 where ID=%d and current_area=%d and current_mirror=%d", ch[cn].ID, areaID, areaM);
+    if (!add_query(DT_QUERY, buf, "release_char", 0)) {
+        elog("Failed to release char %s (ID=%d) on logout", ch[cn].name, ch[cn].ID);
+        return 0;
+    }
+
+    return 1;
+}
+
+int release_char_nolock(int cn) {
+    char buf[256];
+
+    xlog("release char %s (%d, ID=%d)", ch[cn].name, cn, ch[cn].ID);
+
+    sprintf(buf, "update chars set current_area=0,current_mirror=0 where ID=%d and current_area=%d and current_mirror=%d", ch[cn].ID, areaID, areaM);
+    if (!add_query(DT_QUERY, buf, "release_char", 1)) {
+        elog("Failed to release char %s (ID=%d) on logout", ch[cn].name, ch[cn].ID);
+        return 0;
+    }
+
+    return 1;
+}
+
+void exit_database(void) {
+    if (multi) wait_db_thread(); // wait for background thread to write back data still in buffers
+    else tick_login(); // write back data still in buffers
+
+    mysql_close(&mysql);
+}
+
+void area_alive(int godown) {
+    char buf[256];
+    static int last_time = 0;
+    static unsigned long long last_transfer = 0;
+    unsigned long long diff;
+    int bps = 0, tdiff;
+    extern int mmem_usage, last_error;
+
+    if (last_time) {
+        diff = sent_bytes_raw + rec_bytes_raw - last_transfer;
+        tdiff = time_now - last_time;
+        if (tdiff) bps = diff / tdiff;
+    }
+    last_time = time_now;
+    last_transfer = sent_bytes_raw + rec_bytes_raw;
+
+    if (!godown) {
+        sprintf(buf, "update area set alive_time=%d,idle=%d,players=%d,server=%u,port=%d,bps=%d,mem_usage=%d,last_error=%d where ID=%d and mirror=%d",
+                time_now,
+                server_idle,
+                online,
+                serverID,
+                server_port,
+                bps,
+                mmem_usage,
+                last_error,
+                areaID,
+                areaM);
+    } else {
+        sprintf(buf, "update area set alive_time=0,idle=0,players=0,server=0,port=0,bps=0,mem_usage=0,last_error=0 where ID=%d and mirror=%d",
+                areaID,
+                areaM);
+    }
+
+    if (!add_query(DT_QUERY, buf, "area_alive", 0)) {
+        elog("Could not add query to update area_alive");
+    }
+    save_area_cnt++;
+}
+
+void call_area_load(void) {
+    if (!add_query(DT_AREA, NULL, "area load", 0)) {
+        elog("Could note add query to load area");
+    }
+}
+
+void call_check_task(void) {
+    if (!add_query(DT_CHECK_TASK, NULL, "check task", 0)) {
+        elog("Could note add query to check task");
+    }
+}
+
+void call_stat_update(void) {
+    if (!add_query(DT_STAT_UPDATE, NULL, "stat update", 0)) {
+        elog("Could note add query for stat update");
+    }
+}
+
+void log_dc(int cn) {
+    char buf[80];
+
+    if (!(ch[cn].flags & CF_PLAYER)) {
+        elog("log_dc called for non-player %d (%s)", cn, ch[cn].name);
+        return;
+    }
+
+    sprintf(buf, "update chars set logout_time=%d where ID=%d", time_now, ch[cn].ID);
+    add_query(DT_QUERY, buf, "log_dc", 0);
+}
+
+int add_task(void *task, int len) {
+    char buf[len * 4 + 256];
+    char data[len * 4];
+
+    mysql_real_escape_string(&mysql, data, task, len);
+
+    sprintf(buf, "insert into task values(0,'%s')", data);
+
+    if (!add_query(DT_QUERY, buf, "add_task", 0)) {
+        elog("Failed to add task");
+        return 0;
+    }
+    return 1;
+}
+
+int change_area(int cn, int area, int x, int y) {
+    int server, port, nr;
+
+    if (!get_area(area, ch[cn].mirror, &server, &port)) return 0;
+
+    ch[cn].tmpx = x;
+    ch[cn].tmpy = y;
+    ch[cn].tmpa = area;
+    ch[cn].flags |= CF_AREACHANGE;
+
+    kick_char(cn);
+
+    nr = ch[cn].player;
+
+    if (nr) player_to_server(nr, server, port);
+
+    return 1;
+}
+
+int dlog(int cn, int in, char *format, ...) {
+    char tbuf[1024], pbuf[80], xbuf[1024] = {""}, ibuf[1024] = {""};
+    va_list args;
+    unsigned long long prof;
+    int nr, addr;
+
+    prof = prof_start(25);
+
+    va_start(args, format);
+    vsnprintf(tbuf, 1020, format, args);
+    va_end(args);
+
+    if (cn) {
+        if ((ch[cn].flags & CF_PLAYER) && (nr = ch[cn].player) && (addr = get_player_addr(nr))) sprintf(pbuf, ",IP=%u.%u.%u.%u", (addr >> 0) & 255, (addr >> 8) & 255, (addr >> 16) & 255, (addr >> 24) & 255);
+        else pbuf[0] = 0;
+        sprintf(ibuf, " [name=%s,level=%d,saves=%d,hp=%d,end=%d,mana=%d,exp=%d,gold=%d,pos=%d,%d%s]",
+                ch[cn].name,
+                ch[cn].level,
+                ch[cn].saves,
+                ch[cn].hp / POWERSCALE,
+                ch[cn].endurance / POWERSCALE,
+                ch[cn].mana / POWERSCALE,
+                ch[cn].exp,
+                ch[cn].gold,
+                ch[cn].x,
+                ch[cn].y,
+                pbuf);
+    }
+    if (in) {
+        sprintf(xbuf, " [name=%s, desc=%s, value=%d, sprite=%d, driver=%d, ID=%X, mods=(%d:%d, %d:%d, %d:%d, %d:%d, %d:%d), complex=%d, quality=%d]",
+                it[in].name,
+                it[in].description,
+                it[in].value,
+                it[in].sprite,
+                it[in].driver,
+                it[in].ID,
+                it[in].mod_index[0], it[in].mod_value[0],
+                it[in].mod_index[1], it[in].mod_value[1],
+                it[in].mod_index[2], it[in].mod_value[2],
+                it[in].mod_index[3], it[in].mod_value[3],
+                it[in].mod_index[4], it[in].mod_value[4],
+                it[in].complexity,
+                it[in].quality);
+    }
+    ilog("sID=%d: %s%s%s", cn ? ch[cn].sID : 0, tbuf, ibuf, xbuf);
+
+    prof_stop(25, prof);
+
+    return 1;
+}
+int add_note(int sID, int kind, char *desc, ...) {
+    va_list args;
+    char buf[1024], buf2[1024 + 256];
+
+    va_start(args, desc);
+    vsnprintf(buf, 900, desc, args);
+    va_end(args);
+
+    sprintf(buf2, "insert into sub_note values(0,%d,%d,%d,'%s')", sID, kind, time_now, buf);
+    return add_query(DT_QUERY, buf2, "add_note", 0);
+}
+
+int add_clanlog(int clan, int serial, int cID, int prio, char *format, ...) {
+    char buf[256], ebuf[512], qbuf[1024];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(buf, 250, format, args);
+    va_end(args);
+
+    mysql_real_escape_string(&mysql, ebuf, buf, strlen(buf));
+
+    sprintf(qbuf, "insert into clanlog values(0,%d,%d,%d,%d,%d,'%s')",
+            time_now,
+            clan,
+            serial,
+            cID,
+            prio,
+            ebuf);
+    return add_query(DT_QUERY, qbuf, "add_clanlog", 0);
+}
+//select 278527,clan,serial,time,content from clanlog where time>=1055577172 and time<=1059173572 and clan=14 and serial=15 and cID=104665
+int lookup_clanlog(int cnID, int clan, int serial, int coID, int prio, int from_time, int to_time) {
+    char buf[512];
+    int len;
+
+    len = sprintf(buf, "select %d,clan,serial,time,content from clanlog where time>=%d and time<=%d", cnID, from_time, to_time);
+    if (clan) len += sprintf(buf + len, " and clan=%d", clan);
+    if (serial) len += sprintf(buf + len, " and serial=%d", serial);
+    if (coID) len += sprintf(buf + len, " and cID=%d", coID);
+    if (prio) len += sprintf(buf + len, " and prio<=%d", prio);
+    len += sprintf(buf + len, " order by time limit 51");
+
+    return add_query(DT_CLANLOG, buf, "lookup_clanlog", 0);
+}
+
+int exterminate(int masterID, int victimID, char *desc) {
+    char buf[80];
+    sprintf(buf, "%010d:%010d", masterID, victimID);
+
+    return add_query(DT_EXTERMINATE, buf, desc, 0);
+}
+
+int punish(int masterID, int victimID, char *desc) {
+    char buf[80];
+    sprintf(buf, "%010d:%010d", masterID, victimID);
+
+    return add_query(DT_PUNISH, buf, desc, 0);
+}
+
+int warn(int masterID, int victimID, char *desc) {
+    char buf[80];
+    sprintf(buf, "%010d:%010d", masterID, victimID);
+
+    return add_query(DT_WARN, buf, desc, 0);
+}
+
+int rescue_char(int ID) {
+    char buf[80];
+
+    sprintf(buf, "%d", ID);
+
+    return add_query(DT_RESCUE, buf, "rescue char", 0);
+}
+
+int load_depot_for_char(int cID, int sID) {
+    char buf[80], buf2[80], buf3[80];
+
+    sprintf(buf, "%d", cID);
+    sprintf(buf2, "%d", sID);
+
+    sprintf(buf3, "%10d:%10d", sID, cID);
+    server_chat(1039, buf3);
+
+    return add_query(DT_LOADDEPOT, buf, buf2, 0);
+}
+
+int do_rename(int masterID, char *from, char *to) {
+    char buf[256];
+
+    sprintf(buf, "%10d:%s", masterID, to);
+
+    return add_query(DT_RENAME, from, buf, 0);
+}
+
+int do_lockname(int masterID, char *from) {
+    char buf[256];
+
+    sprintf(buf, "%10d", masterID);
+
+    return add_query(DT_LOCKNAME, from, buf, 0);
+}
+int do_unlockname(int masterID, char *from) {
+    char buf[256];
+
+    sprintf(buf, "%10d", masterID);
+
+    return add_query(DT_UNLOCKNAME, from, buf, 0);
+}
+
+void lock_server(void) {
+    pthread_mutex_lock(&server_mutex);
+}
+
+void unlock_server(void) {
+    pthread_mutex_unlock(&server_mutex);
+}
+
+int query_name(char *name) {
+    return add_query(DT_LOOKUP_NAME, name, "lookup name", 0);
+}
+
+int query_ID(unsigned int ID) {
+    char buf[80];
+
+    sprintf(buf, "%u", ID);
+    return add_query(DT_LOOKUP_ID, buf, "lookup ID", 0);
+}
+
+int lastseen(int uID, int rID) {
+    char op1[80], op2[80];
+
+    sprintf(op1, "%d", uID);
+    sprintf(op2, "%d", rID);
+
+    return add_query(DT_LASTSEEN, op1, op2, 0);
+}
+
+int readnotes(int masterID, int victimID) {
+    char op1[80], op2[80];
+
+    sprintf(op1, "%d", masterID);
+    sprintf(op2, "%d", victimID);
+
+    return add_query(DT_READNOTES, op1, op2, 0);
+}
+
+int showalts(int masterID, int victimID) {
+    char op1[80], op2[80];
+
+    sprintf(op1, "%d", masterID);
+    sprintf(op2, "%d", victimID);
+
+    return add_query(DT_SHOWALTS, op1, op2, 0);
+}
+
+int summary(char *key, int sID) {
+    char op2[80];
+
+    sprintf(op2, "%d", sID);
+
+    return add_query(DT_SUMMARY, key, op2, 0);
+}
+
+int plrnotes(int victimID, int sID) {
+    char op1[80], op2[80];
+
+    sprintf(op1, "%d", victimID);
+    sprintf(op2, "%d", sID);
+
+    return add_query(DT_PLRNOTES, op1, op2, 0);
+}
+
+int karmalog(int masterID) {
+    char op1[80];
+
+    sprintf(op1, "%d", masterID);
+
+    return add_query(DT_KARMALOG, op1, "karmalog", 0);
+}
+
+// -------------- database thread for background database access --------------------
+
+struct query {
+    int type;
+
+    char *opt1;
+    char *opt2;
+
+    struct query *next;
+
+    int nr;
+};
+
+static int running_query_nr = 1;
+int used_queries = 0;
+
+static struct query
+    *fquery = NULL, // free queries
+    *wquery = NULL, // top of used queries
+        *equery = NULL; // end of used queries
+
+static int add_query(int type, char *opt1, char *opt2, int nolock) {
+    struct query *q;
+
+    if (!nolock) pthread_mutex_lock(&data_mutex);
+
+    q = fquery;
+    if (!q) q = xmalloc(sizeof(struct query), IM_QUERY);
+    else fquery = q->next;
+
+    if (!q) {
+        elog("memory low in add_query!");
+        exit(1);
+    } // memory low!!! handle me !!!
+
+    q->type = type;
+    if (opt1) q->opt1 = xstrdup(opt1, IM_QUERY);
+    else q->opt1 = NULL;
+    if (opt2) q->opt2 = xstrdup(opt2, IM_QUERY);
+    else q->opt2 = NULL;
+
+    if ((opt1 && !q->opt1) || (opt2 && !q->opt2)) {
+        elog("memory low in add_query!");
+        exit(1);
+    } // memory low!!! handle me !!!
+
+    // add to end of list, update equery and wquery
+    if (equery) equery->next = q;
+    else wquery = q;
+
+    equery = q;
+    q->next = NULL;
+
+    q->nr = running_query_nr++;
+    used_queries++;
+
+    if (!nolock) pthread_mutex_unlock(&data_mutex);
+
+    return 1;
+}
+
+static int remove_top_query(void) {
+    struct query *q;
+
+    // remove from work list
+    q = wquery;
+    wquery = q->next;
+
+    if (!wquery) equery = NULL;
+
+    // add to free list
+    q->next = fquery;
+    fquery = q;
+    used_queries--;
+
+    return 1;
+}
+void check_task(void);
+
+void list_queries(int cn) {
+    int n;
+
+    if (query_cnt == 0) query_cnt = 1; // sanity check, should never happen...
+    log_char(cn, LOG_SYSTEM, 0, "%d queries, %.2fs (%.2fms/q), %d long queries. Average long query: %.2fms, longest query: %.2fms.",
+             query_cnt, query_time / (1000 * 1000.0), (double)query_time / query_cnt / 1000.0,
+             query_long,
+             query_long ? query_long_time / query_long / 1000.0 : 0.0,
+             query_long_max / 1000.0);
+    log_char(cn, LOG_SYSTEM, 0, "save_char_cnt=%d, save_area_cnt=%d, exit_char_cnt=%d, save_subscriber_cnt=%d, save_char_mirror_cnt=%d, load_char_cnt=%d",
+             save_char_cnt, save_area_cnt, exit_char_cnt, save_subscriber_cnt, save_char_mirror_cnt, load_char_cnt);
+
+    for (n = 0; n < 20; n++) {
+        log_char(cn, LOG_SYSTEM, 0, "queries <%.4fs: %d", (n + 1) * 500 / 1000.0, query_stat[n]);
+    }
+}
+
+static void spec_log(unsigned char *src) {
+    char buf[65536];
+    int n;
+
+    for (n = 0; n < 65536 && src[n]; n++) {
+        if (src[n] >= ' ') buf[n] = src[n];
+        else buf[n] = '*';
+    }
+    buf[n] = 0;
+    printf("Query: %s\n", buf);
+}
+
+static void db_thread_sub(void) {
+    int type;
+    char *opt1, *opt2;
+
+    // get lock
+    pthread_mutex_lock(&data_mutex);
+    if (wquery) {
+
+        // get strings to work on
+        type = wquery->type;
+        opt1 = wquery->opt1;
+        opt2 = wquery->opt2;
+
+        // free query
+        remove_top_query();
+
+        // free lock
+        pthread_mutex_unlock(&data_mutex);
+
+        switch (type) {
+        case DT_QUERY:
+            if (mysql_query_con(&mysql, opt1)) {
+                elog("Failed to create %s entry query=\"%60.60s\": Error: %s (%d)", opt2, opt1, mysql_error(&mysql), mysql_errno(&mysql));
+            }
+            if (mysql_affected_rows(&mysql) == 0) {
+                if (strncmp(opt1, "insert ignore", 13)) {
+                    elog("(%20.20s) affected %llu rows", opt1, mysql_affected_rows(&mysql));
+                    spec_log(opt1);
+                }
+            }
+            break;
+        case DT_LOAD:
+            load_char(opt1, opt2);
+            break;
+        case DT_AREA:
+            update_arealist();
+            break;
+        case DT_LOOKUP_ID:
+            db_lookup_id(opt1);
+            break;
+        case DT_LOOKUP_NAME:
+            db_lookup_name(opt1);
+            break;
+        case DT_CLANLOG:
+            db_read_clanlog(opt1);
+            break;
+        case DT_EXTERMINATE:
+            db_exterminate(opt1, opt2);
+            break;
+        case DT_PUNISH:
+            db_punish(opt1, opt2);
+            break;
+        case DT_WARN:
+            db_warn(opt1, opt2);
+            break;
+        case DT_CHECK_TASK:
+            check_task();
+            break;
+        case DT_RENAME:
+            db_rename(opt1, opt2);
+            break;
+        case DT_LOCKNAME:
+            db_lockname(opt1, opt2);
+            break;
+        case DT_UNLOCKNAME:
+            db_unlockname(opt1, opt2);
+            break;
+        case DT_RESCUE:
+            db_rescue_char(opt1);
+            break;
+        case DT_STAT_UPDATE:
+            db_stat_update();
+            break;
+        case DT_LASTSEEN:
+            db_lastseen(opt1, opt2);
+            break;
+        case DT_READNOTES:
+            db_readnotes(atoi(opt1), atoi(opt2));
+            break;
+        case DT_SHOWALTS:
+            db_showalts(atoi(opt1), atoi(opt2));
+            break;
+        case DT_PLRNOTES:
+            db_plr_notes(atoi(opt1), atoi(opt2));
+            break;
+        case DT_KARMALOG:
+            db_karmalog(atoi(opt1));
+            break;
+        case DT_CLUBS:
+            db_read_clubs();
+            break;
+        case DT_CLANS:
+            db_read_clans();
+            break;
+        case DT_CLANMEMBERS:
+            db_read_clan_membercount(atoi(opt1));
+            break;
+        case DT_SUMMARY:
+            db_summary(opt1, atoi(opt2));
+            break;
+        case DT_UPDATEGLOBAL:
+            db_update_global();
+            break;
+        case DT_LOADDEPOT:
+            db_load_depot_for_char(atoi(opt1), atoi(opt2));
+            break;
+        }
+
+        // free the strings
+        if (opt1) xfree(opt1);
+        if (opt2) xfree(opt2);
+
+    } else pthread_mutex_unlock(&data_mutex);
+}
+
+void *db_thread(void *dummy) {
+#ifndef _WIN32
+    sigset_t set;
+    struct timeval tv;
+
+    // block ALL signals besides programming errors, main thread shall get them!
+    sigfillset(&set);
+    sigdelset(&set, SIGSEGV);
+    sigdelset(&set, SIGFPE);
+    sigdelset(&set, SIGBUS);
+    sigdelset(&set, SIGSTKFLT);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+#endif
+
+    while (42) {
+        if (wquery) { // work to be done?
+            db_thread_sub();
+        } else {
+            if (db_thread_quit) break;
+
+#ifdef _WIN32
+            usleep(10000); // select() without sockets fails at once on Windows
+#else
+            tv.tv_sec = 0;
+            tv.tv_usec = 10000;
+            select(0, NULL, NULL, NULL, &tv); // sleep for 1/100 of a second. wish i had yield(). or semaphores.
+#endif
+        }
+    }
+    xlog("DB thread exiting");
+
+    return (void *)(0);
+}
+
+// ----------- character login -----------
+// three important parts in two threads, passing data through the login structure:
+// - find_login initiates the action and finishes it. it is called from the player login
+//   routines.
+// - load_char is called from the database thread and loads the character data from the
+//   database, checks for validity of name/password and will note if the character is
+//   supposed to be on a different area
+// - tick_login is called from the main server loop and will take a character loaded
+//   by load_char and put it into the game
+// last step is then find_login again, which is called repeatedly by the player login
+// routines to check if the character is ready. it will add a player to the character.
+//
+// note that we process only one login-request at once. this is to avoid race conditions
+// with the same character trying to login from different computers at once. some thought
+// would be needed to make this work in parallel.
+
+#define LS_EMPTY 0 // no query in progress
+#define LS_READ 1 // waiting for database read to finish
+#define LS_CREATE 2 // waiting for character create/usurp to finish
+#define LS_OK 3 // character created and ready for takeoff
+#define LS_NEWAREA 4 // send player to another area
+#define LS_FAILED 5 // error, send player away
+#define LS_LOCKED 6 // error, send player away
+#define LS_PASSWD 7 // error, send player away
+
+#define LS_NOPAY 9 // error, send player away
+#define LS_SHUTDOWN 10 // error, send player away
+#define LS_IPLOCKED 11 // error, send player away
+
+#define LS_TOOMANY 13 // error, send player away
+#define LS_LIMITED 14 // error, send player away
+#define LS_KARMA 15 // error, send player away
+#define LS_TIMEBAN 16 // error, send player away
+
+struct login {
+    int status;
+
+    int didusurp;
+
+    int age;
+
+    // in
+    char name[sizeof(ch->name)];
+    char password[MAXPASSWORD];
+
+    // working data
+    int ID;
+    int sID;
+    int current; // DB: current area of char
+    unsigned char *chr; // DB: character data
+    int chr_len;
+    unsigned char *itm; // DB: item data
+    int itm_len;
+    unsigned char *ppd; // DB: persistent player data
+    int ppd_len;
+    int ip;
+    struct depot_ppd depot;
+
+    // out
+    int cn, new_area, mirror;
+    int timeleft;
+};
+
+static struct login login = {LS_EMPTY};
+
+int find_login(char *name, char *password, int *area_ptr, int *cn_ptr, int *mirror_ptr, int *ID_ptr, unsigned int ip, int *timeleft) {
+    char *ptr;
+
+    // spaces and punctuation in text keys confuse mysql. sucks.
+    for (ptr = name; *ptr; ptr++) {
+        if (!isalpha(*ptr)) return -3;
+    }
+    pthread_mutex_lock(&data_mutex);
+
+    // remove stale login data if it wasnt collected for two ticks
+    if (login.status > LS_CREATE && ticker > login.age + 2) {
+        if (login.status == LS_OK) { // character has been created but client did not pick it up - we must destroy it.
+            if (!login.didusurp) {
+                release_char_nolock(login.cn);
+                remove_destroy_char(login.cn);
+            } else {
+                ch[login.cn].driver = CDR_LOSTCON;
+            }
+        }
+        login.status = LS_EMPTY;
+    }
+
+    if (login.status == LS_EMPTY) { // no login waiting? add this one
+        bzero(&login, sizeof(login));
+        login.status = LS_READ;
+        login.age = ticker;
+        strcpy(login.name, name);
+        strcpy(login.password, password);
+        login.ip = ip;
+        pthread_mutex_unlock(&data_mutex);
+
+        add_query(DT_LOAD, name, password, 0); // send query to database
+        return 0;
+    }
+
+    if (strcasecmp(login.name, name)) { // not our login? leave and try again later
+        pthread_mutex_unlock(&data_mutex);
+        return 0;
+    }
+
+    if (login.status == LS_FAILED) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -1;
+    }
+
+    if (login.status == LS_LOCKED) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -2;
+    }
+
+    if (login.status == LS_PASSWD) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -3;
+    }
+
+    if (login.status == LS_NOPAY) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -5;
+    }
+    if (login.status == LS_SHUTDOWN) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -6;
+    }
+
+    if (login.status == LS_IPLOCKED) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -7;
+    }
+
+    if (login.status == LS_TOOMANY) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -9;
+    }
+
+    if (login.status == LS_LIMITED) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -10;
+    }
+
+    if (login.status == LS_TIMEBAN) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        if (timeleft) *timeleft = login.timeleft;
+        pthread_mutex_unlock(&data_mutex);
+        return -11;
+    }
+
+    if (login.status == LS_KARMA) { // login failed. send him away and mark login as free
+        login.status = LS_EMPTY;
+        pthread_mutex_unlock(&data_mutex);
+        return -12;
+    }
+
+    if (login.status == LS_NEWAREA) { // he's supposed to be on a different area. sent him there (ugly) and mark login as free
+        login.status = LS_EMPTY;
+        if (area_ptr) *area_ptr = login.new_area;
+        if (mirror_ptr) *mirror_ptr = login.mirror;
+        if (cn_ptr) *cn_ptr = 0;
+        if (ID_ptr) *ID_ptr = login.ID;
+        pthread_mutex_unlock(&data_mutex);
+        return 1;
+    }
+
+    if (login.status == LS_OK) { // ok, we got him. return character and free login
+        login.status = LS_EMPTY;
+        if (area_ptr) *area_ptr = 0;
+        if (mirror_ptr) *mirror_ptr = 0;
+        if (cn_ptr) *cn_ptr = login.cn;
+        if (ID_ptr) *ID_ptr = login.ID;
+        pthread_mutex_unlock(&data_mutex);
+        return 1;
+    }
+
+    login.age = ticker;
+
+    // working status, return busy
+    pthread_mutex_unlock(&data_mutex);
+    return 0;
+}
+
+static void login_ok(int cn, int didusurp) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_OK;
+    login.cn = cn;
+    login.age = ticker;
+    login.didusurp = didusurp;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_failed(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_FAILED;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_locked(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_LOCKED;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_iplocked(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_IPLOCKED;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_limited(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_LIMITED;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_timeban(int timeleft) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_TIMEBAN;
+    login.age = ticker;
+    login.timeleft = timeleft;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_karma(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_KARMA;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_passwd(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_PASSWD;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_toomany(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_TOOMANY;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_nopay(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_NOPAY;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_shutdown(void) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_SHUTDOWN;
+    login.age = ticker;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+static void login_newarea(int area, int mirror) {
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_NEWAREA;
+    login.age = ticker;
+    login.new_area = area;
+    login.mirror = mirror;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+void check_prof_max(int cn) {
+    int cnt, n;
+
+    cnt = ch[cn].value[1][V_PROFESSION];
+
+    for (n = 0; n < P_MAX; n++) {
+        if (ch[cn].prof[n] > cnt) {
+            ch[cn].prof[n] = cnt;
+            cnt = 0;
+        } else cnt -= ch[cn].prof[n];
+    }
+}
+
+void tick_login(void) {
+    int cn, n, in, pos, ppd_id, ppd_size, newbie = 0;
+    unsigned char *ppd;
+    struct item *itmp;
+    unsigned long long flags;
+    char buf[256];
+
+    // do background thread work if running single-threaded
+    while (!multi && wquery) {
+        unsigned long long prof;
+
+        prof = prof_start(37);
+        unlock_server();
+        db_thread_sub();
+        lock_server();
+        prof_stop(37, prof);
+    }
+
+    // make sure input data is ready
+    pthread_mutex_lock(&data_mutex);
+    if (login.status != LS_CREATE) { // no work
+        pthread_mutex_unlock(&data_mutex);
+        return;
+    }
+    pthread_mutex_unlock(&data_mutex);
+
+    if (login.current) {
+        // he's supposed to be online here. find the corresponding character
+        for (n = 1; n < MAXCHARS; n++) {
+            if (ch[n].flags && ch[n].ID == login.ID) { // and return it
+                if (ch[n].flags & CF_PLAYER) {
+                    xfree(login.chr);
+                    xfree(login.itm);
+                    xfree(login.ppd);
+                    ch[n].flags |= CF_AREACHANGE;
+
+                    if (ch[n].player) {
+                        exit_player(ch[n].player);
+                        ch[n].player = 0;
+                    }
+
+                    ch[n].driver = 0; // disable lostcon
+                    login_ok(n, 1);
+                    return;
+                } else elog("character %s (%d) has ID %d but isn't a player", ch[n].name, n, ch[n].ID);
+            }
+        }
+        // the character was online when we read the values from the database, but isn't online anymore
+        // that means the database values we read are invalid, and the player needs to try again, hence login_failed
+        login_failed();
+        return;
+    }
+
+    // is it a new account?
+    flags = *(unsigned long long *)(login.chr);
+
+    if (!(flags & CF_USED)) { // character marked as unused, new account
+        // classless: every new character starts from the same template and gets both
+        // class flags (Seyan'Du), so every existing class check allows everything
+        flags |= CF_WARRIOR | CF_MAGE;
+        if (flags & CF_MALE) cn = create_char("new_player_m", 0);
+        else cn = create_char("new_player_f", 0);
+        if (!cn) {
+            elog("tick_login: create newbie failed");
+            xfree(login.chr);
+            xfree(login.itm);
+            xfree(login.ppd);
+            login_failed();
+            return;
+        }
+
+        ch[cn].flags |= flags;
+
+        ch[cn].tmpa = ch[cn].resta = 1;
+        ch[cn].tmpx = ch[cn].restx = 126;
+        ch[cn].tmpy = ch[cn].resty = 179;
+
+        ch[cn].channel |= (1 | 128 | 256); // make them join channel info, area and mirror
+
+        ppd = set_data(cn, DRD_DEPOT_PPD, sizeof(struct depot_ppd));
+        memcpy(ppd, &login.depot, sizeof(struct depot_ppd));
+
+        newbie = 1;
+
+        sprintf(buf, "0000000000\260c17%s\260c18, a new player, has entered the game.", login.name);
+        server_chat(1, buf);
+
+    } else { // existing account, retrieve items
+        cn = alloc_char();
+        if (!cn) {
+            elog("alloc_char returned error");
+            xfree(login.chr);
+            xfree(login.itm);
+            xfree(login.ppd);
+            login_failed();
+            return;
+        }
+
+        // character data
+        {
+            struct character tmpc;
+            char_from_disk(&tmpc, (void *)login.chr, login.chr_len);
+            copy_char(ch + cn, &tmpc);
+        }
+        ch[cn].serial = sercn++;
+        ch[cn].ef[0] = ch[cn].ef[1] = ch[cn].ef[2] = ch[cn].ef[3] = 0;
+
+        // items
+        itmp = (void *)(login.itm);
+
+        for (n = 0; n < INVENTORYSIZE; n++) {
+            if (ch[cn].item[n]) {
+                if (IDR_DONTSAVE(itmp->driver) || (itmp->flags & IF_LABITEM)) {
+                    itmp++;
+                    ch[cn].item[n] = 0;
+                    continue;
+                }
+                in = alloc_item();
+                if (!in) {
+                    // should destroy character and items !!!
+                    elog("tick_login(): could not alloc item");
+                    xfree(login.chr);
+                    xfree(login.itm);
+                    xfree(login.ppd);
+                    login_failed();
+                    return;
+                }
+
+                it[in] = *itmp++;
+                it[in].carried = cn;
+                it[in].x = it[in].y = it[in].contained = 0;
+                it[in].serial = serin++;
+
+                if (!(it[in].flags)) {
+                    elog("trying to load already free item %s for %s", it[in].name, ch[cn].name);
+                    it[in].flags = IF_USED;
+                    free_item(in);
+                    ch[cn].item[n] = 0;
+                    continue;
+                }
+
+                set_legacy_item_lvl(in, cn);
+                update_fix_item(in, cn);
+
+                if (IDR_ISSPELL(it[in].driver)) {
+                    *(int *)(it[in].drdata) += ticker;
+                    *(int *)(it[in].drdata + 4) += ticker;
+                    create_spell_timer(cn, in, n);
+                } else {
+                    if (it[in].driver) {
+                        call_item(it[in].driver, in, 0, ticker + 1);
+                    }
+                }
+
+                ch[cn].item[n] = in;
+            }
+        }
+        if (ch[cn].citem) {
+            if (IDR_DONTSAVE(itmp->driver) || (itmp->flags & IF_LABITEM)) {
+                itmp++;
+                ch[cn].citem = 0;
+            } else {
+                in = alloc_item();
+                if (!in) {
+                    // should destroy character and items !!!
+                    elog("tick_login(): could not alloc item");
+                    xfree(login.chr);
+                    xfree(login.itm);
+                    xfree(login.ppd);
+                    login_failed();
+                    return;
+                }
+
+                it[in] = *itmp++;
+                it[in].carried = cn;
+                it[in].x = it[in].y = it[in].contained = 0;
+
+                ch[cn].citem = in;
+
+                set_legacy_item_lvl(in, cn);
+                update_fix_item(in, cn);
+
+                if (it[in].driver) {
+                    call_item(it[in].driver, in, 0, ticker + 1);
+                }
+            }
+        }
+
+        // drdata aka persistent player data (ppd)
+        ch[cn].dat = NULL; // start with empty set...
+
+        for (pos = 0; pos < login.ppd_len;) {
+            ppd_id = *(unsigned int *)(login.ppd + pos);
+            pos += 4;
+            ppd_size = *(unsigned int *)(login.ppd + pos);
+            pos += 4;
+
+            if (ppd_id != DRD_JUNK_PPD) {
+                ppd = set_data(cn, ppd_id, ppd_size);
+                memcpy(ppd, login.ppd + pos, ppd_size);
+            }
+            pos += ppd_size;
+        }
+        ppd = set_data(cn, DRD_DEPOT_PPD, sizeof(struct depot_ppd));
+        memcpy(ppd, &login.depot, sizeof(struct depot_ppd));
+
+        // update legacy arches to have new skills
+        if (ch[cn].flags & CF_ARCH) {
+            if ((ch[cn].flags & (CF_WARRIOR | CF_MAGE)) == CF_WARRIOR) {
+                if (ch[cn].value[1][V_RAGE] == 0) ch[cn].value[1][V_RAGE] = 1;
+            }
+            if ((ch[cn].flags & (CF_WARRIOR | CF_MAGE)) == CF_MAGE) {
+                if (ch[cn].value[1][V_DURATION] == 0) ch[cn].value[1][V_DURATION] = 1;
+            }
+        }
+
+        {
+            int expe, diff;
+
+            diff = ch[cn].exp - ch[cn].exp_used;
+
+            expe = calc_exp(cn);
+            if (ch[cn].exp_used != expe) {
+                elog("char %s: used_exp=%d, calculated=%d", ch[cn].name, ch[cn].exp_used, expe);
+            }
+            ch[cn].exp_used = expe;
+            ch[cn].exp = max(ch[cn].exp, ch[cn].exp_used + diff);
+        }
+    }
+
+    xfree(login.chr);
+    xfree(login.itm);
+    xfree(login.ppd);
+
+    // initialize character data
+    ch[cn].ID = login.ID;
+    ch[cn].mirror = login.mirror;
+    strcpy(ch[cn].name, login.name);
+    ch[cn].arg = NULL;
+    ch[cn].msg = NULL;
+    ch[cn].msg_last = NULL;
+    ch[cn].driver = 0;
+    ch[cn].x = ch[cn].y = ch[cn].tox = ch[cn].toy = 0;
+    ch[cn].regen_ticker = 0;
+    ch[cn].last_regen = ticker;
+    ch[cn].player = 0;
+    ch[cn].sID = login.sID;
+    ch[cn].login_time = realtime;
+    ch[cn].escape_timer = 0;
+    ch[cn].supported = 0;
+    ch[cn].supporting = 0;
+
+    if (!ch[cn].tmpa) ch[cn].tmpa = areaID;
+    if (ch[cn].resta < 1 || ch[cn].resta >= MAXAREA ||
+        ch[cn].restx < 1 || ch[cn].restx >= MAXMAP ||
+        ch[cn].resty < 1 || ch[cn].resty >= MAXMAP ||
+        ch[cn].tmpa < 1 || ch[cn].tmpa >= MAXAREA ||
+        ch[cn].tmpx < 1 || ch[cn].tmpx >= MAXMAP ||
+        ch[cn].tmpy < 1 || ch[cn].tmpy >= MAXMAP) {
+        ch[cn].tmpa = ch[cn].resta = 1;
+        ch[cn].tmpx = ch[cn].restx = 126;
+        ch[cn].tmpy = ch[cn].resty = 179;
+    }
+
+    if (ch[cn].level >= 20 && !ch[cn].value[1][V_PROFESSION]) {
+        ch[cn].value[1][V_PROFESSION] = 1;
+    }
+    check_prof_max(cn);
+    check_can_wear_item(cn);
+
+    skills_init_player(cn); // starting skills, XP in line with levels
+    check_levelup(cn); // combat level from skills
+
+    ch[cn].flags |= CF_ALIVE;
+
+    if (!ch[cn].c1 || !ch[cn].c2 || !ch[cn].c3) {
+        ch[cn].c1 = 0x3def;
+        ch[cn].c2 = 0x294a;
+        ch[cn].c3 = 0x5220;
+    }
+
+    if (!isalpha(ch[cn].staff_code[0]) || !isalpha(ch[cn].staff_code[1]) || ch[cn].staff_code[2] || ch[cn].staff_code[3]) {
+        ch[cn].staff_code[0] = 'A';
+        ch[cn].staff_code[1] = 'A';
+        ch[cn].staff_code[2] = 0;
+        ch[cn].staff_code[3] = 0;
+    }
+
+    update_char(cn);
+    if (newbie) {
+        ch[cn].hp = ch[cn].value[0][V_HP] * POWERSCALE;
+        ch[cn].endurance = ch[cn].value[0][V_ENDURANCE] * POWERSCALE;
+        ch[cn].mana = ch[cn].value[0][V_MANA] * POWERSCALE;
+    }
+    ch[cn].dir = DX_RIGHTDOWN;
+    ch[cn].group = cn + 65536;
+    ch[cn].flags &= ~(CF_DEAD | CF_NOGIVE);
+    ch[cn].action = ch[cn].duration = ch[cn].step = 0;
+    ch[cn].player = 0;
+    ch[cn].regen_ticker = ticker;
+
+    if (!(ch[cn].flags & CF_GOD)) ch[cn].flags &= ~(CF_INVISIBLE | CF_IMMORTAL | CF_INFRARED);
+
+    if (!drop_char_extended(cn, ch[cn].tmpx, ch[cn].tmpy, 6)) {
+        xlog("drop failed for %s at %d,%d in tick_login()", ch[cn].name, ch[cn].tmpx, ch[cn].tmpy);
+        destroy_char(cn);
+        release_char(cn);
+        login_failed();
+        return;
+    }
+
+    login_ok(cn, 0);
+}
+
+static int load_char_pwd(char *pass, int sID, int logout_time, int *ptimeleft) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256], stat_state[80];
+    int login_time;
+    int banned_till, karma, day1, day2;
+    struct tm tm;
+
+    //                          0      1     2           3          4          5
+    sprintf(buf, "select password,banned,karma,banned_till,stat_state,login_time from account where ID=%d", sID);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to select account ID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+        return 1;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 1;
+    }
+    if (mysql_num_rows(result) == 0) {
+        elog("account %d not found??", sID);
+        mysql_free_result_cnt(result);
+        return 1;
+    }
+    if (!(row = mysql_fetch_row(result))) {
+        elog("load_char_pwd: fetch_row returned NULL");
+        mysql_free_result_cnt(result);
+        return 1;
+    }
+    if (!row[0]) {
+        elog("load_char_pwd: one of the values NULL");
+        mysql_free_result_cnt(result);
+        return 1;
+    }
+
+    if (argon2id_verify_password(row[0], pass, NULL) != 1) {
+        mysql_free_result_cnt(result);
+        return 1;
+    }
+
+    // banned?
+    if (row[1] && row[1][0] == 'Y') {
+        mysql_free_result_cnt(result);
+        return 2;
+    }
+
+    // ip-ban?
+    if (isbanned_iplog(login.ip) && (!row[1] || row[1][0] != 'N')) {
+        mysql_free_result_cnt(result);
+        return 3;
+    }
+
+    if (row[2]) karma = atoi(row[2]);
+    else karma = 0;
+    if (row[3]) banned_till = atoi(row[3]);
+    else banned_till = 0;
+    if (row[4]) strcpy(stat_state, row[4]);
+    if (row[5]) login_time = atoi(row[5]);
+    else login_time = 0;
+
+    if (banned_till > time_now) {
+        if (ptimeleft) *ptimeleft = (banned_till - time_now);
+        mysql_free_result_cnt(result);
+        return 7;
+    }
+
+    if (karma >= 12) {
+        mysql_free_result_cnt(result);
+        return 8;
+    }
+
+    // all fine
+    mysql_free_result_cnt(result);
+
+    // update summary: accounts_logged_in
+    if (!strcmp(stat_state, "Char") || !strcmp(stat_state, "Created")) {
+        db_summary("accounts_logged_in", 0);
+        sprintf(buf, "update account set stat_state='Logged' where ID=%d", sID);
+        if (mysql_query_con(&mysql, buf))
+            elog("Failed to update account ID=%d (1): Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+    }
+
+    // update summary: unique logins
+    tm = *localtime(&(time_t){login_time});
+    day1 = tm.tm_mday;
+    tm = *localtime(&(time_t){time_now});
+    day2 = tm.tm_mday;
+    if (day1 != day2) db_summary("unique_logins", 0);
+
+    // update login_time
+    sprintf(buf, "update account set login_time=%d where ID=%d", time_now, sID);
+    if (mysql_query_con(&mysql, buf))
+        elog("Failed to update account ID=%d (2): Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+
+    return 0;
+}
+
+int load_depot(int sID, int cID, struct depot_ppd *dest) {
+    char query[80];
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+
+    if (!sID || !cID || !dest) {
+        elog("load_depot got illegal input: %d %d %p.", sID, cID, dest);
+        return 0;
+    }
+
+    // lock area table to avoid a race
+    if (mysql_query_con(&mysql, "lock tables depot write")) {
+        elog("Failed to lock depot table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+
+    sprintf(query, "select data,area,mirror,cID from depot where ID=%d", sID);
+    if (mysql_query_con(&mysql, query)) {
+        elog("Failed to select depot sID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return 0;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return 0;
+    }
+    if (mysql_num_rows(result) == 0) {
+        mysql_free_result_cnt(result);
+        xlog("creating depot for sID=%d", sID);
+        sprintf(query, "insert into depot values (%d,%d,%d,%d,NULL)", sID, areaID, areaM, cID);
+        if (mysql_query_con(&mysql, query)) {
+            elog("Failed to create depot sID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+        }
+        bzero(dest, sizeof(login.depot));
+        mysql_query_con(&mysql, "unlock tables");
+        return 1;
+    }
+    if (!(row = mysql_fetch_row(result))) {
+        elog("load_depot: fetch_row returned NULL");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        return 0;
+    }
+    if (!row[1] || atoi(row[1]) > 0 || !row[2] || atoi(row[2]) > 0 || !row[3] || atoi(row[3]) > 0) {
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        return 0;
+    }
+
+    bzero(dest, sizeof(login.depot));
+    if (row[0]) uncompress_string((unsigned char *)dest, row[0], sizeof(struct depot_ppd));
+
+    mysql_free_result_cnt(result);
+    sprintf(query, "update depot set area=%d, mirror=%d, cID=%d where ID=%d", areaID, areaM, cID, sID);
+    if (mysql_query_con(&mysql, query)) {
+        elog("Failed to update depot sID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return 0;
+    }
+    mysql_query_con(&mysql, "unlock tables");
+    return 1;
+}
+
+void update_global_online(void) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256], date[80];
+    struct tm tm;
+    int pcu = 0;
+
+    // read count
+    if (mysql_query_con(&mysql, "select count(*) from chars where current_area>0")) {
+        elog("update_global: Could not read cur_on: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("update_global: Failed to store result(2): Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+    if ((row = mysql_fetch_row(result)) && row[0]) global_online = atoi(row[0]);
+    mysql_free_result_cnt(result);
+
+    // update count
+    sprintf(buf, "update vars set val=%d where name='cur_on'", global_online);
+    if (mysql_query_con(&mysql, buf))
+        elog("update cur_on failed: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+
+    tm = *localtime(&(time_t){time_now});
+    sprintf(date, "D%02d%02d%02d", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday);
+
+    // read PCU
+    mysql_query_con(&mysql, "lock table summary write");
+    sprintf(buf, "select PCU from summary where name='%s'", date);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("update_global: Could not read cur_on: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("update_global: Failed to store result(2): Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if ((row = mysql_fetch_row(result)) && row[0]) pcu = atoi(row[0]);
+    else {
+        sprintf(buf, "insert summary set name='%s'", date);
+        mysql_query(&mysql, buf);
+        pcu = 0;
+    }
+    mysql_free_result_cnt(result);
+
+    if (global_online > pcu) {
+        sprintf(buf, "update summary set PCU=%d where name='%s'", global_online, date);
+        if (mysql_query(&mysql, buf)) {
+            elog("update summary: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        } else xlog("set PCU to %d", global_online);
+    }
+    mysql_query_con(&mysql, "unlock tables");
+}
+
+// load character from database, checking for validity of password
+// and allowed_area.
+static void load_char(char *name, char *password) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256];
+    int current, allowed, ID, mirror, tomirror, current_mirror, newmirror = 0, tmp, sID;
+    int logout_time, timeleft;
+    unsigned long *len;
+
+    // make sure input data is ready
+    pthread_mutex_lock(&data_mutex);
+    if (login.status != LS_READ) {
+        pthread_mutex_unlock(&data_mutex);
+        elog("load_char got called but no login is waiting (%s,%s,%d)", name, password, login.status);
+        return;
+    }
+    pthread_mutex_unlock(&data_mutex);
+    if (is_badpass_ip(&mysql, login.ip)) {
+        xlog("ip blocked for %s (%d.%d.%d.%d)", name, (login.ip >> 24) & 255, (login.ip >> 16) & 255, (login.ip >> 8) & 255, (login.ip >> 0) & 255);
+        login_toomany();
+        return;
+    }
+
+    // lock character and account table to avoid misshap
+    if (mysql_query_con(&mysql, "lock tables chars write, account write, iplog write, ipban write, depot write, summary write")) {
+        elog("Failed to lock chars, account table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        login_failed();
+        return;
+    }
+
+    // read the data we need
+    //                     0   1    2    3            4            5  6   7      8              9          10    11
+    sprintf(buf, "select sID,chr,item,name,current_area,allowed_area,ID,ppd,mirror,current_mirror,logout_time,class from chars where name='%s'", login.name);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to select account name=%s: Error: %s (%d)", login.name, mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        login_failed();
+        return;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        login_failed();
+        return;
+    }
+    if (mysql_num_rows(result) == 0) {
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        login_passwd();
+        return;
+    }
+    if (!(row = mysql_fetch_row(result))) {
+        elog("load_char: fetch_row returned NULL");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        login_failed();
+        return;
+    }
+
+    if (!row[2] || !row[7]) {
+        elog("load_char: row2 or row7 is NULL");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        login_failed();
+        return;
+    }
+
+    sID = atoi(row[0]);
+    ID = atoi(row[6]);
+    logout_time = atoi(row[10]);
+
+    if ((tmp = load_char_pwd(login.password, atoi(row[0]), logout_time, &timeleft))) {
+        if (tmp == 1) xlog("password for ID=%d (%s) is wrong", ID, row[3]);
+        else if (tmp == 2) xlog("account locked for ID=%d (%s)", ID, row[3]);
+        else if (tmp == 3) xlog("account ipbanned for ID=%d (%s) (%d.%d.%d.%d)", ID, row[3], (login.ip >> 24) & 255, (login.ip >> 16) & 255, (login.ip >> 8) & 255, (login.ip >> 0) & 255);
+        else if (tmp == 6) xlog("unpaid player limit reached ID=%d (%s)", ID, row[3]);
+        else if (tmp == 7) xlog("timed ban for ID=%d (%s)", ID, row[3]);
+        else if (tmp == 8) xlog("karma ban for ID=%d (%s)", ID, row[3]);
+        else xlog("account not paid for for ID=%d (%s)", ID, row[3]);
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        if (tmp == 1) {
+            login_passwd();
+            add_badpass_ip(&mysql, login.ip);
+        } else if (tmp == 2) login_locked();
+        else if (tmp == 3) login_iplocked();
+        else if (tmp == 6) login_limited();
+        else if (tmp == 7) login_timeban(timeleft);
+        else if (tmp == 8) login_karma();
+        else login_nopay();
+        return;
+    }
+
+    if (nologin && !(atoi(row[11]) & CF_GOD)) {
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        login_shutdown();
+        return;
+    }
+
+    current = atoi(row[4]);
+    allowed = atoi(row[5]);
+    if (row[9]) current_mirror = atoi(row[9]);
+    else current_mirror = 0;
+
+    if (row[8]) mirror = atoi(row[8]);
+    else mirror = 0;
+    if (!mirror) {
+        newmirror = 1;
+        mirror = RANDOM(26) + 1;
+    }
+
+    login.ID = ID;
+
+    // is he supposed to be somewhere else?
+    if (allowed != areaID) { // nope, send him to where he belongs
+        mysql_free_result_cnt(result);
+        if (newmirror) {
+            sprintf(buf, "update chars set mirror=%d where ID=%d", mirror, ID);
+            mysql_query_con(&mysql, buf);
+            save_char_mirror_cnt++;
+        }
+        mysql_query_con(&mysql, "unlock tables");
+        if (current) {
+            if (check_area(current, current_mirror)) login_newarea(current, current_mirror);
+            else login_newarea(-1, current_mirror);
+        } else login_newarea(allowed, get_mirror(allowed, mirror));
+        return;
+    }
+
+    // database thinks the player is currently online somewhere
+    if (current) {
+        if (current != areaID || current_mirror != areaM) { // online in a different area. send him there.
+            mysql_free_result_cnt(result);
+            if (newmirror) {
+                sprintf(buf, "update chars set mirror=%d where ID=%d", mirror, ID);
+                mysql_query_con(&mysql, buf);
+                save_char_mirror_cnt++;
+            }
+            mysql_query_con(&mysql, "unlock tables");
+
+            if (check_area(current, current_mirror)) login_newarea(current, current_mirror);
+            else login_newarea(-1, current_mirror);
+            return;
+        }
+
+        // he's supposed to be online here... we should simply set login.current and leave, instead of reading all the data.
+
+        login.current = current;
+    }
+
+    tomirror = get_mirror(areaID, mirror);
+    if (areaM != tomirror) {
+        mysql_free_result_cnt(result);
+        if (newmirror) {
+            sprintf(buf, "update chars set mirror=%d where ID=%d", mirror, ID);
+            mysql_query_con(&mysql, buf);
+            save_char_mirror_cnt++;
+        }
+        mysql_query_con(&mysql, "unlock tables");
+        login_newarea(allowed, tomirror);
+        return;
+    }
+    len = mysql_fetch_lengths(result);
+
+    if (*(unsigned int *)(row[2]) != COMPRESS_MAGIC) {
+        // copy data to login structure
+        login.chr = xcalloc(max(sizeof(struct character), len[1]), IM_DATABASE);
+        login.itm = xmalloc(len[2], IM_DATABASE);
+        login.ppd = xmalloc(len[7], IM_DATABASE);
+
+        if (!login.chr || !login.itm || !login.ppd) {
+            elog("memory low in load_char"); // !!! handle gracefully !!!
+            exit(1);
+        }
+
+        login.chr_len = len[1];
+        login.itm_len = len[2];
+        login.ppd_len = len[7];
+
+        if (row[1]) memcpy(login.chr, row[1], len[1]);
+        else bzero(login.chr, sizeof(struct character));
+        memcpy(login.itm, row[2], len[2]);
+        memcpy(login.ppd, row[7], len[7]);
+    } else {
+        login.chr = xcalloc(max(sizeof(struct character), len[1]), IM_DATABASE);
+        login.itm = xmalloc(*(unsigned int *)(row[2] + 4), IM_DATABASE);
+        login.ppd = xmalloc(*(unsigned int *)(row[7] + 4), IM_DATABASE);
+
+        login.chr_len = len[1];
+        if (row[1]) memcpy(login.chr, row[1], len[1]);
+        else bzero(login.chr, sizeof(struct character));
+        login.itm_len = uncompress_string(login.itm, row[2], *(unsigned int *)(row[2] + 4));
+        login.ppd_len = uncompress_string(login.ppd, row[7], *(unsigned int *)(row[7] + 4));
+    }
+
+    login.mirror = mirror;
+    login.sID = sID;
+
+    strcpy(login.name, row[3]);
+
+    mysql_free_result_cnt(result);
+
+    if (!load_depot(login.sID, ID, &login.depot)) bzero(&login.depot, sizeof(login.depot));
+    else login.depot.loaded = 1;
+
+    // mark character as online in database
+    sprintf(buf, "update chars set current_area=%d, current_mirror=%d, allowed_area=%d, login_time=%d where ID=%d",
+            areaID,
+            areaM,
+            areaID,
+            time_now,
+            ID);
+
+    load_char_cnt++;
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to update account %s (ID=%d) on login: Error: %s (%d)", login.name, ID, mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+
+        login_failed();
+        return;
+    }
+    mysql_query_con(&mysql, "unlock tables");
+
+    add_iplog(sID, login.ip);
+    update_global_online();
+
+    pthread_mutex_lock(&data_mutex);
+    login.status = LS_CREATE;
+    pthread_mutex_unlock(&data_mutex);
+}
+
+struct area {
+    int server;
+    int port;
+    int status;
+};
+
+static struct area area[MAXAREA][MAXMIRROR];
+
+static void update_arealist(void) {
+    char buf[256];
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    unsigned int server, port, ID, mirror;
+    int alive;
+
+    sprintf(buf, "select ID,server,port,alive_time,mirror from area");
+    if (mysql_query_con(&mysql, buf)) {
+        elog("update_arealist: Could not read area table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("update_arealist: Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result))) {
+        if (!row[0] || !row[1] || !row[2] || !row[3] || !row[4]) {
+            elog("update_arealist: Incomplete row: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            continue;
+        }
+
+        ID = atoi(row[0]);
+        server = strtoul(row[1], (char **)NULL, 10);
+        port = atoi(row[2]);
+        alive = atoi(row[3]);
+        mirror = atoi(row[4]);
+
+        if (ID < 1 || ID >= MAXAREA) {
+            elog("update_arealist: got weird ID %d, ignoring", ID);
+            continue;
+        }
+        if (mirror < 1 || mirror >= MAXMIRROR) {
+            elog("update_arealist: got weird mirror %d, ignoring", mirror);
+        }
+
+        area[ID][mirror].server = server;
+        area[ID][mirror].port = port;
+        if (time_now - alive < 60 * 5) area[ID][mirror].status = 1;
+        else area[ID][mirror].status = 0;
+    }
+    mysql_free_result_cnt(result);
+
+    if (mysql_query_con(&mysql, "select val from vars where name='cur_on'")) {
+        elog("update_arealist: Could not read cur_on: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("update_arealist: Failed to store result(2): Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+    if ((row = mysql_fetch_row(result)) && row[0]) global_online = atoi(row[0]);
+    mysql_free_result_cnt(result);
+}
+
+int check_area(int ID, int mirror) {
+    if (ID < 1 || ID >= MAXAREA) {
+        elog("check_area: got weird ID %d, ignoring", ID);
+        return 0;
+    }
+    if (mirror < 1 || mirror >= MAXMIRROR) {
+        elog("check_area: got weird mirror %d, ignoring", mirror);
+        return 0;
+    }
+    if (area[ID][mirror].status == 1) return 1;
+    else return 0;
+}
+
+int get_mirror(int ID, int mirror) {
+    int n, good = 0;
+
+    if (ID < 1 || ID >= MAXAREA) {
+        elog("get_mirror: got weird ID %d, ignoring", ID);
+        return 0;
+    }
+    if (mirror < 1 || mirror >= MAXMIRROR) {
+        elog("get_mirror: got weird mirror %d, ignoring", mirror);
+        return 0;
+    }
+
+    for (n = mirror; n > 0; n--) {
+        if (area[ID][n].status != 1) continue;
+        return n;
+    }
+    for (n = MAXMIRROR - 1; n > mirror; n--) {
+        if (area[ID][n].status != 1) continue;
+        good = n;
+    }
+    if (good) return good;
+
+    return 0;
+}
+
+int get_area(int ID, int mirror, int *pserver, int *pport) {
+    int tomirror;
+
+    if (ID < 1 || ID >= MAXAREA) {
+        elog("get_area: got weird ID %d, ignoring", ID);
+        return 0;
+    }
+    if (mirror < 1 || mirror >= MAXMIRROR) {
+        elog("get_area: got weird mirror %d, ignoring", mirror);
+        return 0;
+    }
+    if (!(tomirror = get_mirror(ID, mirror))) return 0;
+
+    if (pserver) *pserver = area[ID][tomirror].server;
+    if (pport) *pport = area[ID][tomirror].port;
+
+    return 1;
+}
+
+void db_lookup_id(char *tID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256], name[80];
+    unsigned int ID;
+
+    ID = strtoul(tID, (char **)NULL, 10);
+
+    // avoid suplicate lookups
+    if (lookup_ID(NULL, ID)) return;
+
+    sprintf(buf, "select name from chars where ID=%d", ID);
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to lookup ID: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if ((row = mysql_fetch_row(result)) && row[0]) {
+
+        strncpy(name, row[0], 40);
+        name[39] = 0;
+
+        mysql_free_result_cnt(result);
+
+        lookup_add_cache(ID, name);
+
+        return;
+    }
+
+    mysql_free_result_cnt(result);
+
+    lookup_add_cache(ID, NULL);
+}
+
+void db_lookup_name(char *name) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256], realname[80];
+    int ID;
+
+    // avoid suplicate lookups
+    if (lookup_name(name, NULL)) return;
+
+    sprintf(buf, "select ID,name from chars where name='%s'", name);
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to lookup name: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if ((row = mysql_fetch_row(result)) && row[0] && row[1]) {
+
+        ID = strtoul(row[0], (char **)NULL, 10);
+        strncpy(realname, row[1], 40);
+        realname[39] = 0;
+
+        mysql_free_result_cnt(result);
+
+        lookup_add_cache(ID, realname);
+
+        return;
+    }
+
+    mysql_free_result_cnt(result);
+
+    lookup_add_cache(-1, name);
+
+    return;
+}
+
+void check_task(void) {
+    char buf[256];
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    int del, ID;
+
+    // get a write lock on task and chars table
+    if (mysql_query_con(&mysql, "lock tables task write, chars write")) {
+        elog("Failed to lock task table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    sprintf(buf, "select ID,content from task");
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to get content from task: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result)) && row[0] && row[1]) {
+        ID = atoi(row[0]);
+
+        xlog("processing task %d", ID);
+        del = process_task(row[1]);
+        if (del) {
+            sprintf(buf, "delete from task where ID=%d", ID);
+
+            if (mysql_query_con(&mysql, buf)) {
+                elog("Failed to delete task from task: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            } else xlog("deleted task %d, done", ID);
+        }
+    }
+
+    mysql_free_result_cnt(result);
+
+    mysql_query_con(&mysql, "unlock tables");
+}
+
+void db_lastseen(char *suID, char *srID) {
+    char buf[256];
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    int t, uID, rID, cl;
+
+    uID = atoi(suID);
+    rID = atoi(srID);
+
+    sprintf(buf, "select name,login_time,logout_time,class,creation_time from chars where ID=%d", uID);
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to get times from chars: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if ((row = mysql_fetch_row(result)) && row[0] && row[1] && row[2] && row[3] && row[4]) {
+        cl = atoi(row[3]);
+        if (cl & CF_GOD) {
+            tell_chat(0, rID, 1, "%s was seen quite recently.", row[0]);
+        } else {
+            t = time_now - max(max(atoi(row[1]), atoi(row[2])), atoi(row[4]));
+            tell_chat(0, rID, 1, "%s was last seen %d days, %d hours, %d minutes ago.", row[0], t / (60 * 60 * 24), (t / (60 * 60)) % 24, (t / 60) % 60);
+        }
+    }
+
+    mysql_free_result_cnt(result);
+}
+
+void db_read_clanlog(char *query) {
+    char clan_name[80];
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    int cnID, date, cnr, serial, cnt = 0;
+    struct tm *tm;
+
+    if (mysql_query_con(&mysql, query)) {
+        elog("Failed to read clanlog: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    // 0    1      2    3	 4
+    //%d,clan,serial,time,text
+    while ((row = mysql_fetch_row(result)) && row[0] && row[1] && row[2] && row[3] && row[4]) {
+        cnID = atoi(row[0]);
+        date = atoi(row[3]);
+
+        cnr = atoi(row[1]);
+        serial = atoi(row[2]);
+        if (clan_serial(cnr) == serial && get_clan_name(cnr)) strcpy(clan_name, get_clan_name(cnr));
+        else sprintf(clan_name, "Former clan %d", cnr);
+
+        tm = localtime(&(time_t){date});
+
+        cnt++;
+        if (cnt > 50) {
+            tell_chat(0, cnID, 1, "Not all entries displayed. Use the same query with -s %d to continue the listing.", (time_now - date + 60 * 60 - 1) / (60 * 60));
+            break;
+        }
+
+        tell_chat(0, cnID, 1, "At %02d:%02d on %02d/%02d/%02d, %s: %s",
+                  tm->tm_hour,
+                  tm->tm_min,
+                  tm->tm_mon + 1,
+                  tm->tm_mday,
+                  tm->tm_year % 100,
+                  clan_name,
+                  row[4]);
+    }
+    mysql_free_result_cnt(result);
+
+    if (cnt == 0) {
+        cnID = atoi(query + 6);
+        tell_chat(0, cnID, 1, "No matching records.");
+    }
+}
+
+void db_exterminate(char *who, char *desc) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[512], buf2[256];
+    int sID, masterID, victimID, nrc, nrb;
+
+    masterID = atoi(who);
+    victimID = atoi(who + 11);
+
+    sprintf(buf, "select sID from chars where ID=%d", victimID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_exterm6: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_exterm7: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_exterm8: fetch row returned NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    if (!row[0]) {
+        elog("db_exterm8: row[0] is NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    sID = atoi(row[0]);
+    mysql_free_result(result);
+
+    sprintf(buf, "update account set banned='Y' where ID=%d", sID);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("exterminate: Failed to lock account: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+    }
+    nrc = mysql_affected_rows(&mysql);
+
+    sprintf(buf, "insert ipban select 0,ip,%d,%d,%d from iplog where iplog.sID=%d",
+            time_now,
+            time_now + 60 * 60 * 24 * 7 * 4,
+            sID,
+            sID);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("exterminate: Failed to insert bans: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+    }
+    nrb = mysql_affected_rows(&mysql);
+
+    mysql_real_escape_string(&mysql, buf2, desc, strlen(desc));
+    sprintf(buf, "insert sub_note values(0,%d,%d,%d,'%s')", sID, NOTE_WARN, time_now, buf2);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_punish5: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    tell_chat(0, masterID, 1, "Locked %d account and %d IP addresses.", nrc, nrb);
+
+    sprintf(buf, "%10d", sID);
+    server_chat(1037, buf);
+}
+
+void db_rename(char *name, char *master_to) {
+    int masterID, nr, len;
+    char query[256], to[256], *ptr;
+
+    masterID = atoi(master_to);
+    strcpy(to, master_to + 11);
+
+    for (ptr = to, len = 0; *ptr; ptr++, len++) {
+        if (len == 0) *ptr = toupper(*ptr);
+        else *ptr = tolower(*ptr);
+        if (!isalpha(*ptr)) {
+            tell_chat(0, masterID, 1, "Illegal name.");
+            return;
+        }
+    }
+    if (len < 3 || len > 35) {
+        tell_chat(0, masterID, 1, "Name too long or too short.");
+        return;
+    }
+
+    sprintf(query, "update chars set name='%s' where name='%s'", to, name);
+    if (mysql_query_con(&mysql, query)) {
+        tell_chat(0, masterID, 1, "Failed to change name: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    nr = mysql_affected_rows(&mysql);
+
+    if (nr) tell_chat(0, masterID, 1, "Changed %s to %s. The change will be visible after the next login.", name, to);
+    else tell_chat(0, masterID, 1, "Didn't work, most probable cause: %s not found.", name);
+}
+
+void db_rescue_char(char *IDstring) {
+    int ID;
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    unsigned char cbuf[DISK_CHAR_SIZE * 2 + 1], cdata[DISK_CHAR_SIZE];
+    char buf[256 + sizeof(cbuf)];
+    int current_area, allowed_area, mirror, current_mirror, sID, time_dead;
+    struct character tmpc, *tmp = &tmpc;
+    unsigned long *len;
+
+    ID = atoi(IDstring);
+    elog("db_rescue_char %d", ID);
+
+    // lock character table to avoid misshap
+    if (mysql_query_con(&mysql, "lock tables chars write, depot write, area read")) {
+        elog("Failed to lock chars: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    // read the data we need
+    //                  0   1            2            3      4		5
+    sprintf(buf, "select chr,current_area,allowed_area,mirror,current_mirror,sID from chars where ID=%d", ID);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("Failed to select char ID=%d: Error: %s (%d)", ID, mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if (mysql_num_rows(result) == 0) {
+        elog("char to rescue not found");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if (!(row = mysql_fetch_row(result))) {
+        elog("rescue_char: fetch_row returned NULL");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    if (!row[0] || !row[1] || !row[2] || !row[3] || !row[4]) {
+        elog("rescue_char: one of the values NULL");
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+
+    len = mysql_fetch_lengths(result);
+
+    if (len[0] != DISK_CHAR_SIZE) {
+        mysql_free_result_cnt(result);
+        mysql_query_con(&mysql, "unlock tables");
+        xlog("rescue: char size wrong");
+        return;
+    }
+
+    current_area = atoi(row[1]);
+    allowed_area = atoi(row[2]);
+    mirror = atoi(row[3]);
+    current_mirror = atoi(row[4]);
+    sID = atoi(row[5]);
+    char_from_disk(tmp, (void *)row[0], len[0]);
+
+    if (current_area) {
+        sprintf(buf, "select alive_time from area where ID=%d and mirror=%d", current_area, current_mirror);
+        if (mysql_query_con(&mysql, buf)) {
+            elog("Failed to area ID=%d: Error: %s (%d)", current_area, mysql_error(&mysql), mysql_errno(&mysql));
+            mysql_query_con(&mysql, "unlock tables");
+            return;
+        }
+        if (!(result = mysql_store_result_cnt(&mysql))) {
+            elog("Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            mysql_query_con(&mysql, "unlock tables");
+            return;
+        }
+        if (!(row = mysql_fetch_row(result))) {
+            elog("rescue_char: fetch_row returned NULL");
+            mysql_free_result_cnt(result);
+            mysql_query_con(&mysql, "unlock tables");
+            return;
+        }
+        if (!row[0]) {
+            elog("rescue_char: one of the values NULL");
+            mysql_free_result_cnt(result);
+            mysql_query_con(&mysql, "unlock tables");
+            return;
+        }
+        time_dead = time_now - atoi(row[0]);
+        mysql_free_result_cnt(result);
+
+        if (time_dead < 60 * 5) { // is the area alive? then don't rescue.
+            elog("trying to rescue char to alive area: %s from %d (%d)", tmp->name, allowed_area, time_dead);
+            mysql_query_con(&mysql, "unlock tables");
+            return;
+        }
+    }
+
+    mysql_free_result_cnt(result);
+
+    if (get_area(3, mirror, NULL, NULL)) {
+        current_area = 0;
+        current_mirror = 0;
+        tmp->restx = tmp->tmpx = 167;
+        tmp->resty = tmp->tmpy = 188;
+        tmp->resta = tmp->tmpa = allowed_area = 3;
+    } else if (get_area(1, mirror, NULL, NULL)) {
+        current_area = 0;
+        current_mirror = 0;
+        tmp->restx = tmp->tmpx = 126;
+        tmp->resty = tmp->tmpy = 179;
+        tmp->resta = tmp->tmpa = allowed_area = 1;
+    } else {
+        mysql_query_con(&mysql, "unlock tables");
+        xlog("cannot rescue, area 1 and 3 are down too");
+        return;
+    }
+
+    char_to_disk(cdata, tmp);
+    mysql_real_escape_string(&mysql, cbuf, cdata, DISK_CHAR_SIZE);
+    sprintf(buf, "update chars set current_area=%d,allowed_area=%d,current_mirror=%d,chr='%s' where ID=%d",
+            current_area,
+            allowed_area,
+            current_mirror,
+            cbuf,
+            ID);
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("rescue_char: Could not write char: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+
+    sprintf(buf, "update depot set area=-1,mirror=-1,cID=-1 where ID=%d", sID);
+    if (mysql_query_con(&mysql, buf)) {
+        elog("rescue_char: Could not write depot: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query_con(&mysql, "unlock tables");
+        return;
+    }
+    elog("rescued %d to %d", ID, allowed_area);
+    mysql_query_con(&mysql, "unlock tables");
+}
+
+int db_set_stat(char *name, int mod, int value) {
+    char query[256];
+
+    sprintf(query, "replace stats set name='%s%03d', value=%d", name, mod, value);
+    if (mysql_query_con(&mysql, query)) {
+        elog("set_stat: Could not replace: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    return 1;
+}
+
+int db_add_stat(char *name, int mod, int value) {
+    char query[256];
+
+    // try update first (ie real add)
+    sprintf(query, "update stats set value=value+%d where name='%s%03d'", value, name, mod);
+    if (mysql_query_con(&mysql, query)) {
+        elog("add_stat: Could not update1: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    if (mysql_affected_rows(&mysql)) return 1;
+
+    // try create next
+    sprintf(query, "insert stats set name='%s%03d',value=%d", name, mod, value);
+    if (!mysql_query_con(&mysql, query)) return 1;
+
+    // try update again, we assume sombody created the name in the meantime
+    sprintf(query, "update stats set value=value+%d where name='%s%03d'", value, name, mod);
+    if (mysql_query_con(&mysql, query)) {
+        elog("add_stat: Could not update2: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    return 1;
+}
+
+int db_max_stat(char *name, int mod, int value) {
+    char query[256];
+
+    // try update first (ie real add)
+    sprintf(query, "update stats set value=greatest(value,%d) where name='%s%03d'", value, name, mod);
+    if (mysql_query_con(&mysql, query)) {
+        elog("add_stat: Could not update1: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    if (mysql_affected_rows(&mysql)) return 1;
+
+    // try create next
+    sprintf(query, "insert stats set name='%s%03d',value=%d", name, mod, value);
+    if (!mysql_query_con(&mysql, query)) return 1;
+
+    // try update again, we assume sombody created the name in the meantime
+    sprintf(query, "update stats set value=greatest(value,%d) where name='%s%03d'", value, name, mod);
+    if (mysql_query_con(&mysql, query)) {
+        elog("add_stat: Could not update2: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    return 1;
+}
+
+int db_reset_stat(char *name, int mod) {
+    char query[256];
+
+    sprintf(query, "update stats set value=0 where name='%s%03d'", name, mod);
+    if (mysql_query_con(&mysql, query)) {
+        elog("set_stat: Could not replace: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 0;
+    }
+    return 1;
+}
+
+void db_stat_update(void) {
+    int diff, now, reset;
+    static int lastticker = 0;
+    static int lastreseth = 0;
+    static int lastresetd = 0;
+    static int lastresetw = 0;
+    struct tm tm;
+    char date[20], buf[256];
+
+    diff = ticker - lastticker;
+    now = time_now;
+
+    db_add_stat("PLRONH", (now / 60 / 60) % (24 * 7), online * diff / TICKS);
+    reset = ((now / 60 / 60) + 2) % (24 * 7);
+    if (reset != lastreseth) {
+        db_reset_stat("PLRONH", reset);
+        lastreseth = reset;
+    }
+
+    db_add_stat("PLROND", (now / 60 / 60 / 24) % (365), online * diff / TICKS);
+    reset = ((now / 60 / 60 / 24) + 2) % (365);
+    if (reset != lastresetd) {
+        db_reset_stat("PLROND", reset);
+        lastresetd = reset;
+    }
+
+    db_add_stat("PLRONW", (now / 60 / 60 / 24 / 7) % (52 * 4), online * diff / TICKS);
+    reset = ((now / 60 / 60 / 24 / 7) + 2) % (52 * 4);
+    if (reset != lastresetw) {
+        db_reset_stat("PLRONW", reset);
+        lastresetw = reset;
+    }
+
+    lastticker = ticker;
+
+    tm = *localtime(&(time_t){time_now});
+
+    if (summary_query_hour != tm.tm_hour) {
+        summary_query_hour = tm.tm_hour;
+
+        sprintf(date, "D%02d%02d%02d", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday);
+
+        sprintf(buf, "insert ignore summary set name='%s'", date);
+        add_query(DT_QUERY, buf, "create new summary entry", 0);
+
+        sprintf(buf, "update summary set db_query_cnt=db_query_cnt+%d, db_query_time=db_query_time+%d, db_query_long=greatest(db_query_long,%d) where name='%s'",
+                summary_query_cnt,
+                (int)(summary_query_time / (1000 * 100ll)),
+                (int)(summary_query_long / (10ll)),
+                date);
+        add_query(DT_QUERY, buf, "update summary with database stats", 0);
+
+        summary_query_cnt = 0;
+        summary_query_time = 0;
+        summary_query_long = 0;
+    }
+}
+
+void db_lockname(char *name, char *master) {
+    int masterID, nr, len;
+    char query[256], *ptr;
+
+    masterID = atoi(master);
+
+    for (ptr = name, len = 0; *ptr; ptr++, len++) {
+        *ptr = tolower(*ptr);
+        if (!isalpha(*ptr)) {
+            tell_chat(0, masterID, 1, "Illegal name.");
+            return;
+        }
+    }
+    if (len < 3 || len > 35) {
+        tell_chat(0, masterID, 1, "Name too long or too short.");
+        return;
+    }
+
+    sprintf(query, "insert badname values(0,'%s')", name);
+    if (mysql_query_con(&mysql, query)) {
+        tell_chat(0, masterID, 1, "Failed to insert name: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    nr = mysql_affected_rows(&mysql);
+
+    if (nr) tell_chat(0, masterID, 1, "Added %s to bad name database.", name);
+    else tell_chat(0, masterID, 1, "Didn't work, most probable cause: %s already in bad name database.", name);
+}
+
+void db_unlockname(char *name, char *master) {
+    int masterID, nr, len;
+    char query[256], *ptr;
+
+    masterID = atoi(master);
+
+    for (ptr = name, len = 0; *ptr; ptr++, len++) {
+        *ptr = tolower(*ptr);
+        if (!isalpha(*ptr)) {
+            tell_chat(0, masterID, 1, "Illegal name.");
+            return;
+        }
+    }
+    if (len < 3 || len > 35) {
+        tell_chat(0, masterID, 1, "Name too long or too short.");
+        return;
+    }
+
+    sprintf(query, "delete from badname where badname.bad='%s'", name);
+    if (mysql_query_con(&mysql, query)) {
+        tell_chat(0, masterID, 1, "Failed to delete name: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    nr = mysql_affected_rows(&mysql);
+
+    if (nr) tell_chat(0, masterID, 1, "Deleted %s from bad name database.", name);
+    else tell_chat(0, masterID, 1, "Didn't work, most probable cause: %s not in bad name database.", name);
+}
+
+//--------- clubs -----------
+
+struct club club[MAXCLUB];
+
+int db_create_club(int cnr) {
+    char buf[256];
+
+    sprintf(buf, "insert clubs values(%d,'%s',%d,%d,%d)", cnr, club[cnr].name, club[cnr].paid, club[cnr].money, club[cnr].serial);
+    add_query(DT_QUERY, buf, "create club", 0);
+
+    return 0;
+}
+
+void db_read_clubs(void) {
+    char name[80];
+    int ID, money, paid, serial;
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    extern int club_update_done;
+
+    if (mysql_query_con(&mysql, "select * from clubs")) {
+        elog("read_clubs: Could not read clubs table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("read_clubs: Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result))) {
+        if (!row[0] || !row[1] || !row[2] || !row[3] || !row[4]) {
+            elog("read_clubs: Incomplete row: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            continue;
+        }
+
+        ID = atoi(row[0]);
+        strncpy(name, row[1], 75);
+        name[75] = 0;
+        paid = atoi(row[2]);
+        money = atoi(row[3]);
+        serial = atoi(row[4]);
+
+        if (ID < 1 || ID >= MAXCLUB) {
+            elog("read_clubs: got weird ID %d, ignoring", ID);
+            continue;
+        }
+        strcpy(club[ID].name, name);
+        club[ID].money = money;
+        club[ID].paid = paid;
+        club[ID].serial = serial;
+    }
+
+    mysql_free_result_cnt(result);
+
+    club_update_done = 1;
+}
+
+void db_update_club(int cnr) {
+    char buf[256];
+
+    sprintf(buf, "update clubs set name='%s', paid=%d, money=%d, serial=%d where ID=%d", club[cnr].name, club[cnr].paid, club[cnr].money, club[cnr].serial, cnr);
+    add_query(DT_QUERY, buf, "update club", 0);
+}
+
+void schedule_clubs(void) {
+    add_query(DT_CLUBS, NULL, "read club", 0);
+}
+
+// clans
+
+extern struct clan clan[];
+
+void db_read_clans(void) {
+    int ID;
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    extern int clan_update_done;
+
+    if (mysql_query_con(&mysql, "select ID,data from clans")) {
+        elog("read_clans: Could not read table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("read_clans: Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result))) {
+        if (!row[0]) {
+            elog("read_clans: Incomplete row: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            continue;
+        }
+
+        ID = atoi(row[0]);
+
+        if (ID < 1 || ID >= MAXCLAN) {
+            elog("read_clans: got weird ID %d, ignoring", ID);
+            continue;
+        }
+
+        bzero(&clan[ID], sizeof(struct clan));
+        if (row[1]) {
+            memcpy(&clan[ID], row[1], sizeof(struct clan));
+        }
+    }
+
+    mysql_free_result_cnt(result);
+
+    clan_update_done = 1;
+}
+
+void db_read_clan_membercount(int cnr) {
+    int cnt;
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256];
+    extern int this_clan_changed[MAXCLAN];
+
+    if (cnr < 1 || cnr >= MAXCLAN) return;
+
+    sprintf(buf, "select count(*) from chars where clan=%d and clan_serial=%d", cnr, clan_serial(cnr));
+
+    if (mysql_query_con(&mysql, buf)) {
+        elog("read_clan_membercount: Could not read table: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result_cnt(&mysql))) {
+        elog("read_clan_membercount: Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if ((row = mysql_fetch_row(result))) {
+        if (!row[0]) {
+            elog("read_clan_membercount: Incomplete row: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        } else {
+            cnt = atoi(row[0]);
+            if (clan[cnr].status.members != cnt) {
+                xlog("clan %s now has %d members (was %d).", clan[cnr].name, cnt, clan[cnr].status.members);
+                clan[cnr].status.members = cnt;
+                this_clan_changed[cnr] = 1;
+            }
+        }
+    } else elog("read_clan_membercount did not return a row");
+
+    mysql_free_result_cnt(result);
+}
+
+void db_update_clan(int cnr) {
+    char dbuf[65536];
+    char qbuf[65536 + 256];
+
+    if (cnr < 1 || cnr >= MAXCLAN) return;
+
+    mysql_real_escape_string(&mysql, dbuf, (unsigned char *)&clan[cnr], sizeof(struct clan));
+    sprintf(qbuf, "update clans set data='%s' where ID=%d", dbuf, cnr);
+    add_query(DT_QUERY, qbuf, "update clan", 0);
+}
+
+void schedule_clans(void) {
+    add_query(DT_CLANS, NULL, "read clans", 0);
+}
+
+void schedule_clan_membercount(int cnr) {
+    char buf[80];
+
+    sprintf(buf, "%d", cnr);
+    add_query(DT_CLANMEMBERS, buf, "read clan membercount", 0);
+}
+
+void add_iplog(int ID, unsigned int ip) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256];
+
+    sprintf(buf, "select ID,use_count from iplog where ip=%u and sID=%u", ip & 0xffffff00, ID);
+
+    if (mysql_query(&mysql, buf)) {
+        elog("insert iplog: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("insert iplog: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if ((row = mysql_fetch_row(result))) { // found suitable entry
+        int use_count;
+
+        use_count = atoi(row[1]);
+        mysql_free_result(result);
+
+        sprintf(buf, "update iplog set use_time=%d,use_count=%d where ID=%s", (int)time(NULL), use_count + 1, row[0]);
+    } else { // no suitable entry found
+        mysql_free_result(result);
+
+        sprintf(buf, "insert into iplog values(0,%u,%d,1,%d)", ip & 0xffffff00, (int)time(NULL), ID);
+    }
+
+    if (mysql_query(&mysql, buf)) {
+        elog("insert/update: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+}
+
+int isbanned_iplog(int ip) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    int flag = 0;
+    char buf[256];
+
+    sprintf(buf, "select ID from ipban where ip=%u and valid>%d limit 1", ip & 0xffffff00, time_now);
+
+    if (mysql_query(&mysql, buf)) {
+        elog("<p>select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 1;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return 1;
+    }
+
+    if ((row = mysql_fetch_row(result))) {
+        flag = 1;
+    }
+    mysql_free_result(result);
+
+    return flag;
+}
+
+void db_punish(char *who, char *desc) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[512], buf2[256];
+    int karma, bantime, sID, masterID, victimID;
+
+    masterID = atoi(who);
+    victimID = atoi(who + 11);
+
+    sprintf(buf, "select sID from chars where ID=%d", victimID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_punish6: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_punish7: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_punish8: fetch row returned NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    if (!row[0]) {
+        elog("db_punish8: row[0] is NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    sID = atoi(row[0]);
+    mysql_free_result(result);
+
+    if (mysql_query(&mysql, "lock tables account write")) {
+        elog("db_punish1: lock: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    sprintf(buf, "select karma from account where ID=%d", sID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_punish2: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query(&mysql, "unlock tables");
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_punish3: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query(&mysql, "unlock tables");
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_punish4: fetch row returned NULL!");
+        mysql_free_result(result);
+        mysql_query(&mysql, "unlock tables");
+        return;
+    }
+
+    if (row[0]) karma = atoi(row[0]);
+    else karma = 0;
+    mysql_free_result(result);
+
+    switch (karma) {
+    case 0:
+        bantime = 60 * 60;
+        break; // 1h
+    case 1:
+        bantime = 60 * 60 * 2;
+        break; // 2h
+    case 2:
+        bantime = 60 * 60 * 4;
+        break; // 4h
+    case 3:
+        bantime = 60 * 60 * 8;
+        break; // 8h
+    case 4:
+        bantime = 60 * 60 * 12;
+        break; // 12h
+    case 5:
+        bantime = 60 * 60 * 24;
+        break; // 1d
+    case 6:
+        bantime = 60 * 60 * 24 * 2;
+        break; // 2d
+    case 7:
+        bantime = 60 * 60 * 24 * 4;
+        break; // 4d
+    case 8:
+        bantime = 60 * 60 * 24 * 8;
+        break; // 8d
+    default:
+        bantime = 60 * 60 * 24 * 14;
+        break; // 14d
+    }
+
+    sprintf(buf, "update account set karma=%d, banned_till=%d where ID=%d", karma + 1, time_now + bantime, sID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_punish5: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        mysql_query(&mysql, "unlock tables");
+        return;
+    }
+    mysql_query(&mysql, "unlock tables");
+
+    mysql_real_escape_string(&mysql, buf2, desc, strlen(desc));
+    sprintf(buf, "insert sub_note values(0,%d,%d,%d,'%s')", sID, NOTE_PUNISH, time_now, buf2);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_punish5: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    tell_chat(0, masterID, 1, "Punishment executed: %s, banned for %d hours.", desc, bantime / 60 / 60);
+
+    sprintf(buf, "%10d", sID);
+    server_chat(1037, buf);
+}
+
+void db_warn(char *who, char *desc) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[512], buf2[256];
+    int sID, masterID, victimID;
+
+    masterID = atoi(who);
+    victimID = atoi(who + 11);
+
+    sprintf(buf, "select sID from chars where ID=%d", victimID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_warn6: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_warn7: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_warn8: fetch row returned NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    if (!row[0]) {
+        elog("db_warn8: row[0] is NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    sID = atoi(row[0]);
+    mysql_free_result(result);
+
+    mysql_real_escape_string(&mysql, buf2, desc, strlen(desc));
+
+    sprintf(buf, "insert sub_note values(0,%d,%d,%d,'%s')", sID, NOTE_WARN, time_now, buf2);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_warn5: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    tell_chat(0, masterID, 1, "Warning executed: %s.", desc);
+}
+
+void db_readnotes(int masterID, int victimID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    struct tm *tm;
+    char buf[256];
+    int sID, kind, date, flag = 1;
+
+    sprintf(buf, "select sID from chars where ID=%d", victimID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_readnotes6: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_readnotes7: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_readnotes8: fetch row returned NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    if (!row[0]) {
+        elog("db_readnotes8: row[0] is NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    sID = atoi(row[0]);
+    mysql_free_result(result);
+
+    sprintf(buf, "select kind,date,note from sub_note where sID=%d order by date", sID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_readnotes1: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_readnotes2: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result))) { // found suitable entry
+
+        if (row[0]) kind = atoi(row[0]);
+        else continue;
+        if (row[1]) date = atoi(row[1]);
+        else date = 0;
+
+        tm = localtime(&(time_t){date});
+
+        switch (kind) {
+        case NOTE_WARN:
+        case NOTE_PUNISH:
+            break;
+        default:
+            continue;
+        }
+
+        tell_chat(0, masterID, 1, "%s on %02d.%02d.%02d %02d:%02d:%02d",
+                  row[2],
+                  tm->tm_mday,
+                  tm->tm_mon + 1,
+                  tm->tm_year % 100,
+                  tm->tm_hour,
+                  tm->tm_min,
+                  tm->tm_sec);
+        flag = 0;
+    }
+    mysql_free_result(result);
+
+    if (flag) {
+        tell_chat(0, masterID, 1, "No criminal record.");
+    }
+}
+
+void db_karmalog(int masterID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    struct tm *tm;
+    char buf[256];
+    int kind, date, flag = 1;
+
+    sprintf(buf, "select kind,date,note from sub_note where date>%d and kind>=2 and kind<=3 order by date desc limit 50", time_now - 60 * 60 * 12);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_readnotes1: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_readnotes2: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    tell_chat(0, masterID, 1, "Criminal activity in the last 12 hours:");
+    while ((row = mysql_fetch_row(result))) { // found suitable entry
+
+        if (row[0]) kind = atoi(row[0]);
+        else continue;
+        if (row[1]) date = atoi(row[1]);
+        else date = 0;
+
+        tm = localtime(&(time_t){date});
+
+        switch (kind) {
+        case NOTE_WARN:
+        case NOTE_PUNISH:
+            break;
+        default:
+            continue;
+        }
+
+        tell_chat(0, masterID, 1, "%s on %02d.%02d.%02d %02d:%02d:%02d",
+                  row[2],
+                  tm->tm_mday,
+                  tm->tm_mon + 1,
+                  tm->tm_year % 100,
+                  tm->tm_hour,
+                  tm->tm_min,
+                  tm->tm_sec);
+        flag = 0;
+    }
+    mysql_free_result(result);
+
+    if (flag) {
+        tell_chat(0, masterID, 1, "No offenses.");
+    }
+}
+
+void db_plr_notes(int victimID, int sID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    struct tm *tm;
+    char buf[256];
+    int kind, date, flag = 1;
+
+    sprintf(buf, "select kind,date,note from sub_note where sID=%d and date>%d order by date", sID, time_now - 60 * 60 * 24 * 28);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_plr_notes1: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_plr_notes2: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    while ((row = mysql_fetch_row(result))) { // found suitable entry
+
+        if (row[0]) kind = atoi(row[0]);
+        else continue;
+        if (row[1]) date = atoi(row[1]);
+        else date = 0;
+
+        tm = localtime(&(time_t){date});
+
+        switch (kind) {
+        case NOTE_WARN:
+        case NOTE_PUNISH:
+        case NOTE_TOUSER:
+            break;
+        default:
+            continue;
+        }
+
+        if (flag) tell_chat(0, victimID, 1, "\260c3Notes, warnings and punishments in the last 28 days:\260c0");
+
+        tell_chat(0, victimID, 1, "%s on %02d.%02d.%02d %02d:%02d:%02d",
+                  row[2],
+                  tm->tm_mday,
+                  tm->tm_mon + 1,
+                  tm->tm_year % 100,
+                  tm->tm_hour,
+                  tm->tm_min,
+                  tm->tm_sec);
+        flag = 0;
+    }
+    mysql_free_result(result);
+}
+
+void db_showalts(int masterID, int victimID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[256];
+    int val, sID, t, a;
+
+    sprintf(buf, "select sID from chars where ID=%d", victimID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_showalts6: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_showalts7: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(row = mysql_fetch_row(result))) { // found suitable entry
+        elog("db_showalts8: fetch row returned NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    if (!row[0]) {
+        elog("db_showalts8: row[0] is NULL!");
+        mysql_free_result(result);
+        return;
+    }
+    sID = atoi(row[0]);
+    mysql_free_result(result);
+
+    sprintf(buf, "select name,experience,login_time,logout_time,current_area from chars where sID=%d order by experience desc", sID);
+    if (mysql_query(&mysql, buf)) {
+        elog("db_showalts1: select: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    if (!(result = mysql_store_result(&mysql))) {
+        elog("db_showalts2: store: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+        return;
+    }
+
+    tell_chat(0, masterID, 1, "Alt Listing");
+
+    while ((row = mysql_fetch_row(result))) { // found suitable entry
+
+        if (row[1]) val = atoi(row[1]);
+        else val = 0;
+        if (row[2]) t = atoi(row[2]);
+        else t = 0;
+        if (row[3]) t = max(t, atoi(row[3]));
+        if (row[4]) a = atoi(row[4]);
+        else a = 0;
+
+        tell_chat(0, masterID, 1, "%s, level %d, was on %d hours ago, area %d",
+                  row[0],
+                  (int)(sqrt(sqrt(val))),
+                  t > 10000 ? (time_now - t) / (60 * 60) : -1,
+                  a);
+    }
+    mysql_free_result(result);
+}
+
+void db_summary(char *key, int sID) {
+    MYSQL_RES *result;
+    MYSQL_ROW row;
+    char buf[80], date[20], buf2[80];
+    struct tm tm;
+    int lvl, oldlvl;
+
+    if (!strncmp(key, "accounts_level_", 15) && sID) {
+        lvl = atoi(key + 15);
+        if (lvl != (lvl / 10) * 10) return;
+        if (lvl < 10) return;
+        if (lvl > 80) return;
+
+        sprintf(buf, "select stat_state from account where ID=%d", sID);
+        if (mysql_query_con(&mysql, buf)) {
+            elog("summary: Failed to select account ID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+            return;
+        }
+        if (!(result = mysql_store_result_cnt(&mysql))) {
+            elog("summary: Failed to store result: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+            return;
+        }
+        if (mysql_num_rows(result) == 0) {
+            elog("summary: account %d not found?", sID);
+            mysql_free_result_cnt(result);
+            return;
+        }
+        if (!(row = mysql_fetch_row(result))) {
+            elog("summary: row for account %d empty?", sID);
+            mysql_free_result_cnt(result);
+            return;
+        }
+        if (row[0]) {
+            if (!strncmp(row[0], "Lvl", 3)) oldlvl = atoi(row[0] + 3);
+            else oldlvl = 0;
+        } else oldlvl = 0;
+        mysql_free_result_cnt(result);
+        if (oldlvl >= lvl) return;
+
+        sprintf(buf, "update account set stat_state='LvL%d' where ID=%d", lvl, sID);
+        if (mysql_query_con(&mysql, buf)) {
+            elog("summary: Failed to update account ID=%d: Error: %s (%d)", sID, mysql_error(&mysql), mysql_errno(&mysql));
+            return;
+        }
+    }
+
+    tm = *localtime(&(time_t){time_now});
+
+    sprintf(date, "D%02d%02d%02d", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday);
+
+    sprintf(buf, "update summary set %s=%s+1 where name='%s'", key, key, date);
+    if (mysql_query(&mysql, buf)) {
+        elog("update summary: Error: %s (%d)", mysql_error(&mysql), mysql_errno(&mysql));
+    }
+    if (!mysql_affected_rows(&mysql)) {
+        sprintf(buf2, "insert summary set name='%s'", date);
+        mysql_query(&mysql, buf2);
+        mysql_query(&mysql, buf);
+    }
+}
+
+void db_update_global(void) {
+    update_global_online();
+}
+
+void db_load_depot_for_char(int cID, int sID) {
+    struct depot_ppd *ppd;
+    int co;
+
+    lock_server();
+
+    for (co = getfirst_char(); co; co = getnext_char(co)) {
+        if (ch[co].sID == sID && ch[co].ID == cID) break;
+    }
+    if (!co || !(ch[co].flags & CF_PLAYER)) {
+        unlock_server();
+        return;
+    }
+
+    ppd = set_data(co, DRD_DEPOT_PPD, sizeof(struct depot_ppd));
+    if (ppd->loaded) {
+        unlock_server();
+        return;
+    }
+
+    if (load_depot(sID, cID, ppd)) {
+        xlog("Loaded depot for %s (sID=%d)", ch[co].name, sID);
+        ppd->loaded = 1;
+    } else {
+        xlog("Could not load depot for %s (sID=%d, this is not an error)", ch[co].name, sID);
+    }
+
+    unlock_server();
+}
+
+void release_depot(int sID, int cID) {
+    struct depot_ppd *depot_ppd;
+    int co, in;
+
+    for (co = getfirst_char(); co; co = getnext_char(co)) {
+        if (ch[co].sID != sID) continue;
+        if (ch[co].ID == cID) continue;
+        depot_ppd = set_data(co, DRD_DEPOT_PPD, sizeof(struct depot_ppd));
+        if (depot_ppd->loaded) {
+
+            if ((in = ch[co].con_in) && (it[in].flags & IF_DEPOT)) ch[co].con_in = 0;
+
+            save_depot(ch[co].sID, depot_ppd, ch[co].ID, 1);
+            bzero(depot_ppd, sizeof(struct depot_ppd));
+            xlog("Released depot from %s (sID=%d)", ch[co].name, sID);
+        }
+    }
+}

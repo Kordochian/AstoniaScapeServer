@@ -1,0 +1,99 @@
+/*
+ * Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+ */
+
+#include <stdlib.h>
+#include "server.h"
+#include "talk.h"
+#include "escape.h"
+#include "act.h"
+#include "drvlib.h"
+#include "tool.h"
+
+static void check_enemies(int cn) {
+    int n, co;
+
+    for (n = 0; n < 4; n++) {
+        if (!(co = ch[cn].enemy[n])) continue;
+        if (co < 1 || co >= MAXCHARS) {
+            ch[cn].enemy[n] = 0;
+            continue;
+        }
+        if (!ch[co].flags) {
+            ch[cn].enemy[n] = 0;
+            continue;
+        }
+        if (ch[co].action != AC_ATTACK1 && ch[co].action != AC_ATTACK2 && ch[co].action != AC_ATTACK3) {
+            ch[cn].enemy[n] = 0;
+            continue;
+        }
+        if (ch[co].act1 != cn) {
+            ch[cn].enemy[n] = 0;
+            continue;
+        }
+    }
+}
+
+// step 16 (George): the Stealth / Perception escape roll is gone, anyone can walk away from a fight.
+// The old roll is kept below, unused, for reference.
+int char_can_flee(int cn) {
+    check_enemies(cn);
+    return 1;
+}
+
+int char_can_flee_old(int cn) {
+    int per = 0, co, ste, m, chance;
+
+    if (!ch[cn].enemy[0] &&
+        !ch[cn].enemy[1] &&
+        !ch[cn].enemy[2] &&
+        !ch[cn].enemy[3]) return 1;
+
+    check_enemies(cn);
+
+    if (!ch[cn].enemy[0] &&
+        !ch[cn].enemy[1] &&
+        !ch[cn].enemy[2] &&
+        !ch[cn].enemy[3]) return 1;
+
+    if (ch[cn].escape_timer >= ticker) return 0;
+
+    for (m = 0; m < 4; m++)
+        if ((co = ch[cn].enemy[m]) != 0) per += ch[co].value[0][V_PERCEPT];
+
+    if (has_spell(cn, IDR_WARCRY) || has_spell(cn, IDR_FREEZE)) ste = (ch[cn].value[0][V_STEALTH]) / 2;
+    else ste = ch[cn].value[0][V_STEALTH];
+    ;
+
+    // enemies without perception (e.g. a template that leaves out V_PERCEPT) cannot stop us;
+    // dividing by zero here crashed the area server
+    if (per < 1) chance = 18;
+    else chance = ste * 10 / per;
+    if (chance < 0) chance = 0;
+    if (chance > 18) chance = 18;
+
+    if (RANDOM(20) <= chance) {
+        if (ch[cn].flags & CF_PLAYER) log_char(cn, LOG_SYSTEM, 0, "#01You manage to escape!");
+        for (m = 0; m < 4; m++) ch[cn].enemy[m] = 0;
+        return 1;
+    }
+
+    ch[cn].escape_timer = ticker + TICKS;
+    if (ch[cn].flags & CF_PLAYER) log_char(cn, LOG_SYSTEM, 0, "#02You cannot escape!");
+
+    return 0;
+}
+
+void add_enemy(int cn, int cc) {
+    check_enemies(cn);
+
+    if (ch[cn].enemy[0] != cc &&
+        ch[cn].enemy[1] != cc &&
+        ch[cn].enemy[2] != cc &&
+        ch[cn].enemy[3] != cc) {
+        if (!ch[cn].enemy[0]) ch[cn].enemy[0] = cc;
+        else if (!ch[cn].enemy[1]) ch[cn].enemy[1] = cc;
+        else if (!ch[cn].enemy[2]) ch[cn].enemy[2] = cc;
+        else if (!ch[cn].enemy[3]) ch[cn].enemy[3] = cc;
+    }
+}

@@ -1,0 +1,205 @@
+mine_wall134565656:
+sprite=15070
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+#flag=IF_SOUNDBLOCK
+flag=IF_USE
+driver=60
+arg="100510"            # 24 silver, 14 gold, miner 16
+;
+
+
+Mine_walls1:
+sprite=15070
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_USE
+driver=60
+arg="100510"            # 24 silver, 14 gold, miner 16
+;
+
+Mine_walls:
+sprite=15070
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_USE
+driver=60			# CHANGE TO DIFFERENT DRIVER(999)!
+arg="100510"            # 24 silver, 14 gold, miner 16
+;
+
+Posted:
+name="Posted"
+description="Checkpoint 1, proceed with caution."
+sprite=15155
+flag=IF_USE
+;
+
+Posted2:
+name="Posted"
+description="Checkpoint 2, proceed with caution."
+sprite=15155
+flag=IF_USE
+;
+
+Posted3:
+name="Posted"
+description="Checkpoint 3, proceed with caution."
+sprite=15155
+flag=IF_USE
+;
+
+Posted4:
+name="Posted"
+description="Checkpoint 4, proceed with caution."
+sprite=15155
+flag=IF_USE
+;
+
+Posted5:
+name="Posted"
+description="Checkpoint 5, proceed with caution."
+sprite=15155
+flag=IF_USE
+;
+
+Checkpoint_door:
+sprite=16051
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="0096000014"        # developer 20, ID 150
+;
+Checkpoint_key:
+name="Checkpoint-Key-1"
+description="Key to Checkpoint 1."
+value=25
+sprite=50004
+ID=14000096             # developer 20, ID 150
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+Checkpoint_door2:
+sprite=16053
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="0097000014"        # developer 20, ID 151
+;
+Checkpoint_key2:
+name="Checkpoint Key 2"
+description="Key to Checkpoint 2."
+value=25
+sprite=50004
+ID=14000097             # developer 20, ID 151
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+Checkpoint_door3:
+sprite=16053
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="0098000014"        # developer 20, ID 152
+;
+Checkpoint_key3:
+name="Checkpoint Key 3"
+description="Key to Checkpoint 3."
+value=25
+sprite=50004
+ID=14000098             # developer 20, ID 152
+flag=IF_TAKE
+flag=IF_QUEST
+;
+Vault_chest153:
+name="Chest"
+description="An ancient chest made of solid stone."
+sprite=20677
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="99980000140000"        # chest 153, devel 20, ID 153, Instant Respawn
+;
+treasure_153:
+name="Jewel"
+description="An ancient jewel said to be used in the last battle."
+value=1
+sprite=14256
+ID=14000012         # developer 20, ID 18
+flag=IF_TAKE
+flag=IF_QUEST
+arg="FF"
+;
+
+
+#--
+Checkpoint_door4:
+sprite=16051
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="0099000014"        # developer 20, ID 153
+;
+Checkpoint_key4:
+name="Checkpoint Key 4"
+description="Key to Checkpoint 4."
+value=25
+sprite=50004
+ID=14000099             # developer 20, ID 153
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+
+Book_chest170:
+name="Files"
+description="A stack of files from the former leader of Checkpoint 2."
+sprite=15532
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AA000000000000" # nr 170 (0xAA)
+;
+treasure_170:
+name="Files"
+description="Some files from the desk of the former leader of Checkpoint 2."
+value=0
+sprite=15528
+flag=IF_TAKE
+flag=IF_QUEST
+ID=1400000F     # developer 20, ID 15
+;
+
+Seringas_Note:
+name="Note to the Commander"
+description="A note written for the Commanders eyes only."
+value=0
+sprite=21102
+flag=IF_TAKE
+flag=IF_QUEST
+ID=14000010     # developer 20, ID 16
+;
+
+Leahj_Journal:
+name="Leon's Journal."
+description="A journal belonging to Leon..its nothing more than the frantic ravings of a mad-man."
+value=0
+sprite=15535
+ID=14000011     # developer 20, ID 17
+flag=IF_TAKE
+flag=IF_QUEST
+;
+

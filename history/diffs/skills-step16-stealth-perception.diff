@@ -1,0 +1,383 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 21:24:00.972456802 +0000
++++ b/src/act.c	2026-10-13 21:24:00.974397659 +0000
+@@ -77,7 +77,8 @@
+                 if ((ch[cn].flags & CF_PLAYER) && RANDOM(TICKS) < ch[cn].act1) skill_used(cn, skill_for_value(V_REGENERATE)); // about once per second
+             }
+ 
+-            if (ch[cn].endurance < ch[cn].value[0][V_ENDURANCE] * POWERSCALE) {
++            // step 16: players do not get endurance back while in stealth mode
++            if (ch[cn].endurance < ch[cn].value[0][V_ENDURANCE] * POWERSCALE && !(ch[cn].speed_mode == SM_STEALTH && (ch[cn].flags & CF_PLAYER))) {
+                 val = 150;
+                 ch[cn].endurance = min(ch[cn].value[0][V_ENDURANCE] * POWERSCALE, ch[cn].endurance + ch[cn].act1 * val * 15);
+                 ch[cn].flags |= CF_SMALLUPDATE;
+@@ -1250,7 +1251,7 @@
+ }
+ 
+ static void check_endurance(int cn) {
+-    if (ch[cn].endurance < POWERSCALE && ch[cn].speed_mode == SM_FAST) {
++    if (ch[cn].endurance < POWERSCALE && (ch[cn].speed_mode == SM_FAST || (ch[cn].speed_mode == SM_STEALTH && (ch[cn].flags & CF_PLAYER) && stealth_endurance))) {
+         ch[cn].speed_mode = SM_NORMAL;
+         log_char(cn, LOG_SYSTEM, 0, "You're exhausted.");
+     }
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 21:24:00.949965123 +0000
++++ b/src/balance.c	2026-10-13 21:24:00.951743207 +0000
+@@ -57,6 +57,18 @@
+ int combat_body_control = 3, combat_clarity = 3; // step 15: tenths of a percent per skill level
+ int combat_armor_class_percent = 5; // tenths of a percent per Armor Class level on worn armour's stats
+ int combat_weapon_skill_percent = 5; // tenths of a percent per weapon skill level on the wielded weapon's stats
++// stealth and perception (step 16): Perception is raised this percent while the looker is in stealth
++// mode and lowered this percent in fast mode; stealth walking costs this percent of a fast step's endurance
++int perception_stealth = 25, perception_fast = 25, stealth_endurance = 100;
++
++// Perception after the looker's speed mode (cautious in stealth, careless when running)
++int perception_value(int cn) {
++    int val = ch[cn].value[0][V_PERCEPT];
++
++    if (ch[cn].speed_mode == SM_STEALTH) return val * (100 + perception_stealth) / 100;
++    if (ch[cn].speed_mode == SM_FAST) return val * max(0, 100 - perception_fast) / 100;
++    return val;
++}
+ 
+ void combat_settings_reset(void) {
+     combat_tactics_boost = 10;
+@@ -67,6 +79,9 @@
+     combat_clarity = 3;
+     combat_armor_class_percent = 5;
+     combat_weapon_skill_percent = 5;
++    perception_stealth = 25;
++    perception_fast = 25;
++    stealth_endurance = 100;
+ }
+ 
+ // the skill an item's level requirement is on, when that skill boosts the item: Armor Class for
+diff -ru a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 21:24:00.953295017 +0000
++++ b/src/balance.h	2026-10-13 21:24:00.954982454 +0000
+@@ -19,6 +19,8 @@
+ extern int combat_body_control; // tenths of a percent per Body Control level on the melee levels (step 15)
+ extern int combat_clarity; // tenths of a percent per Clarity level on magic strength, immunity and spell damage
+ extern int combat_armor_class_percent; // tenths of a percent per Armor Class level on worn armour's stats
++extern int perception_stealth, perception_fast, stealth_endurance; // step 16, see balance.c
++int perception_value(int cn); // Perception after the speed mode
+ extern int combat_weapon_skill_percent; // tenths of a percent per weapon skill level on the wielded weapon's stats
+ int item_boost_skill(int in); // V_ARMORSKILL or the weapon skill an item requires, -1 = none
+ int item_skill_permille(int cn, int v); // 1000 = no bonus
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 21:24:00.942000700 +0000
++++ b/src/create.c	2026-10-13 21:39:24.382493364 +0000
+@@ -501,7 +501,18 @@
+ } *ch_temp;
+ 
+ static int add_item(struct it_temp *itt) {
+-    int n;
++    int n, m, cost;
++
++    // gear with equipment bonuses and no complexity= line: fill in complexity and a 110% quality here, so
++    // the items wear down and can be repaired with silver / gold (create_item_nr would log and set 90%)
++    if ((itt->item.flags & IF_WEAR) && !itt->item.complexity) {
++        for (m = 0; m < MAXMOD; m++)
++            if (IS_EQUIP_BONUS(itt->item.mod_index[m]) && itt->item.mod_value[m] > 0) break;
++        if (m < MAXMOD && (cost = _get_complexity_cost(&itt->item)) > 0) {
++            itt->item.complexity = cost;
++            itt->item.quality = (int)(cost * 1.1001);
++        }
++    }
+ 
+     for (n = 1; n < MAXTITEM; n++)
+         if (!it_temp[n].name[0]) break;
+@@ -818,9 +829,9 @@
+                 elog("Error in line %d: Unknown skill \"%s\" (not in skills.cfg).", line, name);
+                 return 0;
+             }
+-            wn = max(0, min(SKILL_MAXLEVEL, atoi(value)));
+-            if (skilldef[tmp].value >= 0) cht.ch.value[1][skilldef[tmp].value] = wn;
+-            else cht.sk_level[tmp] = wn;
++            // NPCs may go past the player maximum (harder enemies); skills without a value slot stay <= SKILL_MAXLEVEL
++            if (skilldef[tmp].value >= 0) cht.ch.value[1][skilldef[tmp].value] = max(0, min(30000, atoi(value)));
++            else cht.sk_level[tmp] = max(0, min(SKILL_MAXLEVEL, atoi(value)));
+         } else if ((tmp = lookup_V(name)) != -1) {
+             cht.ch.value[1][tmp] = atoi(value);
+         } else if ((wn = lookup_WN(name)) != -1) {
+diff -ru a/src/do.c b/src/do.c
+--- a/src/do.c	2026-10-13 21:24:00.969344235 +0000
++++ b/src/do.c	2026-10-13 21:24:00.970874661 +0000
+@@ -5,6 +5,7 @@
+ #include <stdlib.h>
+ 
+ #include "server.h"
++#include "balance.h"
+ #include "tool.h"
+ #include "act.h"
+ #include "error.h"
+@@ -170,6 +171,7 @@
+     ch[cn].action = AC_WALK;
+     ch[cn].duration = speed(ch[cn].value[0][V_SPEED], ch[cn].speed_mode, cost + diag * cost / 2);
+     if (ch[cn].speed_mode == SM_FAST) ch[cn].endurance -= end_cost(cn);
++    else if (ch[cn].speed_mode == SM_STEALTH && (ch[cn].flags & CF_PLAYER)) ch[cn].endurance -= end_cost(cn) * stealth_endurance / 100; // step 16: sneaking is tiring too
+ 
+     ch[cn].tox = x;
+     ch[cn].toy = y;
+diff -ru a/src/escape.c b/src/escape.c
+--- a/src/escape.c	2026-10-13 21:24:00.963145715 +0000
++++ b/src/escape.c	2026-10-13 21:24:00.964627521 +0000
+@@ -34,7 +34,14 @@
+     }
+ }
+ 
++// step 16 (George): the Stealth / Perception escape roll is gone, anyone can walk away from a fight.
++// The old roll is kept below, unused, for reference.
+ int char_can_flee(int cn) {
++    check_enemies(cn);
++    return 1;
++}
++
++int char_can_flee_old(int cn) {
+     int per = 0, co, ste, m, chance;
+ 
+     if (!ch[cn].enemy[0] &&
+diff -ru a/src/escape.h b/src/escape.h
+--- a/src/escape.h	2026-10-13 21:24:00.966150484 +0000
++++ b/src/escape.h	2026-10-13 21:24:00.967704815 +0000
+@@ -3,4 +3,5 @@
+  */
+ 
+ int char_can_flee(int cn);
++int char_can_flee_old(int cn);
+ void add_enemy(int cn, int cc);
+diff -ru a/src/player.c b/src/player.c
+--- a/src/player.c	2026-10-13 21:24:00.975829436 +0000
++++ b/src/player.c	2026-10-13 21:24:00.977759615 +0000
+@@ -10,6 +10,7 @@
+ #include "netcompat.h"
+ 
+ #include "server.h"
++#include "balance.h"
+ #include "log.h"
+ #include "io.h"
+ #include "client.h"
+@@ -599,6 +600,7 @@
+     if (mode != SM_NORMAL && mode != SM_FAST && mode != SM_STEALTH) return;
+ 
+     if (mode == SM_FAST && ch[cn].endurance < POWERSCALE) return;
++    if (mode == SM_STEALTH && ch[cn].endurance < POWERSCALE && stealth_endurance) return; // step 16: sneaking costs endurance
+ 
+     ch[cn].speed_mode = mode;
+ }
+diff -ru a/src/see.c b/src/see.c
+--- a/src/see.c	2026-10-13 21:24:00.959644393 +0000
++++ b/src/see.c	2026-10-13 21:24:00.961423167 +0000
+@@ -4,6 +4,7 @@
+ 
+ #include <stdlib.h>
+ #include "server.h"
++#include "balance.h"
+ #include "los.h"
+ #include "log.h"
+ #include "date.h"
+@@ -57,7 +58,7 @@
+     if (stealth) vco = light + stealth + dist;
+     else vco = 0;
+ 
+-    vcn = ch[cn].value[0][V_PERCEPT] + 16 + 49;
++    vcn = perception_value(cn) + 16 + 49; // higher in stealth mode, lower in fast mode (step 16)
+ 
+     if (vcn >= vco) return 1;
+ 
+diff -ru a/src/server.h b/src/server.h
+--- a/src/server.h	2026-10-13 21:39:24.374121571 +0000
++++ b/src/server.h	2026-10-13 21:39:24.384791268 +0000
+@@ -328,6 +328,7 @@
+ #define V_MAGIC_DMG 45 // magic damage in percent
+ #define V_MAGIC_DEF 46 // magic defence
+ #define IS_EQUIP_BONUS(v) ((v) >= V_MELEE_ACC && (v) <= V_MAGIC_DEF)
++#define EQUIP_COMPLEXITY 25 // complexity per equipment bonus point (repair cost, wear, item value = quality x 10)
+ // pure skills (step 15): only training raises them, gear, spells and attributes never do
+ #define V_ARMORSKILL 47 // Armor Class: armour can only be worn up to this level
+ #define V_BODYCONTROL 48 // Body Control: percent bonus to the melee levels, gather chance
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 21:24:00.956561031 +0000
++++ b/src/skilling.c	2026-10-13 21:24:00.958238818 +0000
+@@ -257,6 +257,9 @@
+                 else if (!strcasecmp(name, "clarity")) combat_clarity = max(0, atoi(value));
+                 else if (!strcasecmp(name, "armor_class_percent")) combat_armor_class_percent = max(0, atoi(value));
+                 else if (!strcasecmp(name, "weapon_skill_percent")) combat_weapon_skill_percent = max(0, atoi(value));
++                else if (!strcasecmp(name, "perception_stealth")) perception_stealth = max(0, atoi(value));
++                else if (!strcasecmp(name, "perception_fast")) perception_fast = max(0, min(100, atoi(value)));
++                else if (!strcasecmp(name, "stealth_endurance")) stealth_endurance = max(0, atoi(value));
+                 else if (!strcasecmp(name, "body_control_gather")) body_control_gather = max(0, atoi(value));
+                 else if (!strcasecmp(name, "clarity_luck")) clarity_luck = max(0, atoi(value));
+                 else {
+diff -ru a/src/store.c b/src/store.c
+--- a/src/store.c	2026-10-13 21:44:37.311994183 +0000
++++ b/src/store.c	2026-10-13 21:44:37.314042861 +0000
+@@ -272,6 +272,12 @@
+         if (!(in = ch[cn].item[n + 30])) continue;
+ 
+         remove_item_char(in);
++        // George 2026-10-13: a shop's own (always in stock) gear is always quality 100%, priced from that
++        // quality; gear players sell keeps its quality and the price that goes with it
++        if ((it[in].flags & IF_WEAR) && it[in].complexity > 0) {
++            it[in].quality = it[in].complexity;
++            if (!(it[in].flags & IF_NOENHANCE)) it[in].value = it[in].quality * 10;
++        }
+         store[s]->ware[n - ignore].cnt = 1;
+         store[s]->ware[n - ignore].always = 1;
+         store[s]->ware[n - ignore].item = it[in];
+diff -ru a/src/tool.c b/src/tool.c
+--- a/src/tool.c	2026-10-13 21:39:24.370667549 +0000
++++ b/src/tool.c	2026-10-13 21:39:24.375860012 +0000
+@@ -2035,7 +2035,7 @@
+ }
+ 
+ int _get_complexity_cost(struct item *in) {
+-    int m, v, cost, cnt = 0;
++    int m, v, cost, cnt = 0, equip = 0;
+ 
+     for (m = cost = 0; m < MAXMOD; m++) {
+         switch (in->mod_index[m]) {
+@@ -2052,6 +2052,10 @@
+         case V_LIGHT:
+             break;
+         default:
++            if (IS_EQUIP_BONUS(in->mod_index[m])) { // equipment bonuses (step 14): EQUIP_COMPLEXITY per point, linear
++                if ((v = in->mod_value[m]) > 0) equip += v * EQUIP_COMPLEXITY;
++                break;
++            }
+             if (in->mod_index[m] >= 0 && (v = in->mod_value[m]) > 0) {
+                 cost += (v * (v + 1)) * 125;
+                 cnt++;
+@@ -2062,7 +2066,7 @@
+     if (cnt >= 2) cost *= 2;
+     if (cnt >= 3) cost *= 2;
+ 
+-    return cost;
++    return cost + equip;
+ }
+ 
+ int get_complexity_cost(int in) {
+diff -ru a/src/tool.h b/src/tool.h
+--- a/src/tool.h	2026-10-13 21:39:24.372546729 +0000
++++ b/src/tool.h	2026-10-13 21:39:24.380044887 +0000
+@@ -120,6 +120,7 @@
+ double round(double);
+ char *bignumber(int val);
+ int get_complexity_cost(int in);
++int _get_complexity_cost(struct item *in);
+ int set_item_name(int in);
+ void kick_char_by_sID(int sID);
+ void heal_someone(int cn, int str_heal, int str_end, int str_mana);
+diff -ru a/zones/generic/cloth.itm b/zones/generic/cloth.itm
+--- a/zones/generic/cloth.itm	2026-10-13 21:24:00.982419353 +0000
++++ b/zones/generic/cloth.itm	2026-10-13 21:24:00.983989090 +0000
+@@ -4,7 +4,7 @@
+ value=5
+ sprite=50122
+ mod_index=V_ARMOR
+-mod_value=60
++mod_value=30
+ mod_index=V_MELEE_DEF
+ mod_value=2
+ mod_index=V_MAGIC_DEF
+@@ -18,7 +18,7 @@
+ value=5
+ sprite=50123
+ mod_index=V_ARMOR
+-mod_value=60
++mod_value=30
+ mod_index=V_MELEE_DEF
+ mod_value=2
+ mod_index=V_MAGIC_DEF
+@@ -32,7 +32,7 @@
+ value=5
+ sprite=50124
+ mod_index=V_ARMOR
+-mod_value=30
++mod_value=15
+ mod_index=V_MELEE_DEF
+ mod_value=1
+ mod_index=V_MAGIC_DEF
+@@ -46,7 +46,7 @@
+ value=5
+ sprite=50125
+ mod_index=V_ARMOR
+-mod_value=30
++mod_value=15
+ mod_index=V_MELEE_DEF
+ mod_value=1
+ mod_index=V_MAGIC_DEF
+@@ -60,7 +60,7 @@
+ value=5
+ sprite=50126
+ mod_index=V_ARMOR
+-mod_value=20
++mod_value=10
+ mod_index=V_MELEE_DEF
+ mod_value=1
+ mod_index=V_MAGIC_DEF
+@@ -82,7 +82,7 @@
+ value=10
+ sprite=50510
+ mod_index=V_ARMOR
+-mod_value=30
++mod_value=15
+ mod_index=V_MELEE_DEF
+ mod_value=1
+ mod_index=V_MAGIC_DEF
+@@ -97,7 +97,7 @@
+ value=10
+ sprite=50512
+ mod_index=V_ARMOR
+-mod_value=150
++mod_value=75
+ mod_index=V_MELEE_DEF
+ mod_value=5
+ mod_index=V_MAGIC_DEF
+@@ -112,7 +112,7 @@
+ value=10
+ sprite=50513
+ mod_index=V_ARMOR
+-mod_value=48
++mod_value=24
+ mod_index=V_MELEE_DEF
+ mod_value=3
+ mod_index=V_MAGIC_DEF
+@@ -127,7 +127,7 @@
+ value=15
+ sprite=51084
+ mod_index=V_ARMOR
+-mod_value=48
++mod_value=24
+ mod_index=V_MELEE_DEF
+ mod_value=1
+ mod_index=V_MAGIC_DEF
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 21:24:00.979172385 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 21:24:00.980862597 +0000
+@@ -99,6 +99,15 @@
+ # Both are worked out on you, never stored on the item: gear you trade away
+ # keeps only its own values, and better gear always stays better for the
+ # same player.
++#
++# Stealth and Perception (step 16; the old Stealth/Perception escape roll is
++# gone, anyone can walk away from a fight):
++# perception_stealth: Perception is this percent higher while the one
++#   looking is in stealth mode (careful), perception_fast: this percent lower
++#   in fast mode (careless). Normal mode uses Perception as it is.
++# stealth_endurance: a step in stealth mode costs this percent of a fast
++#   step's endurance (players). Players get no endurance back while in
++#   stealth mode, and drop to normal mode when exhausted. 0 = sneaking free.
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -114,6 +123,9 @@
+ clarity_luck=2
+ armor_class_percent=5
+ weapon_skill_percent=5
++perception_stealth=25
++perception_fast=25
++stealth_endurance=100
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------

@@ -1,0 +1,68 @@
+--- a/b/src/act.c	2026-10-14 00:56:09.807811493 +0000
++++ b/src/act.c	2026-10-14 00:56:09.821927456 +0000
+@@ -781,7 +781,14 @@
+     return 1;
+ }
+ 
+-int bless_someone(int co, int strength, int duration) {
++// How many sparkles Bless shows (the effect strength the client draws): the old Bless modifier,
++// skill value plus (INT + INT + WIS) / 5, divided by 4. Display only, Bless no longer changes stats.
++static int bless_shown(int cn) {
++    if (cn < 1 || cn >= MAXCHARS) return 0;
++    return (ch[cn].value[0][V_BLESS] + (ch[cn].value[0][V_INT] * 2 + ch[cn].value[0][V_WIS]) / 5) / 4;
++}
++
++static int bless_someone_shown(int co, int strength, int duration, int shown) {
+     int in, fre = -1;
+ 
+     if (!(fre = add_same_spell(co, IDR_BLESS))) return 0;
+@@ -796,10 +803,10 @@
+     in = create_item("bless_spell");
+     if (!in) return 0;
+ 
+-    it[in].mod_value[0] = strength / 4;
+-    it[in].mod_value[1] = strength / 4;
+-    it[in].mod_value[2] = strength / 4;
+-    it[in].mod_value[3] = strength / 4;
++    it[in].mod_value[0] = shown;
++    it[in].mod_value[1] = shown;
++    it[in].mod_value[2] = shown;
++    it[in].mod_value[3] = shown;
+ 
+     it[in].driver = IDR_BLESS;
+ 
+@@ -818,6 +825,10 @@
+     return 1;
+ }
+ 
++int bless_someone(int co, int strength, int duration) {
++    return bless_someone_shown(co, strength, duration, strength / 4);
++}
++
+ int bless_self(int cn) {
+     int in, fre = -1, duration, ms = 0;
+ 
+@@ -834,10 +845,10 @@
+     in = create_item("bless_spell");
+     if (!in) return 0;
+ 
+-    it[in].mod_value[0] = spellpower(cn, V_BLESS) / 4;
+-    it[in].mod_value[1] = spellpower(cn, V_BLESS) / 4;
+-    it[in].mod_value[2] = spellpower(cn, V_BLESS) / 4;
+-    it[in].mod_value[3] = spellpower(cn, V_BLESS) / 4;
++    it[in].mod_value[0] = bless_shown(cn);
++    it[in].mod_value[1] = bless_shown(cn);
++    it[in].mod_value[2] = bless_shown(cn);
++    it[in].mod_value[3] = bless_shown(cn);
+ 
+     it[in].driver = IDR_BLESS;
+ 
+@@ -876,7 +887,7 @@
+         duration = BLESSDURATION;
+         if (ch[cn].value[1][V_DURATION]) duration += BLESSDURATION * ch[cn].value[0][V_DURATION] / DURATION;
+ 
+-        if (!bless_someone(co, spellpower(cn, V_BLESS), duration)) return 0;
++        if (!bless_someone_shown(co, spellpower(cn, V_BLESS), duration, bless_shown(cn))) return 0;
+     }
+ 
+     if (!(ch[cn].flags & CF_NONOTIFY)) notify_area(ch[cn].x, ch[cn].y, NT_CHAR, cn, 0, 0);

@@ -1,0 +1,60 @@
+miner13:       # lvl 80
+name="Obsidian Golem"
+description="An ancient golem made of obsidian."
+sprite=42
+sound=1
+flag=CF_NOBODY
+flag=CF_INFRARED
+flag=CF_DEMON
+
+V_HP=85
+V_ENDURANCE=10
+V_MANA=0
+
+V_WIS=10
+V_INT=100
+V_AGI=100
+V_STR=100
+
+V_HAND=105
+V_DAGGER=0
+V_STAFF=0
+V_SWORD=0
+V_TWOHAND=0
+
+# fighting skills
+V_ATTACK=105
+V_PARRY=105
+V_WARCRY=0
+V_TACTICS=100
+V_SURROUND=0
+V_SPEEDSKILL=100
+
+# misc skills
+V_BARTER=0
+V_PERCEPT=100
+V_STEALTH=0
+
+# spells
+V_BLESS=0
+V_HEAL=0
+V_FREEZE=0
+V_MAGICSHIELD=0
+V_FLASH=0
+V_FIRE=0
+
+V_REGENERATE=1
+V_MEDITATE=0
+V_IMMUNITY=105
+
+balanced=1
+
+spell=weapon_spell_med
+spell=armor_spell_med
+
+driver=7
+arg="aggressive=1;helper=0;scavenger=10;startdist=20;chardist=0;stopdist=40;"
+group=3
+class=5
+;
+

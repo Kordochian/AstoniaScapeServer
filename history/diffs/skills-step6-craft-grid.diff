@@ -1,0 +1,87 @@
+diff --git a/src/player.c b/src/player.c
+index 81bac27..6dcf7e2 100644
+--- a/src/player.c
++++ b/src/player.c
+@@ -56,7 +56,7 @@
+ #include "config.h"
+ #include "skillreg.h"
+ 
+-#define SERVER_PROTOCOL_VERSION 6 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c)
++#define SERVER_PROTOCOL_VERSION 7 // 4: view range DISTVIEW instead of DISTMAX, 5: skill list + skill XP (skillreg.c), 6: furnace/anvil window (skilling.c), 7: its recipes carry their material
+ 
+ #define MAX_IDLE (TICKS * 30)
+ 
+diff --git a/src/skilling.c b/src/skilling.c
+index 7dbe694..9408f0b 100644
+--- a/src/skilling.c
++++ b/src/skilling.c
+@@ -673,7 +673,7 @@ static int craft_str(unsigned char *buf, int p, const char *s, int maxlen) {
+ 
+ static void send_craft_list(int cn, int rtype, int open) {
+     static unsigned char buf[16384];
+-    int nr, r, p, n = 0, lvl, need, sprite;
++    int nr, r, p, n = 0, lvl, need, sprite, m, nmat = 0, mat[256];
+     char text[256];
+ 
+     if (!(nr = ch[cn].player) || get_player_version(nr) < CRAFT_CLIENT_VERSION) return;
+@@ -686,7 +686,7 @@ static void send_craft_list(int cn, int rtype, int open) {
+     p = 7;
+     for (r = 0; r < nskdef && n < 255; r++) {
+         if (skdef[r].type != rtype) continue;
+-        if (p > (int)sizeof(buf) - 400) break;
++        if (p > (int)sizeof(buf) - 4000) break; // room for this recipe and the material list
+         if (skdef[r].make_res != -1) sprite = item_template(skdef[skdef[r].make_res].tmp)->sprite;
+         else sprite = item_template(skdef[r].make_tmp)->sprite;
+         need_text(r, text);
+@@ -698,12 +698,30 @@ static void send_craft_list(int cn, int rtype, int open) {
+         p += 2;
+         *(unsigned int *)(buf + p) = sprite;
+         p += 4;
++        if (skdef[r].nneed > 0) {
++            buf[p++] = skdef[r].need[0];
++            buf[p++] = min(skdef[r].needcnt[0], 255);
++            for (m = 0; m < nmat && mat[m] != skdef[r].need[0]; m++);
++            if (m == nmat) mat[nmat++] = skdef[r].need[0];
++        } else {
++            buf[p++] = 255;
++            buf[p++] = 0;
++        }
+         p = craft_str(buf, p, skdef[r].key, 31);
+         p = craft_str(buf, p, skdef[r].name, 39);
+         p = craft_str(buf, p, text, 160);
+         n++;
+     }
+     buf[6] = n;
++
++    // the materials: what the client groups by, and how many the character carries
++    buf[p++] = nmat;
++    for (m = 0; m < nmat; m++) {
++        buf[p++] = mat[m];
++        *(unsigned short *)(buf + p) = min(res_count(cn, mat[m]), 65535);
++        p += 2;
++        p = craft_str(buf, p, item_template(skdef[mat[m]].tmp)->name, 39);
++    }
+     *(unsigned short *)(buf + 1) = p;
+     psend(nr, (char *)buf, p);
+ }
+diff --git a/src/skilling.h b/src/skilling.h
+index d2d4a36..2e6380c 100644
+--- a/src/skilling.h
++++ b/src/skilling.h
+@@ -9,11 +9,13 @@ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith
+ 
+-// furnace / anvil window in the client (protocol 6). Uses a free command number of client.h (was SV_RESERVED3).
++// furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+-// then per recipe: nr, level, can make (0-100), xp u16, sprite u32, key, name, needs (each: u8 length + text).
++// then per recipe: nr, level, can make (0-100), xp u16, sprite u32, material (first need, 255 none),
++// material count, key, name, needs (strings: u8 length + text);
++// then material count, per material: nr, carried u16, name. The client groups anvil recipes by material.
+ // The client makes things by sending "/smelt <key> <count>" or "/smith <key> <count>".
+ #define SV_CRAFTLIST 56
+-#define CRAFT_CLIENT_VERSION 6
++#define CRAFT_CLIENT_VERSION 7
+ #define CRAFT_OPEN 1 // open the window (else only refresh it if it shows this station)
+ #define CRAFT_NOHAMMER 2 // anvil: the character has no hammer

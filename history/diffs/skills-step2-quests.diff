@@ -1,0 +1,298 @@
+diff -ruN old/src/command.c new/src/command.c
+--- a/src/command.c	2026-10-13 08:12:02.025365775 +0000
++++ b/src/command.c	2026-10-13 08:12:02.028479551 +0000
+@@ -1433,6 +1433,12 @@
+         else log_char(cn, LOG_SYSTEM, 0, "%s is level %d (%u XP).", skilldef[id].name, skill_get_level(cn, id), skill_get_xp(cn, id));
+         return 1;
+     }
++    if ((len = cmdcmp(ptr, "questxp", 7)) && (ch[cn].flags & CF_GOD)) { // /questxp <quest nr>: give that quest's skill XP, for testing quests.cfg
++        ptr += len;
++        while (isspace(*ptr)) ptr++;
++        skill_quest_reward(cn, atoi(ptr), 0);
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "exp", 3)) && (ch[cn].flags & CF_GOD)) {
+         ptr += len;
+         cmd_exp(cn, ptr);
+diff -ruN old/src/questlog.c new/src/questlog.c
+--- a/src/questlog.c	2026-10-13 08:12:02.030937060 +0000
++++ b/src/questlog.c	2026-10-13 08:12:02.033346811 +0000
+@@ -21,6 +21,7 @@
+ #include "exkordon.h"
+ #include "container.h"
+ #include "chat.h"
++#include "skillreg.h"
+ 
+ #define QLF_REPEATABLE (1u << 0)
+ #define QLF_XREPEAT (1u << 1)
+@@ -202,6 +203,7 @@
+     else val = min(level_value(ch[cn].level), val);
+ 
+     give_exp(cn, val);
++    skill_quest_reward(cn, qnr, cnt);
+     if (questlog[qnr].exp > 0) dlog(cn, 0, "Received %d exp for doing quest %s for the %d. time (nominal value %d exp)", val, questlog[qnr].name, (cnt + 1), questlog[qnr].exp);
+     sendquestlog(cn, ch[cn].player);
+ 
+diff -ruN old/src/skillreg.c new/src/skillreg.c
+--- a/src/skillreg.c	2026-10-13 08:12:01.959253360 +0000
++++ b/src/skillreg.c	2026-10-13 08:12:02.016589121 +0000
+@@ -18,9 +18,11 @@
+ #include "skill.h"
+ #include "database.h"
+ #include "mem.h"
++#include "questlog.h"
+ #include "skillreg.h"
+ 
+ #define SKILLS_CFG "zones/generic/skills.cfg"
++#define QUESTS_CFG "zones/generic/quests.cfg"
+ 
+ struct skilldef skilldef[MAXSKILLS];
+ int skill_xp_context = -1;
+@@ -353,7 +355,114 @@
+         if (skilldef[n].used) tmp++;
+     xlog("Loaded %d skills from %s (level 99 needs %u XP).", tmp, SKILLS_CFG, xp_table[99]);
+ 
++    return quests_load();
++}
++
++// ---------- quest rewards (zones/generic/quests.cfg) ----------
++
++static struct quest_reward quest_reward[MAXQUEST];
++
++// reads the skill XP every quest gives; needs the skill keys, so it runs after skills_load
++int quests_load(void) {
++    char *text, *ptr, name[64], value[256];
++    struct quest_reward qr;
++    int line = 1, inblock = 0, qnr = -1, cnt = 0, id;
++
++    bzero(quest_reward, sizeof(quest_reward));
++
++    if (!(text = read_file(QUESTS_CFG))) {
++        elog("Could not read %s. Quests give no skill XP.", QUESTS_CFG);
++        return 1;
++    }
++
++    ptr = text;
++    while ((ptr = cfg_line(ptr, name, value, &line))) {
++        if (name[0] == '#') continue;
++
++        if (value[0] == '!') {
++            elog("%s line %d: syntax error near \"%s\".", QUESTS_CFG, line, name);
++            goto fail;
++        }
++        if (value[0] == ':') {
++            if (inblock) {
++                elog("%s line %d: missing ; before %s:", QUESTS_CFG, line, name);
++                goto fail;
++            }
++            inblock = 1;
++            bzero(&qr, sizeof(qr));
++            qnr = -1;
++            continue;
++        }
++        if (value[0] == ';') {
++            if (!inblock) {
++                elog("%s line %d: ; without block.", QUESTS_CFG, line);
++                goto fail;
++            }
++            if (qnr < 0 || qnr >= MAXQUEST) {
++                elog("%s line %d: quest= must be a quest number from 0 to %d.", QUESTS_CFG, line, MAXQUEST - 1);
++                goto fail;
++            }
++            if (quest_reward[qnr].n) {
++                elog("%s line %d: quest %d has two blocks.", QUESTS_CFG, line, qnr);
++                goto fail;
++            }
++            quest_reward[qnr] = qr;
++            cnt++;
++            inblock = 0;
++            continue;
++        }
++        if (!inblock) {
++            elog("%s line %d: %s outside of a block.", QUESTS_CFG, line, name);
++            goto fail;
++        }
++
++        if (!strcasecmp(name, "quest")) qnr = atoi(value);
++        else if (!strcasecmp(name, "xp")) { // xp=KEY,amount
++            char *comma = strchr(value, ',');
++            if (!comma || qr.n >= MAXQUESTREWARD) {
++                elog("%s line %d: xp must be KEY,amount (at most %d per quest).", QUESTS_CFG, line, MAXQUESTREWARD);
++                goto fail;
++            }
++            *comma = 0;
++            if ((id = skill_lookup_key(value)) == -1) {
++                elog("%s line %d: unknown skill %s.", QUESTS_CFG, line, value);
++                goto fail;
++            }
++            qr.id[qr.n] = id;
++            qr.xp[qr.n] = max(0, atoi(comma + 1));
++            qr.n++;
++        } else {
++            elog("%s line %d: unknown setting %s.", QUESTS_CFG, line, name);
++            goto fail;
++        }
++    }
++    xfree(text);
++
++    if (inblock) {
++        elog("%s: missing ; at end of file.", QUESTS_CFG);
++        return 0;
++    }
++    xlog("Loaded skill rewards for %d quests from %s.", cnt, QUESTS_CFG);
+     return 1;
++
++fail:
++    xfree(text);
++    return 0;
++}
++
++// gives the skill XP of quest qnr; cnt = how often it was done before (repeats give less)
++void skill_quest_reward(int cn, int qnr, int cnt) {
++    struct quest_reward *qr;
++    int n, xp;
++
++    if (qnr < 0 || qnr >= MAXQUEST) return;
++    qr = &quest_reward[qnr];
++
++    for (n = 0; n < qr->n; n++) {
++        if (!(xp = questlog_scale(cnt, qr->xp[n]))) continue;
++        log_char(cn, LOG_SYSTEM, 0, "\260c3Quest reward: %d %s XP.", xp, skilldef[qr->id[n]].name);
++        add_skill_xp(cn, qr->id[n], xp);
++    }
+ }
+ 
+ static struct skill_ppd *get_ppd(int cn) {
+diff -ruN old/src/skillreg.h new/src/skillreg.h
+--- a/src/skillreg.h	2026-10-13 08:12:02.019550742 +0000
++++ b/src/skillreg.h	2026-10-13 08:12:02.022656928 +0000
+@@ -39,6 +39,14 @@
+     char feed_key[MAXSKILLFEED][32];
+ };
+ 
++#define MAXQUESTREWARD 8
++
++struct quest_reward { // skill XP a quest gives, from zones/generic/quests.cfg
++    int n;
++    int id[MAXQUESTREWARD];
++    int xp[MAXQUESTREWARD];
++};
++
+ struct skill_ppd {
+     unsigned int xp[MAXSKILLS];
+ };
+@@ -61,3 +69,5 @@
+ int skill_weapon_id(int cn);
+ void skills_init_player(int cn);
+ int skills_show(int cn, char *filter);
++int quests_load(void);
++void skill_quest_reward(int cn, int qnr, int cnt);
+diff -ruN old/zones/generic/quests.cfg new/zones/generic/quests.cfg
+--- a/zones/generic/quests.cfg	1970-01-01 00:00:00.000000000 +0000
++++ b/zones/generic/quests.cfg	2026-10-13 08:12:02.614301988 +0000
+@@ -0,0 +1,105 @@
++# =====================================================================
++# quests.cfg - skill XP rewards for quests (Astonia rebuild)
++# =====================================================================
++#
++# One block per quest. The block name is only a label.
++#
++#   quest=          quest number (the list at the end of this file)
++#   xp=KEY,amount   skill XP the quest gives (KEY from skills.cfg, up to 8)
++#
++# Doing a repeatable quest again gives less: 82%, 68%, 56% ... down to 15%
++# (questlog_scale in questlog.c). The global rate= in skills.cfg applies.
++# Read when an area starts. A quest with no block here gives no XP.
++# For scale (XP for one more level): skills starting at 1 need 80 for level 2
++# and 88 more for level 3; attributes (start 10) need about 190 for 11;
++# powers like Hitpoints (start 25) need about 790 for 26. /questxp <nr>
++# (god) gives a quest's XP without doing it, for testing.
++
++LYDIAS_POTION:
++quest=0
++xp=ATTACK,200
++xp=AGILITY,200
++;
++
++# Quest numbers (from questlog.c):
++#     0  Lydia's Potion                   James (Cameron)
++#     1  Find the Magic Item              Gwendylon (Cameron)
++#     2  The Second Skull                 Gwendylon (Cameron)
++#     3  The Third Skull                  Gwendylon (Cameron)
++#     4  Kill the Foul Magician           Gwendylon (Cameron)
++#     5  Bear Hunt                        Yoakin (Cameron)
++#     6  A Fool's Request                 Nook (Cameron)
++#     7  Mages Gone Berserk               Guiwynn (Cameron)
++#     8  The Recipe for Happiness         Guiwynn (Cameron)
++#     9  Knightly Troubles                Logain (Cameron)
++#    10  Loisan's House                   Seymour (Aston)
++#    11  The Silver Skull                 Seymour (Aston)
++#    12  Find Loisan                      Seymour (Aston)
++#    13  Jeepers Creepers                 Kelly (Aston)
++#    14  Underground Park Shrines         Kelly (Aston)
++#    15  In Search of Clara               Kelly (Aston)
++#    16  The Astronomer's Notes           Gerassimo (Aston)
++#    17  The Unwanted Tenants             Reskin (Cameron)
++#    18  The Toughest Monster             Sir Jones (Aston)
++#    19  The Toughestest Monster          Sir Jones (Aston)
++#    20  Wanted: Occult Staff             Carlos (Aston)
++#    21  Slay the Swampbeast              Clara (Swamp)
++#    22  Impish Bear Hunt                 William/Imp (Forest)
++#    23  Praying Mantis Stew              William (Forest)
++#    24  The Spider Queen                 Hermit (Forest)
++#    25  Earning the Lockpick             Guildmaster (Exkordon)
++#    26  Extortion                        Guildmaster (Exkordon)
++#    27  Price Fix Exposed                Guildmaster (Exkordon)
++#    28  The Golden Lockpick              Guildmaster (Exkordon)
++#    29  Dirty Hands                      Sanwyn (Exkordon)
++#    30  The Old Governor's Cross         Skeleton (Exkordon)
++#    31  Spider Poison                    Cervik (Exkordon)
++#    32  Join the Tribe                   Kalanur (Nomad Plains)
++#    33  Searching Sarkilar               Kir Laas (Nomad Plains)
++#    34  A Golden Statue                  Kir Garan (Nomad Plains)
++#    35  Smuggler Book                    Imp. Commander (Below Aston 2)
++#    36  Contraband                       Imp. Commander (Below Aston 2)
++#    37  Smuggler Leader                  Imp. Commander (Below Aston 2)
++#    38  The Family Heirloom              Aristocrat (Bran. Forest)
++#    39  Bear Hunt - Again                Yoatin (Bran. Forest)
++#    40  The Jewels of Brannington        Count B. (Brannington)
++#    41  A Grolm's Spoils                 Brenneth (Brannington)
++#    42  A Thief's Loot                   Brenneth (Brannington)
++#    43  A Necromancer's Notes            Brenneth (Brannington)
++#    44  A Rest Disturbed                 Spirit (Brannington)
++#    45  Searching a Miner's Tool         Broklin (Brannington)
++#    46  A Miner's Vengeance              Broklin (Brannington)
++#    47  A Miner's Misery                 Dwarven Chief (Grimroot)
++#    48  A Miner's Bane                   Dwarven Chief (Grimroot)
++#    49  A Miner's Anguish                Dwarven Chief (Grimroot)
++#    50  A Miner Lost                     Dwarven Chief (Grimroot)
++#    51  Lizard's Teeth                   Dwarven Shaman (Grimroot)
++#    52  Collecting Berries               Dwarven Shaman (Grimroot)
++#    53  Elitist Head                     Dwarven Shaman (Grimroot)
++#    54  Looking for Caligar              Kelly (Aston)
++#    55  Fighting Styles                  Glori (Caligar)
++#    56  Obelisk Hunt                     Glori (Caligar)
++#    57  Find the Keyparts                Glori (Caligar)
++#    58  Assemble the Key                 Glori (Caligar)
++#    59  Amazon Invaders                  Homdem (Caligar)
++#    60  The Emperor's Plaque             Kelly (Aston)
++#    61  The Imperial Vault               Carlos (Aston)
++#    62  Tunnel Magics                    Rouven (Imperial Vault)
++#    63  Chronicles of Seyan              Rouven (Imperial Vault)
++#    64  Finding Arkhata                  Guard (Brannington)
++#    65  Rammy's Crown                    Rammy (Arkhata)
++#    66  Ishtar's Bracelet                Jaz (Arkhata)
++#    67  Queen Fiona's Ring               Queen Fiona (Arkhata)
++#    68  A Shopkeeper's Fright            Ramin (Arkhata)
++#    69  The Monks' Request               Johnatan (Arkhata)
++#    70  The Book Eater                   Tracy (Arkhata)
++#    71  Entrance Passes                  Rammy (Arkhata)
++#    72  The Source                       Jada (Arkhata)
++#    73  Ceremonial Pot                   Pot Maker (Arkhata)
++#    74  The Lost Secrets                 Thai Pan (Arkhata)
++#    75  A Kidnapped Student              Trainer (Arkhata)
++#    76  The Traitors                     Clerk (Arkhata)
++#    77  The Blue Harpy                   Hunter (Arkhata)
++#    78  The Mysterious Language          Johnatan (Arkhata)
++#    79  Forest Robbers                   Boreas (Forest)
++#    80  Warm Clothes                     Blake (Minoa)

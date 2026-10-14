@@ -1,0 +1,98 @@
+Checkpoint_teleport1:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="1400AE00000001"   # x=20, y=174, a=38, quiet=1
+;
+
+Checkpoint_teleport01:
+name="Checkpoint Teleport"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="2500EA00000001"   # x=37, y=234, a=38, quiet=1
+;
+
+Checkpoint_teleport2:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="3C00DA00000001"   # x=60, y=218, a=38, quiet=1
+;
+
+Checkpoint_teleport02:
+name="Checkpoint Teleport"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="0A007A00000001"   # x=10, y=122, a=38, quiet=1
+;
+
+Checkpoint_teleport3:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="05002600000001"   # x=5, y=40, a=38, quiet=1
+;
+
+Checkpoint_teleport03:
+name="Checkpoint Teleport"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="24008900000001"   # x=36, y=137, a=38, quiet=1
+;
+
+Checkpoint_teleport4:
+name="Checkpoint Teleport"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="1900B500000001"   # x=25, y=181, a=38, quiet=1
+;
+
+Checkpoint_teleport04:
+name="Checkpoint Teleport"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="15001100000001"   # x=21, y=17, a=38, quiet=1
+;
+
+Checkpoint_teleport5:
+name="Checkpoint Teleport"
+description="A cave leading somewhere."
+sprite=23138
+flag=IF_USE
+driver=10
+arg="1C00C200000001"   # x=28, y=194, a=38, quiet=1
+;
+
+Checkpoint_teleport05:
+name="Checkpoint Teleport"
+description="A cave leading somewhere."
+sprite=23138
+flag=IF_USE
+driver=10
+arg="04007B00000001"   # x=4, y=123, a=38, quiet=1
+;
+
+Checkpoint_teleport6:
+name="Checkpoint Teleport"
+description="This will magically teleport you where you came from."
+sprite=19
+flag=IF_USE
+driver=10
+arg="3500EB00000001"   # x=53, y=235, a=38, quiet=1
+;

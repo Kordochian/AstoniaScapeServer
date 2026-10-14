@@ -1,0 +1,153 @@
+basement_teleport:
+name="Ladder"
+description="Down to the damp, dark basement."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="5700ED00000001"   # x=87, y=237, a=38, quiet=1
+;
+
+basement_teleport2:
+name="Ladder"
+description="Going up!."
+sprite=16187
+flag=IF_USE
+driver=10
+arg="5C00ED00000001"   # x=92 (0x5C), y=237 (0xED), a=38, quiet=1
+;
+
+
+cavern_teleport:
+name="Cave"
+description="Dark and Creepy."
+sprite=23138
+flag=IF_USE
+driver=10
+arg="E200A900000001"   # x=226, y=169, a=38, quiet=1
+;
+
+cavern_teleport2:
+name="Cave"
+description="Dark and Creepy."
+sprite=23139
+flag=IF_USE
+driver=10
+arg="4F00EE00000001"   # x=79, y=238, a=38, quiet=1
+;
+
+outpost_exit:
+name="steptrap"
+sprite=0
+flag=IF_STEPACTION
+driver=10
+arg="40004D00000013"   # x=4, y=77, a=19, quiet=1
+;
+
+hidden_teleport:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="DA001F00000001"   # x=218, y=31, a=38, quiet=1
+;
+
+hidden_teleport2:
+name="Ladder"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="30002000000001"   # x=58, y=32, a=38, quiet=1
+;
+
+shed_teleport:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="4700A000000001"   # x=71, y=160, a=38, quiet=1
+;
+
+shed_teleport2:
+name="Ladder"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="40004700000001"   # x=64, y=71, a=38, quiet=1
+;
+
+shed_teleport3:
+name="Ladder"
+description="A ladder leading up."
+sprite=50019
+flag=IF_USE
+driver=10
+arg="58006B00000001"   # x=88, y=107, a=38, quiet=1
+;
+
+shed_teleport4:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="4700AD00000001"   # x=71, y=173, a=38, quiet=1
+;
+
+bridge_teleport:
+name="Bridge"
+description="This is the only way up."
+sprite=15051
+flag=IF_USE
+driver=10
+arg="70006D00000001"   # x=112, y=109, a=38, quiet=1
+;
+
+bridge_teleport2:
+name="Bridge side"
+description="Going down."
+sprite=20918
+flag=IF_USE
+driver=10
+arg="28006200000001"   # x=40, y=98, a=38, quiet=1tomb_tele:
+;
+
+steptraps:
+name="steptrap"
+sprite=0
+flag=IF_STEPACTION
+driver=10
+arg="4800B300000001"   # x=72, y=179, a=38, quiet=1
+;
+
+tomb_teleport2:
+name="Hole"
+description="Going down."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="3E00AD00000001"   # x=62, y=173, a=38, quiet=1
+;
+
+tomb_teleport2:
+name="Ladder"
+description="Going up!."
+sprite=16187
+flag=IF_USE
+driver=10
+arg="6A001F00000001"   # x=106, y=31, a=38, quiet=1
+;
+
+tomb_tele:
+name="steptrap"
+sprite=0
+flag=IF_STEPACTION
+driver=10
+arg="4800B300000001"   # x=72, y=179, a=38, quiet=1
+;
+
+
+

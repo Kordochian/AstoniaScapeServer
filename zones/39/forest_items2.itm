@@ -1,0 +1,513 @@
+treasure_sign2:
+name="Sign"
+description="Pathew's Shed, Keep out."
+sprite=16262
+flag=IF_USE
+flag=IF_FRONTWALL
+;
+
+Book_chest170:
+name="Files"
+description="A stack of files from the former leader of Checkpoint 2."
+sprite=15532
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AA000000000000"
+;
+treasure_170:
+name="Files"
+description="Some files from the desk of the former leader of Checkpoint 2."
+value=0
+sprite=15528
+flag=IF_TAKE
+flag=IF_QUEST
+ID=1400000F     # developer 20, ID 15
+;
+
+
+dead_guy:
+name="Corpse"
+description="Leader of check-point two"
+sprite=51633
+flag=IF_USE
+flag=IF_MOVEBLOCK
+;
+
+welcome_sign:
+name="Sign"
+description="Rest Easy, all are welcome."
+sprite=50120
+flag=IF_USE
+flag=IF_FRONTWALL
+;
+
+tomb_tele:
+name="steptrap"
+sprite=0
+flag=IF_STEPACTION
+driver=10
+arg="4800B300000001"   # x=72, y=179, a=38, quiet=1
+;
+
+tomb_teleport:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="3E00AD00000001"   # x=62, y=173, a=38, quiet=1
+;
+
+
+spade:
+name="Spade"
+description="A stick of wood with a handle on one end and a metal blade√ on the other."
+sprite=51069
+value=25
+flag=IF_TAKE
+flag=IF_USE
+driver=77
+;
+
+
+Ultimate_chest173:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AD0000000000FF"    # nr 173, no key, 1 week respawn time
+;
+treasure_173:
+name="Paladin's Blade"
+description="A large Blade once used in the last battle."
+sprite=10374
+mod_index=V_WEAPON
+mod_value=506
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_TWOHAND
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_TWOHAND
+flag=IF_NOENHANCE
+;
+
+Ultimate_chest174:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AE0000000000FF"    # nr 174, no key, 1 week respawn time
+;
+
+treasure_174:
+name="Barbed Dagger"
+description="A gruesome dagger once used in the last battle."
+sprite=10383
+mod_index=V_WEAPON
+mod_value=494
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_DAGGER
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_DAGGER
+flag=IF_NOENHANCE
+;
+
+Ultimate_chest175:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AF0000000000FF"    # nr 175, no key, 1 week respawn time
+;
+treasure_175:
+name="Paladin's Short-Sword"
+description="A small blade once used in the last battle"
+sprite=10378
+mod_index=V_WEAPON
+mod_value=500
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_SWORD
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_SWORD
+flag=IF_NOENHANCE
+;
+
+Ultimate_chest176:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="BO0000000000FF"    # nr 176, no key, 1 week respawn time
+;
+treasure_176:
+name="Runic Scepter"
+description="A large staff once used in the last battle ."
+sprite=10400
+mod_index=V_WEAPON
+mod_value=498
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_STAFF
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_STAFF
+flag=IF_NOENHANCE
+;
+
+Fire_Place:
+mod_index=V_LIGHT
+mod_value=200
+sprite=13232
+flag=IF_MOVEBLOCK
+flag=IF_USE
+;
+
+drink_dragons_breath:
+name="Dragon's Breath"
+description="A black strong smelling brew... Dare you taste it?"
+min_level=70
+value=500
+sprite=10002
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="08"
+;
+
+drink_seyans_honor:
+name="Seyan's Honor"
+description="Brewed to please a seyan... A strong drink."
+min_level=70
+value=500
+sprite=10301
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="09"
+;
+
+drink_mages_flash:
+name="Mage's Flash"
+description="A dazzling sensation... certainly a must for mages!"
+min_level=70
+value=500
+sprite=10299
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0A"
+;
+
+drink_warriors_rage:
+name="Warrior's Rage"
+description="Red, hot, and furious! This ale will make warriors froth at the mouth!"
+min_level=70
+value=500
+sprite=10300
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0F"
+;
+
+drink_brannington_ale:
+name="Brannington Ale"
+description="A locally brewed ale. Beginner beer drinkers start here."
+min_level=70
+value=500
+sprite=10002
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0B"
+;
+
+drink_apple_juice:
+name="Apple Juice"
+description="Fresh from the tree!"
+value=500
+sprite=10429
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0C"
+;
+
+drink_orange_juice:
+name="Orange Juice"
+description="Sweet and refreshing!"
+value=500
+sprite=10429
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0D"
+;
+
+drink_milk:
+name="Milk"
+description="Drink milk!"
+value=500
+sprite=10429
+flag=IF_TAKE
+flag=IF_USE
+driver=88
+arg="0E"
+;
+
+hamburger:
+name="Hamburger"
+description="A meaty, juicy hamburger."
+value=18
+sprite=15220
+flag=IF_TAKE
+flag=IF_USE
+driver=64
+arg="00" # type 0 food
+;
+
+chili:
+name="Chili"
+description="A steaming bowl of chili."
+value=38
+sprite=15222
+flag=IF_TAKE
+flag=IF_USE
+driver=64
+arg="01" # type 1 food
+;
+
+Vomit:
+name="Vomit"
+description="A meaty, juicy vomit sack."
+value=18
+sprite=15220
+flag=IF_TAKE
+flag=IF_USE
+driver=64
+arg="00" # type 0 food
+;
+
+Postedx:
+name="Please Read"
+description="Only one stair to be used on special occasions - Ram."
+sprite=50120
+flag=IF_USE
+flag=IF_FRONTWALL
+;
+
+Birthday_chest177:
+name="Chest"
+description="A stone chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AD0000000000FF"    # nr 177, no key, 1 week respawn time
+;
+
+
+Strange_Ring:
+name="Strange Ring"
+description="A strange ring, it feels ice cold to the touch" 
+value=25
+sprite=10355
+flag=IF_Take
+flag=IF_QUEST
+;
+
+
+Ultimate_chest173:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AD0000000000FF"    # nr 173, no key, 1 week respawn time
+;
+treasure_173:
+name="Paladin's Blade"
+description="A large Blade once used in the last battle."
+sprite=10374
+mod_index=V_WEAPON
+mod_value=506
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_TWOHAND
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_TWOHAND
+;
+
+Ultimate_chest174:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AE0000000000FF"    # nr 174, no key, 1 week respawn time
+;
+treasure_174:
+name="Barbed Dagger"
+description="A gruesome dagger once used in the last battle."
+sprite=10383
+mod_index=V_WEAPON
+mod_value=494
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_DAGGER
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_DAGGER
+;
+
+Ultimate_chest175:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="AF0000000000FF"    # nr 175, no key, 1 week respawn time
+;
+treasure_175:
+name="Paladin's Short-Sword"
+description="A small blade once used in the last battle"
+sprite=10378
+mod_index=V_WEAPON
+mod_value=500
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_SWORD
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_SWORD
+;
+
+Ultimate_chest176:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="BO0000000000FF"    # nr 176, no key, 1 week respawn time
+;
+treasure_176:
+name="Runic Scepter"
+description="A large staff once used in the last battle ."
+sprite=10400
+mod_index=V_WEAPON
+mod_value=498
+mod_index=V_DEFENSE
+mod_value=-19
+req_index=V_STAFF
+req_value=101
+value=0
+flag=IF_TAKE
+flag=IF_WNRHAND
+flag=IF_STAFF
+;
+
+
+knight_chest10:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="0A000000003000"    # nr 10, no key,  2 day respawn time
+;
+treasure_10:
+name="Pile of Coins"
+description="A small pile of coins."
+sprite=104
+flag=IF_TAKE
+flag=IF_MONEY
+value=15000
+;
+
+knight_chest11:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="0A000000003000"    # nr 10, no key,  2 day respawn time
+;
+treasure_11:
+name="Pile of Coins"
+description="A small pile of coins."
+sprite=104
+flag=IF_TAKE
+flag=IF_MONEY
+value=15000
+;
+
+knight_chest12:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="0A000000003000"    # nr 10, no key,  2 day respawn time
+;
+treasure_12:
+name="Pile of Coins"
+description="A small pile of coins."
+sprite=104
+flag=IF_TAKE
+flag=IF_MONEY
+value=15000
+;
+
+knight_chest13:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="0A000000003000"    # nr 10, no key,  2 day respawn time
+;
+treasure_13:
+name="Pile of Coins"
+description="A small pile of coins."
+sprite=104
+flag=IF_TAKE
+flag=IF_MONEY
+value=15000
+;

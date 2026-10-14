@@ -1,0 +1,79 @@
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 17:57:17.931193223 +0000
++++ b/src/skilling.c	2026-10-13 17:57:18.126572025 +0000
+@@ -69,6 +69,7 @@
+     int xp; // XP per ore / per item made
+     int power; // tool power
+     int ores, respawn, empty_sprite; // rock, tree, plant
++    int stack_sprite[4]; // resource: sprite for a stack of 1, 2-9, 10-99, 100+ (0 = the template's)
+ 
+     char skill_key[32]; // rock, tree, plant, recipe: skill it uses (empty = the type's default)
+     int skill; // skill registry id, -1 = none
+@@ -296,6 +297,13 @@
+         else if (!strcasecmp(name, "ores") || !strcasecmp(name, "count")) d->ores = max(1, atoi(value));
+         else if (!strcasecmp(name, "respawn")) d->respawn = max(1, atoi(value));
+         else if (!strcasecmp(name, "empty_sprite")) d->empty_sprite = atoi(value);
++        else if (!strcasecmp(name, "stack_sprites")) { // stack_sprites=1,2-9,10-99,100+ (later ones optional)
++            char *v = value;
++            for (n = 0; n < 4 && v && *v; n++) {
++                d->stack_sprite[n] = atoi(v);
++                if ((v = strchr(v, ','))) v++;
++            }
++        }
+         else if (!strcasecmp(name, "ore") || !strcasecmp(name, "gives")) cfgcopy(d->ore_key, value, sizeof(d->ore_key));
+         else if (!strcasecmp(name, "skill")) cfgcopy(d->skill_key, value, sizeof(d->skill_key));
+         else if (!strcasecmp(name, "tool")) cfgcopy(d->tool_key, value, sizeof(d->tool_key));
+@@ -496,11 +504,29 @@
+     return *(unsigned int *)(it[in].drdata);
+ }
+ 
++// sprite tier of a stack: 1, 2-9, 10-99, 100+
++static int stack_tier(unsigned int cnt) {
++    if (cnt >= 100) return 3;
++    if (cnt >= 10) return 2;
++    if (cnt >= 2) return 1;
++    return 0;
++}
++
+ static void stack_set(int in, unsigned int cnt) {
+-    int tmp, d;
++    int tmp, d, t;
+ 
+     *(unsigned int *)(it[in].drdata) = cnt;
+-    if ((d = def_by_item(in)) != -1 && (tmp = skdef[d].tmp)) it[in].value = item_template(tmp)->value * cnt;
++    if ((d = def_by_item(in)) != -1 && (tmp = skdef[d].tmp)) {
++        it[in].value = item_template(tmp)->value * cnt;
++        // bigger stacks look bigger: the highest tier with a sprite at or below this count
++        it[in].sprite = item_template(tmp)->sprite;
++        for (t = stack_tier(cnt); t >= 0; t--) {
++            if (skdef[d].stack_sprite[t]) {
++                it[in].sprite = skdef[d].stack_sprite[t];
++                break;
++            }
++        }
++    }
+     sprintf(it[in].description, "%s %.60s.", bignumber(cnt), it[in].name);
+     it[in].flags |= IF_FORCEUPDATE;
+ }
+@@ -579,7 +605,7 @@
+     unsigned int a, b;
+ 
+     if (!cn) { // created: make sure the count and description are set
+-        if (!stack_count(in)) stack_set(in, 1);
++        stack_set(in, stack_count(in) ? stack_count(in) : 1); // also picks the stack sprite
+         return;
+     }
+     if (!it[in].carried) return;
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 17:57:18.119971757 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 17:57:18.128607394 +0000
+@@ -7,6 +7,9 @@
+ #
+ # type=resource   something that stacks in the inventory (ore, bars, logs,
+ #                 arrows ...)   id=  item=
++#                 stack_sprites=A,B,C,D  (optional) sprites for a stack of
++#                 1, 2-9, 10-99 and 100+; missing or 0 uses the next smaller
++#                 one, then the item's own sprite
+ #
+ # Gathering spots on the map (rock, tree, plant):
+ #     id=  item=  ore=RESOURCE (what it gives)  level=  xp= (per item)

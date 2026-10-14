@@ -1,0 +1,132 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 23:40:14.929461490 +0000
++++ b/src/act.c	2026-10-13 23:40:14.989223482 +0000
+@@ -379,13 +379,11 @@
+                         maxhit / 1000.0,
+                         dam / 1000.0);
+ 
+-    // skill XP: the attacker's weapon skill gets XP for the damage done (in hurt()),
+-    // the defender gets Parry XP for every attack that misses, and Armor Class XP for every hit
+-    // taken while wearing armour (step 15)
++    // skill XP: the attacker gets XP for the damage done (in hurt()): Strength in fast mode, else the
++    // weapon skill (Attack for players). The defender gets Defence XP for every attack that misses.
+     if (!dam && (ch[co].flags & CF_PLAYER)) skill_used(co, skill_for_value(V_PARRY));
+-    if (dam && (ch[co].flags & CF_PLAYER) && ch[co].value[0][V_ARMOR] > 0) skill_used(co, skill_for_value(V_ARMORSKILL));
+ 
+-    skill_xp_context = skill_weapon_id(cn);
++    skill_xp_context = ch[cn].speed_mode == SM_FAST ? skill_for_value(V_STR) : skill_weapon_id(cn);
+     hurt(co, dam, cn, ATTACK_DIV, combat_armor_soak, 90);
+     skill_xp_context = -1;
+ 
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 23:40:14.978218495 +0000
++++ b/src/skilling.c	2026-10-13 23:40:14.989266532 +0000
+@@ -105,7 +105,7 @@
+ static int body_control_gather = 2, clarity_luck = 2;
+ // config: Magic XP per successful cast. Fire and Lightning default to 0: they train Magic only through the
+ // damage they deal (dmg_xp of MAGIC in skills.cfg)
+-static int spell_xp_heal = 15, spell_xp_bless = 15, spell_xp_freeze = 15, spell_xp_magicshield = 15;
++static int spell_xp_heal = 8, spell_xp_bless = 8, spell_xp_freeze = 8, spell_xp_magicshield = 8;
+ static int spell_xp_fire = 0, spell_xp_lightning = 0;
+ // config: XP per step by speed mode. walk_xp is the base per step, the others are percent of it per skill
+ static int walk_xp = 2, fast_athletics = 50, fast_perception = 50, stealth_stealth = 100, stealth_athletics = 25;
+@@ -568,7 +568,7 @@
+     bless_gather = bless_craft = 10;
+     bless_gather_strength = bless_craft_strength = 0;
+     body_control_gather = clarity_luck = 2;
+-    spell_xp_heal = spell_xp_bless = spell_xp_freeze = spell_xp_magicshield = 15;
++    spell_xp_heal = spell_xp_bless = spell_xp_freeze = spell_xp_magicshield = 8;
+     spell_xp_fire = spell_xp_lightning = 0;
+     walk_xp = 2;
+     fast_athletics = fast_perception = 50;
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 23:40:14.986818746 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 23:40:14.991855538 +0000
+@@ -162,10 +162,10 @@
+ wisdom_bonus=0
+ athletics_speed=50
+ immunity_defence=50
+-spell_xp_heal=15
+-spell_xp_bless=15
+-spell_xp_freeze=15
+-spell_xp_magicshield=15
++spell_xp_heal=8
++spell_xp_bless=8
++spell_xp_freeze=8
++spell_xp_magicshield=8
+ spell_xp_fire=0
+ spell_xp_lightning=0
+ walk_xp=2
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 23:40:14.981568530 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 23:40:14.991383111 +0000
+@@ -28,10 +28,12 @@
+ #   description=    help text
+ #
+ # Where XP comes from in the code (search for skill_used / skill_xp_context):
+-#   melee hit -> ATTACK dmg_xp (feeds Strength, Hitpoints, Athletics),
+-#   an attack on you misses or hits your armour -> DEFENCE use_xp,
+-#   spell cast -> MAGIC use_xp, Fire/Lightning damage -> MAGIC dmg_xp,
+-#   warcry -> WARCRY, sneaking (stealth mode walk) -> STEALTH per step,
++#   melee hit -> ATTACK dmg_xp in normal/stealth mode, STRENGTH dmg_xp in
++#   fast mode (both feed Hitpoints, Endurance, Athletics),
++#   an attack on you misses -> DEFENCE use_xp,
++#   spell cast -> spell_xp_* in skilling.cfg, Fire/Lightning damage -> MAGIC
++#   dmg_xp, warcry -> WARCRY, walking in fast/stealth mode -> walk_xp in
++#   skilling.cfg (Athletics, Perception, Stealth),
+ #   spotting a character in stealth mode -> PERCEPTION use_xp (see.c),
+ #   resting while hurt or with low mana -> REGENERATE (about once per second).
+ #   MINING, WOODCUTTING, FARMING (per resource), SMITHING and CRAFTING (per
+@@ -47,7 +49,7 @@
+ config:
+ xp_base=80
+ xp_growth=110
+-rate=100
++rate=75
+ retire=V_WIS
+ retire=V_INT
+ retire=V_AGI
+@@ -104,11 +106,10 @@
+ start=1
+ max=99
+ dmg_xp=12
+-feed=STRENGTH,100
+ feed=HP,33
+ feed=ENDURANCE,10
+ feed=ATHLETICS,25
+-description="Melee hit chance. Needed to wield weapons, and raises the stats of the weapon you hold. Trained by melee damage."
++description="Melee hit chance. Needed to wield weapons, and raises the stats of the weapon you hold. Trained by melee damage in normal and stealth mode."
+ ;
+ 
+ STRENGTH:
+@@ -118,7 +119,11 @@
+ value=V_STR
+ start=1
+ max=99
+-description="Melee max hit. Gets the same XP as Attack."
++dmg_xp=12
++feed=HP,33
++feed=ENDURANCE,10
++feed=ATHLETICS,25
++description="Melee max hit. Trained by melee damage in fast mode."
+ ;
+ 
+ DEFENCE:
+@@ -132,7 +137,7 @@
+ use_xp=5
+ feed=HP,10
+ feed=ATHLETICS,25
+-description="Avoids melee hits and resists spells. Needed to wear armour, and raises the stats of the armour you wear. Trained when attacks on you miss or hit your armour."
++description="Avoids melee hits and resists spells. Needed to wear armour, and raises the stats of the armour you wear. Trained when attacks on you miss."
+ ;
+ 
+ WARCRY:
+@@ -184,7 +189,7 @@
+ # XP per cast is set per spell in skilling.cfg (spell_xp_heal ... in config:),
+ # so use_xp is not used for spells. Fire and Lightning train Magic by damage.
+ use_xp=0
+-dmg_xp=8
++dmg_xp=4
+ feed=MANA,25
+ description="The power of every spell: Fire, Lightning, Freeze, Heal, Bless and Magic Shield. Trained by casting."
+ ;

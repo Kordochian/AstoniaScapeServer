@@ -1,0 +1,140 @@
+# Part of Astonia Server 3.5 (c) Daniel Brockhaus. Please read license.txt.
+#
+# Windows x64 build (Windows Server 2019 and later) with MinGW-w64.
+#
+#   MSYS2 (MINGW64 shell) on Windows:
+#     pacman -S make mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib \
+#               mingw-w64-x86_64-libmariadbclient mingw-w64-x86_64-argon2
+#     make -f Makefile.win WINLIBS="-lmariadb -lz -largon2"
+#
+#   Cross compiling from Linux:
+#     make -f Makefile.win CC=x86_64-w64-mingw32-gcc-posix WINDEPS=/path/to/win64
+#
+# Produces server35.exe, create_account.exe, create_character.exe,
+# chatserver.exe and the zone drivers in runtime/<area>/*.dll.
+#
+# The zone DLLs call back into the server, so server35.exe exports its symbols
+# and writes an import library (.wobj/libserver35.a) the DLLs link against.
+
+CC?=x86_64-w64-mingw32-gcc
+WINDEPS?=/mingw64
+DEBUG=-g
+WINDEFS=-D_WIN32_WINNT=0x0601 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DFD_SETSIZE=2048
+CFLAGS=-Wall -Wshadow -Wno-pointer-sign -Wno-maybe-uninitialized -O3 $(DEBUG) -fno-strict-aliasing $(WINDEFS) -include src/wincompat.h -iquote src -I$(WINDEPS)/include
+DEPFLAGS=-MMD -MP
+# static MariaDB Connector/C plus the Windows libraries it needs
+WINLIBS?=-L$(WINDEPS)/lib -L$(WINDEPS)/lib/mariadb -lmariadbclient -lzs -largon2
+SYSLIBS=-lws2_32 -lsecur32 -lcrypt32 -lbcrypt -lshlwapi -ladvapi32 -lwinmm
+LDFLAGS=$(DEBUG) -static -static-libgcc
+
+OBJS=.wobj/server.o .wobj/io.o .wobj/libload.o .wobj/tool.o .wobj/sleep.o \
+.wobj/log.o .wobj/create.o .wobj/notify.o .wobj/skill.o .wobj/do.o \
+.wobj/act.o .wobj/player.o .wobj/rdtsc.o .wobj/los.o .wobj/light.o \
+.wobj/map.o .wobj/path.o .wobj/error.o .wobj/talk.o .wobj/drdata.o \
+.wobj/death.o .wobj/database.o .wobj/see.o .wobj/drvlib.o .wobj/timer.o \
+.wobj/expire.o .wobj/effect.o .wobj/command.o .wobj/date.o \
+.wobj/container.o .wobj/store.o .wobj/mem.o .wobj/sector.o .wobj/chat.o \
+.wobj/statistics.o .wobj/mail.o .wobj/player_driver.o .wobj/clan.o \
+.wobj/lookup.o .wobj/area.o .wobj/task.o .wobj/depot.o \
+.wobj/prof.o .wobj/motd.o .wobj/ignore.o .wobj/tell.o .wobj/clanlog.o \
+.wobj/respawn.o .wobj/poison.o .wobj/swear.o .wobj/lab.o \
+.wobj/consistency.o .wobj/btrace.o .wobj/club.o .wobj/balance.o \
+.wobj/questlog.o .wobj/badip.o .wobj/escape.o .wobj/argon.o \
+.wobj/config.o .wobj/skillreg.o .wobj/skilling.o .wobj/skillquest.o .wobj/version.o
+
+DLLS= \
+runtime/generic/base.dll \
+runtime/generic/lostcon.dll \
+runtime/generic/merchant.dll \
+runtime/generic/simple_baddy.dll \
+runtime/generic/bank.dll \
+runtime/generic/clubmaster.dll \
+runtime/generic/book.dll \
+runtime/generic/transport.dll \
+runtime/generic/clanmaster.dll \
+runtime/generic/pents.dll \
+runtime/generic/alchemy.dll \
+runtime/generic/mine.dll \
+runtime/generic/professor.dll \
+runtime/generic/sidestory.dll \
+runtime/1/cameron.dll \
+runtime/1/shrike.dll \
+runtime/2/below_aston.dll \
+runtime/3/aston.dll \
+runtime/3/gatekeeper.dll \
+runtime/3/military.dll \
+runtime/3/arena.dll \
+runtime/5/sewers.dll \
+runtime/6/edemon.dll \
+runtime/8/fdemon.dll \
+runtime/10/ice.dll \
+runtime/11/palace.dll \
+runtime/14/random.dll \
+runtime/15/swamp.dll \
+runtime/16/forest.dll \
+runtime/17/exkordon.dll \
+runtime/18/bones.dll \
+runtime/19/nomad.dll \
+runtime/19/saltmine.dll \
+runtime/22/lab1.dll \
+runtime/22/lab2.dll \
+runtime/22/lab3.dll \
+runtime/22/lab4.dll \
+runtime/22/lab5.dll \
+runtime/23/strategy.dll \
+runtime/25/warped.dll \
+runtime/26/below_aston2.dll \
+runtime/29/brannington.dll \
+runtime/28/bran_forest.dll \
+runtime/33/tunnel.dll \
+runtime/36/caligar.dll \
+runtime/37/arkhata.dll \
+
+all: server35.exe create_character.exe create_account.exe chatserver.exe $(DLLS)
+
+-include $(wildcard .wobj/*.d)
+
+.wobj/%.o: src/%.c
+	@mkdir -p .wobj
+	$(CC) $(CFLAGS) $(DEPFLAGS) -o $@ -c $<
+
+.wobj/mem.o: src/mem.c
+	@mkdir -p .wobj
+	$(CC) $(CFLAGS) $(DEPFLAGS) -DDEBUG -o $@ -c $<
+
+# ------- Server -----
+
+.wobj/libserver35.a: server35.exe
+	@:
+
+server35.exe: $(OBJS)
+	$(CC) $(LDFLAGS) -o server35.exe $(OBJS) \
+		-Wl,--export-all-symbols -Wl,--exclude-libs,ALL -Wl,--out-implib,.wobj/libserver35.a \
+		$(WINLIBS) $(SYSLIBS) -lpthread -lm
+
+# ------- DLLs -------
+
+define DLL_RULE
+$(1): .wobj/$(basename $(notdir $(1))).o .wobj/libserver35.a
+	@mkdir -p $(dir $(1))
+	$$(CC) $$(LDFLAGS) -shared -o $(1) .wobj/$(basename $(notdir $(1))).o .wobj/libserver35.a -lm
+endef
+$(foreach d,$(DLLS),$(eval $(call DLL_RULE,$(d))))
+
+# ------- Tools -----
+
+chatserver.exe: .wobj/chatserver.o
+	$(CC) $(LDFLAGS) -o $@ $< -lws2_32
+
+create_character.exe: .wobj/create_character.o .wobj/config.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(WINLIBS) $(SYSLIBS) -lpthread
+
+create_account.exe: .wobj/create_account.o .wobj/argon.o .wobj/config.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(WINLIBS) $(SYSLIBS) -lpthread
+
+# ------- Helper -----
+
+clean:
+	@rm -rf .wobj server35.exe create_character.exe create_account.exe chatserver.exe $(DLLS)
+
+.PHONY: all clean

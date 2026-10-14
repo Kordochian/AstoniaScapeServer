@@ -1,0 +1,20 @@
+#Monastery_Fire:
+#name="Fire"
+#description="A bonfire."
+#sprite=13232
+#mod_index=V_LIGHT
+#mod_value=200
+#flag=IF_MOVEBLOCK
+#flag=IF_USE
+#driver=152
+#;
+
+Monastery_Fire:
+name="Fire"
+description="A bonfire."
+mod_index=V_LIGHT
+mod_value=200
+sprite=13232
+flag=IF_MOVEBLOCK
+flag=IF_USE
+;

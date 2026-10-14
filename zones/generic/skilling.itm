@@ -1,0 +1,694 @@
+# =====================================================================
+# skilling.itm - items of Mining, Smithing, Woodcutting and Crafting
+# =====================================================================
+# Plain item templates. skilling.cfg says what each one is (rock, ore,
+# tool ...) and the server sets their driver and item ID when it starts,
+# so do not set driver=, ID= or arg= here.
+# Rocks need flag=IF_MOVEBLOCK, ores, bars and tools need flag=IF_TAKE.
+#
+
+# ---- rocks (placed on the map with zones/<area>/*.place) ----
+
+rock_copper:
+name="Copper Rock"
+description="A rock with veins of copper ore."
+sprite=64120
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_tin:
+name="Tin Rock"
+description="A rock with veins of tin ore."
+sprite=64119
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_iron:
+name="Iron Rock"
+description="A rock with veins of iron ore."
+sprite=64121
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_coal:
+name="Coal Rock"
+description="A rock with seams of coal."
+sprite=64122
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_metal_placeholder_1:
+name="Placeholder Rock 1"
+description="A rock with placeholder metal 1. Rename me in skilling.itm."
+sprite=15084
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_metal_placeholder_2:
+name="Placeholder Rock 2"
+description="A rock with placeholder metal 2. Rename me in skilling.itm."
+sprite=15084
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_metal_placeholder_3:
+name="Placeholder Rock 3"
+description="A rock with placeholder metal 3. Rename me in skilling.itm."
+sprite=15084
+value=0
+flag=IF_MOVEBLOCK
+;
+
+rock_metal_placeholder_4:
+name="Placeholder Rock 4"
+description="A rock with placeholder metal 4. Rename me in skilling.itm."
+sprite=15084
+value=0
+flag=IF_MOVEBLOCK
+;
+
+# ---- ores (stack in the inventory) ----
+
+ore_copper:
+name="Copper Ore"
+description="1 Copper Ore."
+sprite=64142
+value=2
+flag=IF_TAKE
+;
+
+ore_tin:
+name="Tin Ore"
+description="1 Tin Ore."
+sprite=64138
+value=2
+flag=IF_TAKE
+;
+
+ore_iron:
+name="Iron Ore"
+description="1 Iron Ore."
+sprite=64146
+value=5
+flag=IF_TAKE
+;
+
+coal:
+name="Coal"
+description="1 Coal."
+sprite=64150
+value=6
+flag=IF_TAKE
+;
+
+ore_metal_placeholder_1:
+name="Placeholder Ore 1"
+description="1 Placeholder Ore 1."
+sprite=51103
+value=10
+flag=IF_TAKE
+;
+
+ore_metal_placeholder_2:
+name="Placeholder Ore 2"
+description="1 Placeholder Ore 2."
+sprite=51103
+value=10
+flag=IF_TAKE
+;
+
+ore_metal_placeholder_3:
+name="Placeholder Ore 3"
+description="1 Placeholder Ore 3."
+sprite=51103
+value=10
+flag=IF_TAKE
+;
+
+ore_metal_placeholder_4:
+name="Placeholder Ore 4"
+description="1 Placeholder Ore 4."
+sprite=51103
+value=10
+flag=IF_TAKE
+;
+
+# ---- bars ----
+
+bar_bronze:
+name="Bronze Bar"
+description="1 Bronze Bar."
+sprite=64154
+value=8
+flag=IF_TAKE
+;
+
+bar_iron:
+name="Iron Bar"
+description="1 Iron Bar."
+sprite=64158
+value=15
+flag=IF_TAKE
+;
+
+bar_steel:
+name="Steel Bar"
+description="1 Steel Bar."
+sprite=64162
+value=30
+flag=IF_TAKE
+;
+
+bar_metal_placeholder_1:
+name="Placeholder Bar 1"
+description="1 Placeholder Bar 1."
+sprite=15117
+value=40
+flag=IF_TAKE
+;
+
+bar_metal_placeholder_2:
+name="Placeholder Bar 2"
+description="1 Placeholder Bar 2."
+sprite=15117
+value=40
+flag=IF_TAKE
+;
+
+bar_metal_placeholder_3:
+name="Placeholder Bar 3"
+description="1 Placeholder Bar 3."
+sprite=15117
+value=40
+flag=IF_TAKE
+;
+
+bar_metal_placeholder_4:
+name="Placeholder Bar 4"
+description="1 Placeholder Bar 4."
+sprite=15117
+value=40
+flag=IF_TAKE
+;
+
+# ---- tools ----
+
+pickaxe_bronze:
+name="Bronze Pickaxe"
+description="A pickaxe with a bronze head."
+sprite=15107
+value=10
+flag=IF_TAKE
+;
+
+pickaxe_iron:
+name="Iron Pickaxe"
+description="A pickaxe with an iron head."
+sprite=15108
+value=40
+flag=IF_TAKE
+;
+
+pickaxe_steel:
+name="Steel Pickaxe"
+description="A pickaxe with a steel head."
+sprite=15109
+value=150
+flag=IF_TAKE
+;
+
+smith_hammer:
+name="Hammer"
+description="A smith's hammer."
+sprite=64129
+value=10
+flag=IF_TAKE
+;
+
+# ---- stations ----
+
+furnace:
+name="Furnace"
+description="A hot furnace for smelting ore into bars."
+sprite=64130
+value=0
+flag=IF_MOVEBLOCK
+mod_index=V_LIGHT
+mod_value=64
+;
+
+anvil:
+name="Anvil"
+description="An anvil for forging bars into gear."
+sprite=64123
+value=0
+flag=IF_MOVEBLOCK
+;
+
+anvil_2:
+name="Anvil"
+description="An anvil for forging bars into gear."
+sprite=64124
+value=0
+flag=IF_MOVEBLOCK
+;
+
+mining_supplies:
+name="Mining Supplies"
+description="A cart with pickaxes and hammers. Take what you need."
+sprite=15098
+value=0
+flag=IF_MOVEBLOCK
+;
+
+# ---- Woodcutting: trees (placed on the map with zones/<area>/*.place) ----
+
+sk_tree_normal:
+name="Tree"
+description="A tree you can cut for logs."
+sprite=
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_oak:
+name="Oak Tree"
+description="A tree you can cut for oak logs."
+sprite=
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_willow:
+name="Willow Tree"
+description="A tree you can cut for willow logs."
+sprite=64188
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_maple:
+name="Maple Tree"
+description="A tree you can cut for maple logs."
+sprite=
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_yew:
+name="Yew Tree"
+description="A tree you can cut for yew logs."
+sprite=
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_wood_placeholder_1:
+name="Placeholder Tree 1"
+description="Placeholder tree. Rename me in skilling.itm."
+sprite=21420
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_tree_wood_placeholder_2:
+name="Placeholder Tree 2"
+description="Placeholder tree. Rename me in skilling.itm."
+sprite=21423
+value=0
+flag=IF_MOVEBLOCK
+;
+
+# ---- logs ----
+
+sk_logs_normal:
+name="Logs"
+description="1 Logs."
+sprite=64166
+value=1
+flag=IF_TAKE
+;
+
+sk_logs_oak:
+name="Oak Logs"
+description="1 Oak Logs."
+sprite=64170
+value=4
+flag=IF_TAKE
+;
+
+sk_logs_willow:
+name="Willow Logs"
+description="1 Willow Logs."
+sprite=64188
+value=7
+flag=IF_TAKE
+;
+
+sk_logs_maple:
+name="Maple Logs"
+description="1 Maple Logs."
+sprite=64181
+value=10
+flag=IF_TAKE
+;
+
+sk_logs_yew:
+name="Yew Logs"
+description="1 Yew Logs."
+sprite=64174
+value=13
+flag=IF_TAKE
+;
+
+sk_logs_wood_placeholder_1:
+name="Placeholder Logs 1"
+description="1 Placeholder Logs 1."
+sprite=15399
+value=16
+flag=IF_TAKE
+;
+
+sk_logs_wood_placeholder_2:
+name="Placeholder Logs 2"
+description="1 Placeholder Logs 2."
+sprite=15399
+value=19
+flag=IF_TAKE
+;
+
+# ---- Crafting materials ----
+
+sk_flax_plant:
+name="Flax"
+description="A flax plant. Pick it for flax."
+sprite=11040
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_flax:
+name="Flax"
+description="1 Flax."
+sprite=11063
+value=1
+flag=IF_TAKE
+;
+
+sk_bowstring:
+name="Bowstring"
+description="1 Bowstring."
+sprite=15119
+value=3
+flag=IF_TAKE
+;
+
+sk_feather:
+name="Feathers"
+description="1 Feathers."
+sprite=50002
+value=1
+flag=IF_TAKE
+;
+
+sk_arrow_shaft:
+name="Arrow Shafts"
+description="1 Arrow Shafts."
+sprite=15396
+value=1
+flag=IF_TAKE
+;
+
+sk_headless_arrow:
+name="Headless Arrows"
+description="1 Headless Arrows."
+sprite=15394
+value=1
+flag=IF_TAKE
+;
+
+sk_arrowtips_bronze:
+name="Bronze Arrowtips"
+description="1 Bronze Arrowtips."
+sprite=15113
+value=1
+flag=IF_TAKE
+;
+
+sk_arrowtips_iron:
+name="Iron Arrowtips"
+description="1 Iron Arrowtips."
+sprite=15113
+value=1
+flag=IF_TAKE
+;
+
+sk_arrowtips_steel:
+name="Steel Arrowtips"
+description="1 Steel Arrowtips."
+sprite=15113
+value=1
+flag=IF_TAKE
+;
+
+sk_arrow_bronze:
+name="Bronze Arrows"
+description="1 Bronze Arrows."
+sprite=11121
+value=2
+flag=IF_TAKE
+;
+
+sk_arrow_iron:
+name="Iron Arrows"
+description="1 Iron Arrows."
+sprite=11121
+value=2
+flag=IF_TAKE
+;
+
+sk_arrow_steel:
+name="Steel Arrows"
+description="1 Steel Arrows."
+sprite=11121
+value=2
+flag=IF_TAKE
+;
+
+# ---- bows (no ranged combat yet: they cannot be wielded) ----
+
+sk_shortbow_u:
+name="Unstrung Shortbow"
+description="1 Unstrung Shortbow."
+sprite=10405
+value=5
+flag=IF_TAKE
+;
+
+sk_shortbow:
+name="Shortbow"
+description="A shortbow. Bows cannot be used in combat yet."
+sprite=10403
+value=20
+flag=IF_TAKE
+;
+
+sk_longbow_u:
+name="Unstrung Longbow"
+description="1 Unstrung Longbow."
+sprite=10405
+value=5
+flag=IF_TAKE
+;
+
+sk_longbow:
+name="Longbow"
+description="A longbow. Bows cannot be used in combat yet."
+sprite=10403
+value=40
+flag=IF_TAKE
+;
+
+sk_oak_shortbow_u:
+name="Unstrung Oak Shortbow"
+description="1 Unstrung Oak Shortbow."
+sprite=10405
+value=15
+flag=IF_TAKE
+;
+
+sk_oak_shortbow:
+name="Oak Shortbow"
+description="A oak shortbow. Bows cannot be used in combat yet."
+sprite=10403
+value=60
+flag=IF_TAKE
+;
+
+sk_oak_longbow_u:
+name="Unstrung Oak Longbow"
+description="1 Unstrung Oak Longbow."
+sprite=10405
+value=15
+flag=IF_TAKE
+;
+
+sk_oak_longbow:
+name="Oak Longbow"
+description="A oak longbow. Bows cannot be used in combat yet."
+sprite=10403
+value=120
+flag=IF_TAKE
+;
+
+sk_willow_shortbow_u:
+name="Unstrung Willow Shortbow"
+description="1 Unstrung Willow Shortbow."
+sprite=10405
+value=37
+flag=IF_TAKE
+;
+
+sk_willow_shortbow:
+name="Willow Shortbow"
+description="A willow shortbow. Bows cannot be used in combat yet."
+sprite=10403
+value=150
+flag=IF_TAKE
+;
+
+sk_willow_longbow_u:
+name="Unstrung Willow Longbow"
+description="1 Unstrung Willow Longbow."
+sprite=10405
+value=37
+flag=IF_TAKE
+;
+
+sk_willow_longbow:
+name="Willow Longbow"
+description="A willow longbow. Bows cannot be used in combat yet."
+sprite=10403
+value=300
+flag=IF_TAKE
+;
+
+sk_maple_shortbow_u:
+name="Unstrung Maple Shortbow"
+description="1 Unstrung Maple Shortbow."
+sprite=10405
+value=100
+flag=IF_TAKE
+;
+
+sk_maple_shortbow:
+name="Maple Shortbow"
+description="A maple shortbow. Bows cannot be used in combat yet."
+sprite=10403
+value=400
+flag=IF_TAKE
+;
+
+sk_maple_longbow_u:
+name="Unstrung Maple Longbow"
+description="1 Unstrung Maple Longbow."
+sprite=10405
+value=100
+flag=IF_TAKE
+;
+
+sk_maple_longbow:
+name="Maple Longbow"
+description="A maple longbow. Bows cannot be used in combat yet."
+sprite=10403
+value=800
+flag=IF_TAKE
+;
+
+sk_yew_shortbow_u:
+name="Unstrung Yew Shortbow"
+description="1 Unstrung Yew Shortbow."
+sprite=10405
+value=250
+flag=IF_TAKE
+;
+
+sk_yew_shortbow:
+name="Yew Shortbow"
+description="A yew shortbow. Bows cannot be used in combat yet."
+sprite=10403
+value=1000
+flag=IF_TAKE
+;
+
+sk_yew_longbow_u:
+name="Unstrung Yew Longbow"
+description="1 Unstrung Yew Longbow."
+sprite=10405
+value=250
+flag=IF_TAKE
+;
+
+sk_yew_longbow:
+name="Yew Longbow"
+description="A yew longbow. Bows cannot be used in combat yet."
+sprite=10403
+value=2000
+flag=IF_TAKE
+;
+
+# ---- Woodcutting and Crafting tools and stations ----
+
+sk_axe_bronze:
+name="Bronze Axe"
+description="An axe with a bronze head."
+sprite=15359
+value=10
+flag=IF_TAKE
+;
+
+sk_axe_iron:
+name="Iron Axe"
+description="An axe with an iron head."
+sprite=15352
+value=40
+flag=IF_TAKE
+;
+
+sk_axe_steel:
+name="Steel Axe"
+description="An axe with a steel head."
+sprite=15353
+value=150
+flag=IF_TAKE
+;
+
+sk_craft_knife:
+name="Knife"
+description="A small knife for carving wood."
+sprite=11174
+value=5
+flag=IF_TAKE
+;
+
+sk_workbench:
+name="Workbench"
+description="A workbench for carving bows and arrows."
+sprite=21071
+value=0
+flag=IF_MOVEBLOCK
+;
+
+sk_woodcutting_supplies:
+name="Woodcutting Supplies"
+description="A chopping block with axes, knives and feathers. Take what you need."
+sprite=15374
+value=0
+flag=IF_MOVEBLOCK
+;

@@ -1,0 +1,103 @@
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-14 00:40:37.804023520 +0000
++++ b/src/skilling.c	2026-10-14 00:40:38.093258962 +0000
+@@ -129,13 +129,9 @@
+ }
+ 
+ // pct percent of walk_xp to the skill in value slot v; a fraction of a point is given by chance (half a
+-// point = one point every second step on average)
++// point = one point every second step on average, also after the XP rates)
+ static void walk_xp_to(int cn, int v, int pct) {
+-    int xp = walk_xp * pct;
+-
+-    if (xp <= 0) return;
+-    if (RANDOM(100) < xp % 100) xp += 100;
+-    if (xp >= 100) add_skill_xp(cn, skill_for_value(v), xp / 100);
++    add_skill_xp_milli(cn, skill_for_value(v), (long long)walk_xp * pct * 10);
+ }
+ 
+ // remember that cn just made or took a melee attack (players only)
+diff -ru a/src/skillreg.c b/src/skillreg.c
+--- a/src/skillreg.c	2026-10-14 00:40:37.802224524 +0000
++++ b/src/skillreg.c	2026-10-14 00:40:38.092356493 +0000
+@@ -588,7 +588,8 @@
+ 
+     if (depth == 0) {
+         for (n = 0; n < sd->nfeed; n++) {
+-            add_xp_raw(cn, sd->feed_id[n], xp * sd->feed_pct[n] / 100, depth + 1);
++            int f = xp * sd->feed_pct[n]; // in hundredths, a fraction is given by chance
++            add_xp_raw(cn, sd->feed_id[n], f / 100 + (RANDOM(100) < f % 100), depth + 1);
+         }
+     }
+ 
+@@ -600,7 +601,22 @@
+     if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER)) return 0;
+     if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
+ 
+-    xp = (int)((long long)xp * xp_rate / 100 * skilldef[id].rate / 100);
++    return add_skill_xp_milli(cn, id, (long long)xp * 1000);
++}
++
++// the same with XP in thousandths of a point (damage XP). After the rates, a fraction left over is
++// given by chance, so small amounts (a lightning strike, a step) are not lost to rounding.
++int add_skill_xp_milli(int cn, int id, long long milli) {
++    long long t;
++    int xp;
++
++    if (cn < 1 || cn >= MAXCHARS || !(ch[cn].flags & CF_PLAYER)) return 0;
++    if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return 0;
++    if (milli <= 0) return 0;
++
++    t = milli * xp_rate * skilldef[id].rate / 10000; // still in thousandths
++    xp = (int)(t / 1000);
++    if (RANDOM(1000) < t % 1000) xp++;
+ 
+     return add_xp_raw(cn, id, xp, 0);
+ }
+@@ -633,7 +649,8 @@
+ void skill_damage_xp(int cn, int id, int dam) {
+     if (id < 0 || id >= MAXSKILLS || !skilldef[id].used) return;
+     if (dam <= 0 || !skilldef[id].dmg_xp) return;
+-    add_skill_xp(cn, id, max(1, dam * skilldef[id].dmg_xp / POWERSCALE));
++    // dam is in thousandths of a hitpoint, so dam x dmg_xp is in thousandths of an XP point
++    add_skill_xp_milli(cn, id, (long long)dam * skilldef[id].dmg_xp * 1000 / POWERSCALE);
+ }
+ 
+ // value index (V_HAND ... V_TWOHAND) of the weapon skill cn is fighting with
+diff -ru a/src/skillreg.h b/src/skillreg.h
+--- a/src/skillreg.h	2026-10-14 00:40:38.042251397 +0000
++++ b/src/skillreg.h	2026-10-14 00:40:38.092786880 +0000
+@@ -88,6 +88,7 @@
+ unsigned int skill_get_xp(int cn, int id);
+ void skill_set_level(int cn, int id, int level);
+ int add_skill_xp(int cn, int id, int xp);
++int add_skill_xp_milli(int cn, int id, long long milli); // XP in thousandths, fraction given by chance
+ int skill_add_level(int cn, int id);
+ void skill_used(int cn, int id);
+ void skill_damage_xp(int cn, int id, int dam);
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-14 00:40:38.046745127 +0000
++++ b/zones/generic/skilling.cfg	2026-10-14 00:40:38.095791082 +0000
+@@ -61,8 +61,9 @@
+ # a character gets bless_gather percent added to the chance per try at
+ # rocks, trees and plants, and bless_craft percent taken off the fail chance
+ # of recipes that have fail=. bless_gather_strength / bless_craft_strength
+-# add that percent of the spell's strength on top (0 = flat bonus only;
+-# 10 would give a strength 60 Bless another +6%).
++# add that percent of the spell's strength on top (0 = flat bonus only).
++# The strength is the caster's Magic level, so with 10 a Bless cast at Magic
++# 10 gives +1% more, at Magic 60 +6%, at Magic 99 about +10%.
+ #
+ # Combat (RuneScape-style hits, step 14; all percent):
+ # Effective melee levels (step 18): accuracy = Attack, strength = Strength,
+@@ -144,8 +145,8 @@
+ config:
+ bless_gather=10
+ bless_craft=10
+-bless_gather_strength=0
+-bless_craft_strength=0
++bless_gather_strength=10
++bless_craft_strength=10
+ tactics_boost=0
+ min_hit=20
+ armor_soak=75

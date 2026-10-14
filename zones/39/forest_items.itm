@@ -1,0 +1,325 @@
+shed_door:
+sprite=20038
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+#flag=IF_USE
+flag=IF_DOOR
+driver=2
+;
+
+shed_open:
+name="Book"
+description="A very odd book indeed."
+sprite=15511
+mod_index=V_LIGHT
+mod_value=200
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=6
+arg="4146"
+;
+
+tomb_door:
+sprite=20664
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="009D000014"        # developer 20, ID 157
+;
+
+tomb_key:
+name="Tomb key"
+description="Key a hidden tomb"
+value=25
+sprite=50004
+ID=1400009D             # developer 20, ID 157
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+knight_chest10:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20088
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="0A00000000A800"    # nr 10, no key, 1 week respawn time
+;
+treasure_10:
+name="Pile of Coins"
+description="A small pile of coins."
+sprite=104
+flag=IF_TAKE
+flag=IF_MONEY
+value=15000
+;
+
+treasure_sign:
+name="Sign"
+description="Museum Property - Keep Out. Door remains locked at all times."
+sprite=16261
+flag=IF_USE
+flag=IF_FRONTWALL
+;
+
+
+library_door:
+sprite=13150
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="00A5000014"        # developer 20, ID 165
+;
+
+Library_key:
+name="Library Key"
+description="Key to something locked"
+value=25
+sprite=50004
+ID=140000A5             # developer 20, ID 165
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+opentrap:
+name="opentrap"
+sprite=0
+driver=6
+flag=IF_STEPACTION
+arg="706E"      # x=112, y=110
+;
+
+walldoor:
+sprite=21022
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+#flag=IF_USE
+flag=IF_DOOR
+driver=2
+;
+
+hidden_opentorch:
+name="Torch"
+description="A torch that looks almost like all the other torches."
+sprite=20026
+mod_index=V_LIGHT
+mod_value=200
+flag=IF_MOVEBLOCK
+flag=IF_USE
+driver=6
+arg="E020"
+;
+
+hidden_teleport:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="DA001F00000001"   # x=218, y=31, a=38, quiet=1
+;
+
+underwater_potion:
+name="Potion"
+description="A flask containing air bubbles."
+sprite=11188
+flag=IF_USE
+flag=IF_LABITEM
+flag=IF_TAKE
+flag=IF_QUEST
+driver=5
+arg="01"
+;
+
+underwater_door:
+sprite=20544
+flag=IF_MOVEBLOCK
+flag=IF_SIGHTBLOCK
+flag=IF_SOUNDBLOCK
+flag=IF_USE
+flag=IF_DOOR
+driver=2
+arg="009F000014"        # developer 20, ID 159
+;
+
+underwater_key:
+name="Underwater Key"
+description="A key to..something."
+value=25
+sprite=50004
+ID=1400009F # developer 20, ID 159
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+underwater_chest159:
+name="Chest"
+description="A wooden chest with iron bands."
+sprite=20539
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="9F9F0000140000" # nr 159, devel 20, ID 159
+;
+treasure_159:
+name="Gerrards Ring"
+description="You can barely make out the inscription 'Gerrard' through the rust" 
+value=25
+sprite=10352
+ID=14000005 # developer 20 (0x14), ID 5 (0x05)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+limestone_flask:
+name="Limestone Flask"
+description="A Flask made of pure limestone." 
+value=25
+sprite=10002
+ID=1400000A     # developer 20 (0x14), ID 10 (0x0A)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+fire_chest160:
+name="Fire"
+description="There seems to be something that hasn't burned inside here"
+sprite=20530
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="A0000000000000" # nr 160 (0xA0)
+;
+treasure_160:
+name="Plans"
+description="These look like plans of some sort. The commander would like to see this" 
+value=25
+sprite=50011
+ID=14000007 # developer 20 (0x14), ID 7 (0x07)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+dead_chest161:
+name="Corpse"
+description="The young boy the commander spoke of"
+sprite=51633
+flag=IF_USE
+flag=IF_MOVEBLOCK
+driver=5
+arg="A1000000000000" # nr 161 (0xA1)
+;
+treasure_161:
+name="note"
+description="These look like plans of some sort. The commander would like to see this" 
+value=25
+sprite=50011
+ID=14000008 # developer 20 (0x14), ID 8 (0x08)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+Old_Ring:
+name="Old Ring"
+description="An old ring the Commander found at the monastery."
+value=0001
+sprite=10354
+ID=14000009 # developer 20 (0x14), ID 8 (0x08)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+bottled_Water:
+name="Water"
+description="The Prior could turn this holy" 
+value=25
+sprite=10312
+ID=1400000B     # developer 20 (0x14), ID 11 (0x0B)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+banishment_potion:
+name="Banishment Potion"
+description="This should banish the spirit..should" 
+value=25
+sprite=10318
+ID=1400000C     # developer 20 (0x14), ID 12 (0x0C)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+Pathew_Book:
+name="Old Book"
+description="This must belong to Pathew" 
+value=0
+sprite=15513
+ID=14000006
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+
+scrap_of_cloth:
+name="Cloth Scrap"
+description="A piece of the spirit's clothing"
+value=0
+sprite=20553
+ID=1400000D     # developer 20 (0x14), ID 13 (0x0D)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+
+Ice_Book:
+name="Ice Book"
+description="Notes from members of the remaining Ice Empire" 
+value=0
+sprite=15513
+ID=1400000E     # developer 20 (0x14), ID 14 (0x0E)
+flag=IF_TAKE
+flag=IF_QUEST
+;
+
+dead_guy:
+name="Corpse"
+description="Leader of check-point two"
+sprite=51633
+flag=IF_USE
+flag=IF_MOVEBLOCK
+;
+
+welcome_sign:
+name="Sign"
+description="Rest Easy, all are welcome."
+sprite=50120
+flag=IF_USE
+flag=IF_FRONTWALL
+;
+
+tomb_tele:
+name="steptrap"
+sprite=0
+flag=IF_STEPACTION
+driver=10
+arg="4800B300000001"   # x=72, y=179, a=38, quiet=1
+;
+
+tomb_teleport:
+name="Hole"
+description="A hole in the ground leading... somewhere."
+sprite=50017
+flag=IF_USE
+driver=10
+arg="3E00AD00000001"   # x=62, y=173, a=38, quiet=1
+;
+

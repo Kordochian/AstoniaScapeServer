@@ -1,0 +1,3992 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 20:27:09.356016074 +0000
++++ b/src/act.c	2026-10-13 20:27:09.358498470 +0000
+@@ -27,7 +27,6 @@
+ #include "area.h"
+ #include "date.h"
+ #include "balance.h"
+-#include "skilling.h"
+ #include "player.h"
+ #include "clan.h"
+ #include "act.h"
+@@ -318,8 +317,10 @@
+     return min(255, max(map[m].light, (dlight * map[m].dlight) / 256));
+ }
+ 
++// vcn / vco: effective accuracy / defence levels (balance.c melee_*_level) plus situation modifiers.
++// Hit chance and max hit work like RuneScape's (step 14); armor still soaks part of a hit (hurt()).
+ static int sub_attack(int cn, int co, int vcn, int vco, int direct) {
+-    int diff, chance, dam, tmp, m;
++    int chance, dam, maxhit, m;
+     extern int showattack;
+ 
+     if (!can_attack(cn, co)) return 0; // attack is not allowed
+@@ -342,20 +343,18 @@
+         if (map[m].gsprite >= 59423 && map[m].gsprite <= 59431) vco -= 18;
+     }
+ 
+-    diff = vcn - vco;
+-
+     if (ch[cn].flags & CF_EDEMON) { // earth demons hit harder...
+-        diff += edemon_reduction(co, ch[cn].value[1][V_DEMON]) * 3;
++        vcn += edemon_reduction(co, ch[cn].value[1][V_DEMON]) * 3;
+     }
+     if (ch[co].flags & CF_EDEMON) { // ... and get hit less often
+-        diff -= max(0, ch[co].value[1][V_DEMON] - ch[cn].value[1][V_DEMON]) * 3;
++        vco += max(0, ch[co].value[1][V_DEMON] - ch[cn].value[1][V_DEMON]) * 3;
+     }
+ 
+-    chance = skilldiff2percent(diff / 3);
++    chance = melee_hit_chance(cn, co, vcn, vco); // 1/10000
++    maxhit = melee_max_hit(cn);
+ 
+-    if ((tmp = die(1, 100)) < chance) {
+-        dam = ch[cn].value[0][V_WEAPON] * POWERSCALE / 20 + die(3, 6) * POWERSCALE;
+-        dam = (long long)dam * damage_percent(cn, weapon_value(cn), 1) / 100; // weapon skill level and gear bonuses
++    if (RANDOM(10000) < chance) { // a landed hit always does at least combat_min_hit percent of the max hit
++        dam = maxhit * combat_min_hit / 100 + RANDOM(maxhit * (100 - combat_min_hit) / 100 + 1);
+         if (dam < 0) dam = 0;
+         if (direct) sound_area(ch[cn].x, ch[cn].y, 7);
+     } else {
+@@ -367,12 +366,14 @@
+         }
+     }
+ 
+-    if (showattack) say(cn, "attack %s, diff=%d (%d %d), chan=%d, dam=%.2f", //, vcn=%d (%s), vco=%d (%s)
++    if (showattack) say(cn, "attack %s, levels %d vs %d, acc %d vs def %d, chance=%.1f%%, max=%.2f, dam=%.2f",
+                         ch[co].name,
+-                        diff,
+                         vcn,
+                         vco,
+-                        chance,
++                        ch[cn].value[0][V_MELEE_ACC],
++                        ch[co].value[0][V_MELEE_DEF],
++                        chance / 100.0,
++                        maxhit / 1000.0,
+                         dam / 1000.0);
+ 
+     // skill XP: the attacker's weapon skill gets XP for the damage done (in hurt()),
+@@ -380,7 +381,7 @@
+     if (!dam && (ch[co].flags & CF_PLAYER)) skill_used(co, skill_for_value(V_PARRY));
+ 
+     skill_xp_context = skill_weapon_id(cn);
+-    hurt(co, dam / ATTACK_DIV, cn, ATTACK_DIV, 75, 90);
++    hurt(co, dam, cn, ATTACK_DIV, combat_armor_soak, 90);
+     skill_xp_context = -1;
+ 
+     return dam;
+@@ -394,8 +395,8 @@
+ 
+     if (!(co = map[x + y * MAXMAP].ch)) return 0;
+ 
+-    vcn = get_surround_attack_skill(cn) + (ch[cn].rage / RAGEMOD / POWERSCALE);
+-    vco = ch[co].value[0][V_DEFENSE] + (ch[co].rage / RAGEMOD / POWERSCALE);
++    vcn = melee_surround_level(cn) + (ch[cn].rage / RAGEMOD / POWERSCALE);
++    vco = melee_defence_level(co) + (ch[co].rage / RAGEMOD / POWERSCALE);
+     return sub_attack(cn, co, vcn, vco, 0);
+ }
+ 
+@@ -440,8 +441,8 @@
+     // ok, let the fun begin (the attack is legal)
+     hurt_equipment(cn, 1);
+ 
+-    vcn = ch[cn].value[0][V_OFFENSE] + (ch[cn].rage / RAGEMOD / POWERSCALE);
+-    vco = ch[co].value[0][V_DEFENSE] + (ch[co].rage / RAGEMOD / POWERSCALE);
++    vcn = melee_attack_level(cn) + (ch[cn].rage / RAGEMOD / POWERSCALE);
++    vco = melee_defence_level(co) + (ch[co].rage / RAGEMOD / POWERSCALE);
+ 
+     if (!is_facing(co, cn)) { // attacking someone from the side or back gets a bonus
+         vco -= 4;
+diff -ru a/src/balance.c b/src/balance.c
+--- a/src/balance.c	2026-10-13 20:27:09.360540375 +0000
++++ b/src/balance.c	2026-10-13 20:27:09.362426435 +0000
+@@ -7,7 +7,6 @@
+ #include "talk.h"
+ #include "btrace.h"
+ #include "balance.h"
+-#include "skilling.h"
+ 
+ int get_fight_skill(int cn) {
+     int in, m = 0;
+@@ -48,6 +47,64 @@
+         6.0;
+ }
+ 
++// ---------- RuneScape-style melee (step 14, George 2026-10-13) ----------
++// Effective levels: accuracy = (weapon skill + Attack) / 2, strength = (weapon skill + STR) / 2,
++// defence = (weapon skill + Parry) / 2, surround = (weapon skill + Surround) / 2, each plus
++// combat_tactics_boost percent of Tactics. Gear adds Melee Accuracy / Strength / Defence bonuses.
++
++int combat_tactics_boost = 10, combat_min_hit = 20, combat_armor_soak = 75, combat_magic_damage_cap = 50;
++
++void combat_settings_reset(void) {
++    combat_tactics_boost = 10;
++    combat_min_hit = 20;
++    combat_armor_soak = 75;
++    combat_magic_damage_cap = 50;
++}
++
++static int weapon_skill(int cn) {
++    return get_fight_skill(cn);
++}
++
++static int tactics_boost(int cn) {
++    return ch[cn].value[0][V_TACTICS] * combat_tactics_boost / 100;
++}
++
++int melee_attack_level(int cn) {
++    return (weapon_skill(cn) + ch[cn].value[0][V_ATTACK]) / 2 + tactics_boost(cn);
++}
++
++int melee_strength_level(int cn) {
++    return (weapon_skill(cn) + ch[cn].value[0][V_STR]) / 2 + tactics_boost(cn);
++}
++
++int melee_defence_level(int cn) {
++    return (weapon_skill(cn) + ch[cn].value[0][V_PARRY]) / 2 + tactics_boost(cn);
++}
++
++int melee_surround_level(int cn) {
++    if (!ch[cn].value[1][V_SURROUND]) return 0;
++    return (weapon_skill(cn) + ch[cn].value[0][V_SURROUND]) / 2 + tactics_boost(cn);
++}
++
++// RuneScape: attack roll = (level + 8) x (accuracy bonus + 64), defence roll likewise; vcn and vco
++// are the effective levels after situation modifiers (side, back, dark, swamp, rage)
++int melee_hit_chance(int cn, int co, int vcn, int vco) {
++    double att, def, p;
++
++    att = (double)(max(0, vcn) + 8) * max(1, ch[cn].value[0][V_MELEE_ACC] + 64);
++    def = (double)(max(0, vco) + 8) * max(1, ch[co].value[0][V_MELEE_DEF] + 64);
++
++    if (att > def) p = 1.0 - (def + 2.0) / (2.0 * (att + 1.0));
++    else p = att / (2.0 * (def + 1.0));
++
++    return (int)(p * 10000);
++}
++
++// RuneScape: max hit = 0.5 + (strength level + 8) x (strength bonus + 64) / 640, in hitpoints
++int melee_max_hit(int cn) {
++    return POWERSCALE / 2 + (long long)(melee_strength_level(cn) + 8) * max(0, ch[cn].value[0][V_MELEE_STR] + 64) * POWERSCALE / 640;
++}
++
+ int tactics2skill(int val) {
+     return val * 15 / 100;
+ }
+@@ -242,6 +299,11 @@
+     immun = ch[subject].value[0][V_IMMUNITY];
+     if (ch[subject].value[1][V_RAGE]) immun += ch[subject].rage / POWERSCALE / RAGEMOD;
+ 
++    // equipment: magic accuracy raises the caster's side, magic defence the target's, the way
++    // accuracy and defence bonuses scale the melee rolls (x (bonus + 64) / 64)
++    if (caster > 0 && caster < MAXCHARS) skill_strength = skill_strength * max(1, ch[caster].value[0][V_MAGIC_ACC] + 64) / 64;
++    immun = immun * max(1, ch[subject].value[0][V_MAGIC_DEF] + 64) / 64;
++
+     diff = skill_strength - immun;
+ 
+     dam = skilldiff2percent(diff);
+@@ -299,17 +361,21 @@
+     return immunity_reduction(cn, co, pwr);
+ }
+ 
+-// damage percent from gear on that spell skill (damage_percent in skilling.c)
+-static int spell_damage(int cn, int co, int str, int v) {
+-    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0) * damage_percent(cn, v, 0) / 100.0;
++// Fire and Lightning damage, raised by the caster's Magic Damage % from gear (at most
++// combat_magic_damage_cap)
++static int spell_damage(int cn, int co, int str) {
++    int pct = 100;
++
++    if (cn > 0 && cn < MAXCHARS) pct += max(-100, min(combat_magic_damage_cap, ch[cn].value[0][V_MAGIC_DMG]));
++    return immunity_reduction(cn, co, str) * FIREBALL_DAMAGE * (1.0 + str / 400.0) * pct / 100.0;
+ }
+ 
+ int fireball_damage(int cn, int co, int str) {
+-    return spell_damage(cn, co, str, V_FIRE);
++    return spell_damage(cn, co, str);
+ }
+ 
+ // total damage of a lightning ball or flash over its whole life: the same as
+ // one fireball (add_strike() in effect.c spreads it over the strikes)
+ int strike_damage(int cn, int co, int str) {
+-    return spell_damage(cn, co, str, V_FLASH);
++    return spell_damage(cn, co, str);
+ }
+diff -ru a/src/balance.h b/src/balance.h
+--- a/src/balance.h	2026-10-13 20:27:09.364543235 +0000
++++ b/src/balance.h	2026-10-13 20:27:09.366419095 +0000
+@@ -10,4 +10,17 @@
+ #define RAGEMOD 4 // rage skill is divided by this before being used
+ 
+ int skilldiff2percent(int diff);
++
++// combat settings (skilling.cfg config:, step 14)
++extern int combat_tactics_boost; // percent of Tactics added to the effective melee levels
++extern int combat_min_hit; // a landed melee hit rolls between this percent of the max hit and the max hit
++extern int combat_armor_soak; // armor soaks at most this percent of a melee hit
++extern int combat_magic_damage_cap; // most magic damage percent gear can add
++void combat_settings_reset(void);
++int melee_attack_level(int cn);
++int melee_strength_level(int cn);
++int melee_defence_level(int cn);
++int melee_surround_level(int cn);
++int melee_hit_chance(int cn, int co, int vcn, int vco); // in 1/10000
++int melee_max_hit(int cn); // in POWERSCALE units
+ int tactics2skill(int val);
+diff -ru a/src/create.c b/src/create.c
+--- a/src/create.c	2026-10-13 20:27:09.343405370 +0000
++++ b/src/create.c	2026-10-13 20:27:09.345676555 +0000
+@@ -262,12 +262,12 @@
+     "V_RAGE",
+     "V_COLD",
+     "V_PROFESSION",
+-    "empty",
+-    "empty",
+-    "empty",
+-    "empty",
+-    "empty",
+-    "empty",
++    "V_MELEE_ACC",
++    "V_MELEE_STR",
++    "V_MELEE_DEF",
++    "V_MAGIC_ACC",
++    "V_MAGIC_DMG",
++    "V_MAGIC_DEF",
+     "empty",
+     "empty",
+     "empty"};
+@@ -1538,6 +1538,16 @@
+     return 1;
+ }
+ 
++// gear modifiers that are ignored since step 14 (George 2026-10-13): all skills and attributes,
++// and the old Offense / Defense values. Hitpoints, endurance, mana, armor, weapon, light, speed,
++// demon, cold and the equipment bonuses still count.
++static int gear_skips_value(int v) {
++    if (v >= V_WIS && v <= V_STR) return 1;
++    if (v == V_OFFENSE || v == V_DEFENSE) return 1;
++    if (v >= V_DAGGER && v <= V_PROFESSION && v != V_DEMON && v != V_COLD) return 1;
++    return 0;
++}
++
+ void update_char(int cn) {
+     int mod[V_MAX], base[V_MAX], n, in, m, v1, v2, v3, oldlight, fn, bless[V_MAX], infrared = 0, newlight, nonomagic = 0, oxygen = 0;
+     int spellspeed = 0, cnt;
+@@ -1589,7 +1599,7 @@
+                     if (it[in].driver == IDR_BLESS) continue; // Bless no longer changes stats: it helps gathering and crafting (skilling.c)
+                     else if (v1 == V_SPEED && it[in].driver == IDR_WARCRY) spellspeed = min(spellspeed, it[in].mod_value[m]);
+                     else if (v1 == V_SPEED && it[in].driver == IDR_FREEZE) spellspeed = min(spellspeed, it[in].mod_value[m]);
+-                    else if (n < 12 && is_damage_skill(v1)) continue; // gear on weapon skills, Fire and Lightning adds damage instead (damage_percent in skilling.c)
++                    else if (n < 12 && gear_skips_value(v1)) continue; // gear no longer modifies skills or attributes (step 14): it gives equipment bonuses instead
+                     else mod[v1] += v;
+                 }
+             }
+@@ -1617,6 +1627,10 @@
+ 
+     // Add base values and raised values and build total
+     for (n = 0; n < V_MAX; n++) {
++        if (IS_EQUIP_BONUS(n)) { // equipment bonuses: own value (NPC templates) plus gear, no caps
++            ch[cn].value[0][n] = ch[cn].value[1][n] + mod[n];
++            continue;
++        }
+         if (n == V_DEMON) {
+             ch[cn].value[0][n] = min(ch[cn].value[0][n], ch[cn].value[1][n]);
+             continue;
+diff -ru a/src/server.h b/src/server.h
+--- a/src/server.h	2026-10-13 20:27:09.339228882 +0000
++++ b/src/server.h	2026-10-13 20:27:09.341201258 +0000
+@@ -319,6 +319,15 @@
+ #define V_RAGE 38
+ #define V_COLD 39
+ #define V_PROFESSION 40
++// equipment bonuses (RuneScape style, step 14): summed from worn gear (item mods) plus the
++// character's own value[1] (NPC templates), see update_char() and balance.c
++#define V_MELEE_ACC 41 // melee accuracy
++#define V_MELEE_STR 42 // melee strength (max hit)
++#define V_MELEE_DEF 43 // melee defence
++#define V_MAGIC_ACC 44 // magic accuracy
++#define V_MAGIC_DMG 45 // magic damage in percent
++#define V_MAGIC_DEF 46 // magic defence
++#define IS_EQUIP_BONUS(v) ((v) >= V_MELEE_ACC && (v) <= V_MAGIC_DEF)
+ #define V_MAX 50
+ 
+ // Professions
+diff -ru a/src/skill.c b/src/skill.c
+--- a/src/skill.c	2026-10-13 20:27:09.347688922 +0000
++++ b/src/skill.c	2026-10-13 20:27:09.349572208 +0000
+@@ -67,7 +67,15 @@
+     {"Duration", V_INT, V_WIS, V_STR, 1, 1}, // 37		done
+     {"Rage", V_INT, V_STR, V_STR, 1, 1}, // 38		done
+     {"Resist Cold", -1, -1, -1, 0, 1}, // 39		done
+-    {"Profession", -1, -1, -1, 3, 1} // 40
++    {"Profession", -1, -1, -1, 3, 1}, // 40
++
++    // equipment bonuses (step 14)
++    {"Melee Accuracy", -1, -1, -1, 0, 0}, // 41
++    {"Melee Strength", -1, -1, -1, 0, 0}, // 42
++    {"Melee Defence", -1, -1, -1, 0, 0}, // 43
++    {"Magic Accuracy", -1, -1, -1, 0, 0}, // 44
++    {"Magic Damage %", -1, -1, -1, 0, 0}, // 45
++    {"Magic Defence", -1, -1, -1, 0, 0} // 46
+ };
+ 
+ int raise_cost(int v, int n) {
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 20:27:09.368150078 +0000
++++ b/src/skilling.c	2026-10-13 20:27:09.370167771 +0000
+@@ -18,6 +18,7 @@
+ #include "log.h"
+ #include "talk.h"
+ #include "create.h"
++#include "balance.h"
+ #include "tool.h"
+ #include "drvlib.h"
+ #include "map.h"
+@@ -99,10 +100,6 @@
+ // config: while blessed, bless_gather percent is added to the gather chance and bless_craft percent taken off fail
+ // chances, plus *_strength percent of the spell's strength on top (0 = flat bonus only)
+ static int bless_gather = 10, bless_craft = 10, bless_gather_strength = 0, bless_craft_strength = 0;
+-// config: damage bonuses (percent). A player's weapon skill level adds weapon_level_damage% of the level
+-// to melee damage (100 = +1% per level). Gear modifiers on a weapon skill, Fire or Lightning add
+-// gear_damage% of the points (50: +20 Lightning = +10%), at most gear_damage_cap%.
+-static int weapon_level_damage = 100, gear_damage = 50, gear_damage_cap = 25;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
+ static int is_node(int type) {
+@@ -249,9 +246,10 @@
+                 else if (!strcasecmp(name, "bless_craft")) bless_craft = max(0, atoi(value));
+                 else if (!strcasecmp(name, "bless_gather_strength")) bless_gather_strength = max(0, atoi(value));
+                 else if (!strcasecmp(name, "bless_craft_strength")) bless_craft_strength = max(0, atoi(value));
+-                else if (!strcasecmp(name, "weapon_level_damage")) weapon_level_damage = max(0, atoi(value));
+-                else if (!strcasecmp(name, "gear_damage")) gear_damage = max(0, atoi(value));
+-                else if (!strcasecmp(name, "gear_damage_cap")) gear_damage_cap = max(0, atoi(value));
++                else if (!strcasecmp(name, "tactics_boost")) combat_tactics_boost = max(0, atoi(value));
++                else if (!strcasecmp(name, "min_hit")) combat_min_hit = max(0, min(100, atoi(value)));
++                else if (!strcasecmp(name, "armor_soak")) combat_armor_soak = max(0, min(100, atoi(value)));
++                else if (!strcasecmp(name, "magic_damage_cap")) combat_magic_damage_cap = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -499,9 +497,7 @@
+     nskdef = 0;
+     bless_gather = bless_craft = 10;
+     bless_gather_strength = bless_craft_strength = 0;
+-    weapon_level_damage = 100;
+-    gear_damage = 50;
+-    gear_damage_cap = 25;
++    combat_settings_reset();
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+     if (!(text = skillcfg_read(SKILLING_CFG))) {
+@@ -1191,43 +1187,3 @@
+     send_craft_list(cn, rtype, 0);
+     return 1;
+ }
+-
+-// ---------- damage bonuses (combat) ----------
+-
+-// skills whose gear modifiers add damage instead of skill levels (see update_char in create.c)
+-int is_damage_skill(int v) {
+-    return v == V_HAND || v == V_DAGGER || v == V_STAFF || v == V_SWORD || v == V_TWOHAND || v == V_FIRE || v == V_FLASH;
+-}
+-
+-// sum of the modifiers for value v on the items cn wears (slots 0-11), with the same quality
+-// effectivity update_char uses
+-static int gear_points(int cn, int v) {
+-    int n, m, in, sum = 0;
+-    double effectivity;
+-
+-    for (n = 0; n < 12; n++) {
+-        if (!(in = ch[cn].item[n]) || in >= MAXITEM) continue;
+-        if (it[in].complexity > 0) {
+-            if ((int)(it[in].complexity * 1.2) > it[in].quality) effectivity = (double)it[in].quality / it[in].complexity;
+-            else effectivity = 1.2;
+-        } else effectivity = 1.0;
+-        for (m = 0; m < MAXMOD; m++) {
+-            if (it[in].mod_index[m] == v && it[in].mod_value[m]) sum += (int)round(it[in].mod_value[m] * effectivity);
+-        }
+-    }
+-    return sum;
+-}
+-
+-// damage in percent (100 = unchanged) for cn hitting with skill v. level: also add the weapon skill
+-// level bonus (melee; spells already grow with their level). The level bonus is for players only:
+-// NPC damage stays as their templates set it.
+-int damage_percent(int cn, int v, int level) {
+-    int pct = 100;
+-
+-    if (cn < 1 || cn >= MAXCHARS || v < 0 || v >= V_MAX) return 100;
+-
+-    if (level && (ch[cn].flags & CF_PLAYER)) pct += ch[cn].value[1][v] * weapon_level_damage / 100;
+-    pct += min(gear_damage_cap, gear_points(cn, v) * gear_damage / 100);
+-
+-    return max(0, pct);
+-}
+diff -ru a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 20:27:09.371864556 +0000
++++ b/src/skilling.h	2026-10-13 20:27:09.373586976 +0000
+@@ -8,8 +8,6 @@
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
+-int is_damage_skill(int v); // weapon skills, Fire, Lightning: gear adds damage, not levels
+-int damage_percent(int cn, int v, int level); // 100 = normal damage; skill level and gear bonuses
+ 
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+diff -ru a/src/tool.c b/src/tool.c
+--- a/src/tool.c	2026-10-13 20:27:09.351867936 +0000
++++ b/src/tool.c	2026-10-13 20:27:09.354175466 +0000
+@@ -1111,6 +1111,7 @@
+     int lvl, sum, high, n;
+ 
+     for (n = sum = high = 0; n < MAXMOD; n++) {
++        if (IS_EQUIP_BONUS(it[in].mod_index[n])) continue; // equipment bonuses don't raise the level requirement
+         switch (it[in].mod_index[n]) {
+         case V_WEAPON:
+             break;
+@@ -1271,7 +1272,7 @@
+         for (m = dead = cnt = 0; m < MAXMOD; m++) {
+             if ((s = it[in].mod_index[m]) < 0) continue;
+             if (it[in].mod_value[m] < 1) continue;
+-            if (s == V_ARMOR || s == V_WEAPON || s == V_LIGHT || s == V_SPEED || s == V_DEMON || s == V_COLD) continue;
++            if (s == V_ARMOR || s == V_WEAPON || s == V_LIGHT || s == V_SPEED || s == V_DEMON || s == V_COLD || IS_EQUIP_BONUS(s)) continue;
+             if (special_item[n].mod_index[0] != s &&
+                 special_item[n].mod_index[1] != s &&
+                 special_item[n].mod_index[2] != s) {
+@@ -1298,7 +1299,7 @@
+     for (m = str = 0; m < MAXMOD; m++) {
+         if ((s = it[in].mod_index[m]) < 0) continue;
+         if ((v = it[in].mod_value[m]) < 1) continue;
+-        if (s == V_ARMOR || s == V_WEAPON || s == V_LIGHT || s == V_SPEED || s == V_DEMON || s == V_COLD) continue;
++        if (s == V_ARMOR || s == V_WEAPON || s == V_LIGHT || s == V_SPEED || s == V_DEMON || s == V_COLD || IS_EQUIP_BONUS(s)) continue;
+         str = max(str, v);
+     }
+     return item_strength_text(str);
+diff -ru a/zones/generic/armor.itm b/zones/generic/armor.itm
+--- a/zones/generic/armor.itm	2026-10-13 20:27:09.379260988 +0000
++++ b/zones/generic/armor.itm	2026-10-13 20:27:09.381230391 +0000
+@@ -7,6 +7,10 @@
+ mod_value=54
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=4
++req_index=V_PARRY
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -20,6 +24,10 @@
+ mod_value=55
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=8
++req_index=V_PARRY
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -33,6 +41,10 @@
+ mod_value=57
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=11
++req_index=V_PARRY
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -46,6 +58,10 @@
+ mod_value=58
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=14
++req_index=V_PARRY
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -59,6 +75,10 @@
+ mod_value=60
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=18
++req_index=V_PARRY
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -72,6 +92,10 @@
+ mod_value=61
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=21
++req_index=V_PARRY
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -85,6 +109,10 @@
+ mod_value=63
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=24
++req_index=V_PARRY
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -98,6 +126,10 @@
+ mod_value=64
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=28
++req_index=V_PARRY
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -111,6 +143,10 @@
+ mod_value=66
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=31
++req_index=V_PARRY
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -124,6 +160,10 @@
+ mod_value=67
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=35
++req_index=V_PARRY
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -137,6 +177,10 @@
+ mod_value=60
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=6
++req_index=V_PARRY
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -150,6 +194,10 @@
+ mod_value=61
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=10
++req_index=V_PARRY
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -163,6 +211,10 @@
+ mod_value=63
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=13
++req_index=V_PARRY
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -176,6 +228,10 @@
+ mod_value=64
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=16
++req_index=V_PARRY
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -189,6 +245,10 @@
+ mod_value=66
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=20
++req_index=V_PARRY
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -202,6 +262,10 @@
+ mod_value=67
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=24
++req_index=V_PARRY
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -215,6 +279,10 @@
+ mod_value=69
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=27
++req_index=V_PARRY
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -228,6 +296,10 @@
+ mod_value=70
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=30
++req_index=V_PARRY
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -241,6 +313,10 @@
+ mod_value=72
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=33
++req_index=V_PARRY
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -254,6 +330,10 @@
+ mod_value=73
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=37
++req_index=V_PARRY
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -267,6 +347,10 @@
+ mod_value=72
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=9
++req_index=V_PARRY
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -280,6 +364,10 @@
+ mod_value=73
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=12
++req_index=V_PARRY
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -293,6 +381,10 @@
+ mod_value=75
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=15
++req_index=V_PARRY
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -306,6 +398,10 @@
+ mod_value=76
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=19
++req_index=V_PARRY
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -319,6 +415,10 @@
+ mod_value=78
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=22
++req_index=V_PARRY
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -332,6 +432,10 @@
+ mod_value=79
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=26
++req_index=V_PARRY
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -345,6 +449,10 @@
+ mod_value=81
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=29
++req_index=V_PARRY
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -358,6 +466,10 @@
+ mod_value=82
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=32
++req_index=V_PARRY
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -371,6 +483,10 @@
+ mod_value=84
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=36
++req_index=V_PARRY
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -384,6 +500,10 @@
+ mod_value=85
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=39
++req_index=V_PARRY
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNARMS
+ needs_class=1
+@@ -397,6 +517,10 @@
+ mod_value=72
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=6
++req_index=V_PARRY
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -410,6 +534,10 @@
+ mod_value=74
+ mod_index=V_SPEED
+ mod_value=-3
++mod_index=V_MELEE_DEF
++mod_value=11
++req_index=V_PARRY
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -423,6 +551,10 @@
+ mod_value=76
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=15
++req_index=V_PARRY
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -436,6 +568,10 @@
+ mod_value=78
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=20
++req_index=V_PARRY
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -449,6 +585,10 @@
+ mod_value=80
+ mod_index=V_SPEED
+ mod_value=-9
++mod_index=V_MELEE_DEF
++mod_value=25
++req_index=V_PARRY
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -462,6 +602,10 @@
+ mod_value=82
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=30
++req_index=V_PARRY
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -475,6 +619,10 @@
+ mod_value=84
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=34
++req_index=V_PARRY
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -488,6 +636,10 @@
+ mod_value=86
+ mod_index=V_SPEED
+ mod_value=-15
++mod_index=V_MELEE_DEF
++mod_value=39
++req_index=V_PARRY
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -501,6 +653,10 @@
+ mod_value=88
+ mod_index=V_SPEED
+ mod_value=-17
++mod_index=V_MELEE_DEF
++mod_value=44
++req_index=V_PARRY
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -514,6 +670,10 @@
+ mod_value=90
+ mod_index=V_SPEED
+ mod_value=-19
++mod_index=V_MELEE_DEF
++mod_value=49
++req_index=V_PARRY
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -527,6 +687,10 @@
+ mod_value=80
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=9
++req_index=V_PARRY
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -540,6 +704,10 @@
+ mod_value=82
+ mod_index=V_SPEED
+ mod_value=-3
++mod_index=V_MELEE_DEF
++mod_value=14
++req_index=V_PARRY
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -553,6 +721,10 @@
+ mod_value=84
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=18
++req_index=V_PARRY
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -566,6 +738,10 @@
+ mod_value=86
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=23
++req_index=V_PARRY
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -579,6 +755,10 @@
+ mod_value=88
+ mod_index=V_SPEED
+ mod_value=-9
++mod_index=V_MELEE_DEF
++mod_value=28
++req_index=V_PARRY
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -592,6 +772,10 @@
+ mod_value=90
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=33
++req_index=V_PARRY
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -605,6 +789,10 @@
+ mod_value=92
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=37
++req_index=V_PARRY
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -618,6 +806,10 @@
+ mod_value=94
+ mod_index=V_SPEED
+ mod_value=-15
++mod_index=V_MELEE_DEF
++mod_value=42
++req_index=V_PARRY
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -631,6 +823,10 @@
+ mod_value=96
+ mod_index=V_SPEED
+ mod_value=-17
++mod_index=V_MELEE_DEF
++mod_value=47
++req_index=V_PARRY
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -644,6 +840,10 @@
+ mod_value=98
+ mod_index=V_SPEED
+ mod_value=-19
++mod_index=V_MELEE_DEF
++mod_value=52
++req_index=V_PARRY
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -657,6 +857,10 @@
+ mod_value=96
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=12
++req_index=V_PARRY
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -670,6 +874,10 @@
+ mod_value=98
+ mod_index=V_SPEED
+ mod_value=-3
++mod_index=V_MELEE_DEF
++mod_value=17
++req_index=V_PARRY
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -683,6 +891,10 @@
+ mod_value=100
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=22
++req_index=V_PARRY
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -696,6 +908,10 @@
+ mod_value=102
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=26
++req_index=V_PARRY
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -709,6 +925,10 @@
+ mod_value=104
+ mod_index=V_SPEED
+ mod_value=-9
++mod_index=V_MELEE_DEF
++mod_value=31
++req_index=V_PARRY
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -722,6 +942,10 @@
+ mod_value=106
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=36
++req_index=V_PARRY
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -735,6 +959,10 @@
+ mod_value=108
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=41
++req_index=V_PARRY
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -748,6 +976,10 @@
+ mod_value=110
+ mod_index=V_SPEED
+ mod_value=-15
++mod_index=V_MELEE_DEF
++mod_value=45
++req_index=V_PARRY
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -761,6 +993,10 @@
+ mod_value=112
+ mod_index=V_SPEED
+ mod_value=-17
++mod_index=V_MELEE_DEF
++mod_value=50
++req_index=V_PARRY
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -774,6 +1010,10 @@
+ mod_value=114
+ mod_index=V_SPEED
+ mod_value=-19
++mod_index=V_MELEE_DEF
++mod_value=55
++req_index=V_PARRY
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNHEAD
+ needs_class=1
+@@ -787,6 +1027,10 @@
+ mod_value=180
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=17
++req_index=V_PARRY
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -800,6 +1044,10 @@
+ mod_value=185
+ mod_index=V_SPEED
+ mod_value=-6
++mod_index=V_MELEE_DEF
++mod_value=31
++req_index=V_PARRY
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -813,6 +1061,10 @@
+ mod_value=190
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=44
++req_index=V_PARRY
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -826,6 +1078,10 @@
+ mod_value=195
+ mod_index=V_SPEED
+ mod_value=-16
++mod_index=V_MELEE_DEF
++mod_value=56
++req_index=V_PARRY
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -839,6 +1095,10 @@
+ mod_value=200
+ mod_index=V_SPEED
+ mod_value=-21
++mod_index=V_MELEE_DEF
++mod_value=71
++req_index=V_PARRY
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -852,6 +1112,10 @@
+ mod_value=205
+ mod_index=V_SPEED
+ mod_value=-26
++mod_index=V_MELEE_DEF
++mod_value=85
++req_index=V_PARRY
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -865,6 +1129,10 @@
+ mod_value=210
+ mod_index=V_SPEED
+ mod_value=-31
++mod_index=V_MELEE_DEF
++mod_value=98
++req_index=V_PARRY
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -878,6 +1146,10 @@
+ mod_value=215
+ mod_index=V_SPEED
+ mod_value=-36
++mod_index=V_MELEE_DEF
++mod_value=110
++req_index=V_PARRY
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -891,6 +1163,10 @@
+ mod_value=220
+ mod_index=V_SPEED
+ mod_value=-41
++mod_index=V_MELEE_DEF
++mod_value=125
++req_index=V_PARRY
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -904,6 +1180,10 @@
+ mod_value=225
+ mod_index=V_SPEED
+ mod_value=-46
++mod_index=V_MELEE_DEF
++mod_value=139
++req_index=V_PARRY
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -917,6 +1197,10 @@
+ mod_value=200
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=26
++req_index=V_PARRY
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -930,6 +1214,10 @@
+ mod_value=205
+ mod_index=V_SPEED
+ mod_value=-6
++mod_index=V_MELEE_DEF
++mod_value=40
++req_index=V_PARRY
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -943,6 +1231,10 @@
+ mod_value=210
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=53
++req_index=V_PARRY
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -956,6 +1248,10 @@
+ mod_value=215
+ mod_index=V_SPEED
+ mod_value=-16
++mod_index=V_MELEE_DEF
++mod_value=65
++req_index=V_PARRY
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -969,6 +1265,10 @@
+ mod_value=220
+ mod_index=V_SPEED
+ mod_value=-21
++mod_index=V_MELEE_DEF
++mod_value=80
++req_index=V_PARRY
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -982,6 +1282,10 @@
+ mod_value=225
+ mod_index=V_SPEED
+ mod_value=-26
++mod_index=V_MELEE_DEF
++mod_value=94
++req_index=V_PARRY
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -995,6 +1299,10 @@
+ mod_value=230
+ mod_index=V_SPEED
+ mod_value=-31
++mod_index=V_MELEE_DEF
++mod_value=107
++req_index=V_PARRY
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1008,6 +1316,10 @@
+ mod_value=235
+ mod_index=V_SPEED
+ mod_value=-36
++mod_index=V_MELEE_DEF
++mod_value=119
++req_index=V_PARRY
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1021,6 +1333,10 @@
+ mod_value=240
+ mod_index=V_SPEED
+ mod_value=-41
++mod_index=V_MELEE_DEF
++mod_value=134
++req_index=V_PARRY
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1034,6 +1350,10 @@
+ mod_value=245
+ mod_index=V_SPEED
+ mod_value=-46
++mod_index=V_MELEE_DEF
++mod_value=148
++req_index=V_PARRY
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1047,6 +1367,10 @@
+ mod_value=240
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=35
++req_index=V_PARRY
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1060,6 +1384,10 @@
+ mod_value=245
+ mod_index=V_SPEED
+ mod_value=-6
++mod_index=V_MELEE_DEF
++mod_value=49
++req_index=V_PARRY
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1073,6 +1401,10 @@
+ mod_value=250
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=62
++req_index=V_PARRY
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1086,6 +1418,10 @@
+ mod_value=255
+ mod_index=V_SPEED
+ mod_value=-16
++mod_index=V_MELEE_DEF
++mod_value=74
++req_index=V_PARRY
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1099,6 +1435,10 @@
+ mod_value=260
+ mod_index=V_SPEED
+ mod_value=-21
++mod_index=V_MELEE_DEF
++mod_value=89
++req_index=V_PARRY
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1112,6 +1452,10 @@
+ mod_value=265
+ mod_index=V_SPEED
+ mod_value=-26
++mod_index=V_MELEE_DEF
++mod_value=103
++req_index=V_PARRY
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1125,6 +1469,10 @@
+ mod_value=270
+ mod_index=V_SPEED
+ mod_value=-31
++mod_index=V_MELEE_DEF
++mod_value=116
++req_index=V_PARRY
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1138,6 +1486,10 @@
+ mod_value=275
+ mod_index=V_SPEED
+ mod_value=-36
++mod_index=V_MELEE_DEF
++mod_value=128
++req_index=V_PARRY
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1151,6 +1503,10 @@
+ mod_value=280
+ mod_index=V_SPEED
+ mod_value=-41
++mod_index=V_MELEE_DEF
++mod_value=143
++req_index=V_PARRY
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1164,6 +1520,10 @@
+ mod_value=285
+ mod_index=V_SPEED
+ mod_value=-46
++mod_index=V_MELEE_DEF
++mod_value=157
++req_index=V_PARRY
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNBODY
+ needs_class=1
+@@ -1177,6 +1537,10 @@
+ mod_value=54
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=10
++req_index=V_PARRY
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1190,6 +1554,10 @@
+ mod_value=55
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=19
++req_index=V_PARRY
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1203,6 +1571,10 @@
+ mod_value=57
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=26
++req_index=V_PARRY
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1216,6 +1588,10 @@
+ mod_value=58
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=34
++req_index=V_PARRY
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1229,6 +1605,10 @@
+ mod_value=60
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=42
++req_index=V_PARRY
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1242,6 +1622,10 @@
+ mod_value=61
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=51
++req_index=V_PARRY
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1255,6 +1639,10 @@
+ mod_value=63
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=59
++req_index=V_PARRY
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1268,6 +1656,10 @@
+ mod_value=64
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=66
++req_index=V_PARRY
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1281,6 +1673,10 @@
+ mod_value=66
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=75
++req_index=V_PARRY
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1294,6 +1690,10 @@
+ mod_value=67
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=84
++req_index=V_PARRY
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1307,6 +1707,10 @@
+ mod_value=60
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=15
++req_index=V_PARRY
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1320,6 +1724,10 @@
+ mod_value=61
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=24
++req_index=V_PARRY
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1333,6 +1741,10 @@
+ mod_value=63
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=32
++req_index=V_PARRY
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1346,6 +1758,10 @@
+ mod_value=64
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=39
++req_index=V_PARRY
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1359,6 +1775,10 @@
+ mod_value=66
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=48
++req_index=V_PARRY
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1372,6 +1792,10 @@
+ mod_value=67
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=57
++req_index=V_PARRY
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1385,6 +1809,10 @@
+ mod_value=69
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=64
++req_index=V_PARRY
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1398,6 +1826,10 @@
+ mod_value=70
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=72
++req_index=V_PARRY
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1411,6 +1843,10 @@
+ mod_value=72
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=80
++req_index=V_PARRY
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1424,6 +1860,10 @@
+ mod_value=73
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=89
++req_index=V_PARRY
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1437,6 +1877,10 @@
+ mod_value=72
+ mod_index=V_SPEED
+ mod_value=-1
++mod_index=V_MELEE_DEF
++mod_value=21
++req_index=V_PARRY
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1450,6 +1894,10 @@
+ mod_value=73
+ mod_index=V_SPEED
+ mod_value=-2
++mod_index=V_MELEE_DEF
++mod_value=30
++req_index=V_PARRY
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1463,6 +1911,10 @@
+ mod_value=75
+ mod_index=V_SPEED
+ mod_value=-4
++mod_index=V_MELEE_DEF
++mod_value=37
++req_index=V_PARRY
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1476,6 +1928,10 @@
+ mod_value=76
+ mod_index=V_SPEED
+ mod_value=-5
++mod_index=V_MELEE_DEF
++mod_value=45
++req_index=V_PARRY
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1489,6 +1945,10 @@
+ mod_value=78
+ mod_index=V_SPEED
+ mod_value=-7
++mod_index=V_MELEE_DEF
++mod_value=53
++req_index=V_PARRY
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1502,6 +1962,10 @@
+ mod_value=79
+ mod_index=V_SPEED
+ mod_value=-8
++mod_index=V_MELEE_DEF
++mod_value=62
++req_index=V_PARRY
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1515,6 +1979,10 @@
+ mod_value=81
+ mod_index=V_SPEED
+ mod_value=-10
++mod_index=V_MELEE_DEF
++mod_value=69
++req_index=V_PARRY
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1528,6 +1996,10 @@
+ mod_value=82
+ mod_index=V_SPEED
+ mod_value=-11
++mod_index=V_MELEE_DEF
++mod_value=77
++req_index=V_PARRY
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1541,6 +2013,10 @@
+ mod_value=84
+ mod_index=V_SPEED
+ mod_value=-13
++mod_index=V_MELEE_DEF
++mod_value=86
++req_index=V_PARRY
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+@@ -1554,6 +2030,10 @@
+ mod_value=85
+ mod_index=V_SPEED
+ mod_value=-14
++mod_index=V_MELEE_DEF
++mod_value=94
++req_index=V_PARRY
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNLEGS
+ needs_class=1
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 20:27:09.375354821 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 20:27:09.381014591 +0000
+@@ -63,22 +63,26 @@
+ # add that percent of the spell's strength on top (0 = flat bonus only;
+ # 10 would give a strength 60 Bless another +6%).
+ #
+-# Damage (combat, all percent):
+-# weapon_level_damage: a player's weapon skill level adds this percent of
+-#   the level to melee damage (100 = +1% per level: Sword 50 = +50%).
+-#   NPCs don't get it (their damage stays as their templates set it).
+-# gear_damage: modifiers on worn gear for a weapon skill (Hand, Dagger,
+-#   Staff, Sword, Two-Handed), Fire or Lightning add this percent of the
+-#   points to that skill's damage (50: a +20 Lightning ring = +10%) instead
+-#   of raising the skill. gear_damage_cap is the most gear can add.
++# Combat (RuneScape-style hits, step 14; all percent):
++# tactics_boost: this percent of Tactics is added to the effective melee
++#   levels (accuracy = (weapon skill + Attack) / 2, strength = (weapon
++#   skill + STR) / 2, defence = (weapon skill + Parry) / 2).
++# min_hit: a melee hit that lands rolls between this percent of the max hit
++#   and the max hit, so a hit always does something.
++# armor_soak: armor takes off at most this percent of a melee hit.
++# magic_damage_cap: the most Magic Damage % gear can add to Fire/Lightning.
++# Gear no longer changes skills; weapons and armour carry Melee Accuracy,
++# Melee Strength, Melee Defence, Magic Accuracy, Magic Damage and Magic
++# Defence (mod_index=V_MELEE_ACC ... in the .itm files).
+ config:
+ bless_gather=10
+ bless_craft=10
+ bless_gather_strength=0
+ bless_craft_strength=0
+-weapon_level_damage=100
+-gear_damage=50
+-gear_damage_cap=25
++tactics_boost=10
++min_hit=20
++armor_soak=75
++magic_damage_cap=50
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/weapons.itm b/zones/generic/weapons.itm
+--- a/zones/generic/weapons.itm	2026-10-13 20:27:09.377186021 +0000
++++ b/zones/generic/weapons.itm	2026-10-13 20:27:09.381196474 +0000
+@@ -3,10 +3,16 @@
+ description="A Staff made of iron."
+ value=28
+ sprite=10230
+-mod_index=V_WEAPON
+-mod_value=402
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=3
++mod_index=V_MELEE_STR
++mod_value=5
++mod_index=V_MAGIC_ACC
++mod_value=2
++mod_index=V_MAGIC_DMG
++mod_value=1
++req_index=V_STAFF
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -18,10 +24,16 @@
+ description="A Staff made of iron."
+ value=35
+ sprite=10231
+-mod_index=V_WEAPON
+-mod_value=412
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=8
++mod_index=V_MELEE_STR
++mod_value=11
++mod_index=V_MAGIC_ACC
++mod_value=6
++mod_index=V_MAGIC_DMG
++mod_value=1
++req_index=V_STAFF
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -33,10 +45,16 @@
+ description="A Staff made of iron."
+ value=42
+ sprite=10232
+-mod_index=V_WEAPON
+-mod_value=422
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=12
++mod_index=V_MELEE_STR
++mod_value=17
++mod_index=V_MAGIC_ACC
++mod_value=10
++mod_index=V_MAGIC_DMG
++mod_value=2
++req_index=V_STAFF
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -48,10 +66,16 @@
+ description="A Staff made of iron."
+ value=49
+ sprite=10233
+-mod_index=V_WEAPON
+-mod_value=432
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=16
++mod_index=V_MELEE_STR
++mod_value=22
++mod_index=V_MAGIC_ACC
++mod_value=14
++mod_index=V_MAGIC_DMG
++mod_value=3
++req_index=V_STAFF
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -63,10 +87,16 @@
+ description="A Staff made of iron."
+ value=56
+ sprite=10234
+-mod_index=V_WEAPON
+-mod_value=442
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=21
++mod_index=V_MELEE_STR
++mod_value=29
++mod_index=V_MAGIC_ACC
++mod_value=18
++mod_index=V_MAGIC_DMG
++mod_value=4
++req_index=V_STAFF
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -78,10 +108,16 @@
+ description="A Staff made of iron."
+ value=63
+ sprite=10235
+-mod_index=V_WEAPON
+-mod_value=452
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=26
++mod_index=V_MELEE_STR
++mod_value=35
++mod_index=V_MAGIC_ACC
++mod_value=22
++mod_index=V_MAGIC_DMG
++mod_value=4
++req_index=V_STAFF
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -93,10 +129,16 @@
+ description="A Staff made of iron."
+ value=70
+ sprite=10236
+-mod_index=V_WEAPON
+-mod_value=462
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=30
++mod_index=V_MELEE_STR
++mod_value=41
++mod_index=V_MAGIC_ACC
++mod_value=25
++mod_index=V_MAGIC_DMG
++mod_value=5
++req_index=V_STAFF
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -108,10 +150,16 @@
+ description="A Staff made of iron."
+ value=77
+ sprite=10237
+-mod_index=V_WEAPON
+-mod_value=472
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=34
++mod_index=V_MELEE_STR
++mod_value=46
++mod_index=V_MAGIC_ACC
++mod_value=28
++mod_index=V_MAGIC_DMG
++mod_value=6
++req_index=V_STAFF
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -123,10 +171,16 @@
+ description="A Staff made of iron."
+ value=84
+ sprite=10238
+-mod_index=V_WEAPON
+-mod_value=482
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=39
++mod_index=V_MELEE_STR
++mod_value=53
++mod_index=V_MAGIC_ACC
++mod_value=32
++mod_index=V_MAGIC_DMG
++mod_value=7
++req_index=V_STAFF
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -138,10 +192,16 @@
+ description="A Staff made of iron."
+ value=91
+ sprite=10239
+-mod_index=V_WEAPON
+-mod_value=492
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=44
++mod_index=V_MELEE_STR
++mod_value=59
++mod_index=V_MAGIC_ACC
++mod_value=36
++mod_index=V_MAGIC_DMG
++mod_value=7
++req_index=V_STAFF
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -153,10 +213,16 @@
+ description="A Staff made of steel."
+ value=196
+ sprite=10240
+-mod_index=V_WEAPON
+-mod_value=404
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=6
++mod_index=V_MELEE_STR
++mod_value=9
++mod_index=V_MAGIC_ACC
++mod_value=5
++mod_index=V_MAGIC_DMG
++mod_value=1
++req_index=V_STAFF
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -168,10 +234,16 @@
+ description="A Staff made of steel."
+ value=245
+ sprite=10241
+-mod_index=V_WEAPON
+-mod_value=414
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=11
++mod_index=V_MELEE_STR
++mod_value=15
++mod_index=V_MAGIC_ACC
++mod_value=9
++mod_index=V_MAGIC_DMG
++mod_value=2
++req_index=V_STAFF
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -183,10 +255,16 @@
+ description="A Staff made of steel."
+ value=294
+ sprite=10242
+-mod_index=V_WEAPON
+-mod_value=424
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=15
++mod_index=V_MELEE_STR
++mod_value=21
++mod_index=V_MAGIC_ACC
++mod_value=12
++mod_index=V_MAGIC_DMG
++mod_value=3
++req_index=V_STAFF
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -198,10 +276,16 @@
+ description="A Staff made of steel."
+ value=343
+ sprite=10243
+-mod_index=V_WEAPON
+-mod_value=434
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=19
++mod_index=V_MELEE_STR
++mod_value=26
++mod_index=V_MAGIC_ACC
++mod_value=16
++mod_index=V_MAGIC_DMG
++mod_value=3
++req_index=V_STAFF
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -213,10 +297,16 @@
+ description="A Staff made of steel."
+ value=392
+ sprite=10244
+-mod_index=V_WEAPON
+-mod_value=444
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=24
++mod_index=V_MELEE_STR
++mod_value=33
++mod_index=V_MAGIC_ACC
++mod_value=20
++mod_index=V_MAGIC_DMG
++mod_value=4
++req_index=V_STAFF
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -228,10 +318,16 @@
+ description="A Staff made of steel."
+ value=441
+ sprite=10245
+-mod_index=V_WEAPON
+-mod_value=454
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=29
++mod_index=V_MELEE_STR
++mod_value=39
++mod_index=V_MAGIC_ACC
++mod_value=24
++mod_index=V_MAGIC_DMG
++mod_value=5
++req_index=V_STAFF
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -243,10 +339,16 @@
+ description="A Staff made of steel."
+ value=490
+ sprite=10246
+-mod_index=V_WEAPON
+-mod_value=464
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=33
++mod_index=V_MELEE_STR
++mod_value=45
++mod_index=V_MAGIC_ACC
++mod_value=28
++mod_index=V_MAGIC_DMG
++mod_value=6
++req_index=V_STAFF
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -258,10 +360,16 @@
+ description="A Staff made of steel."
+ value=539
+ sprite=10247
+-mod_index=V_WEAPON
+-mod_value=474
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=37
++mod_index=V_MELEE_STR
++mod_value=50
++mod_index=V_MAGIC_ACC
++mod_value=31
++mod_index=V_MAGIC_DMG
++mod_value=6
++req_index=V_STAFF
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -273,10 +381,16 @@
+ description="A Staff made of steel."
+ value=588
+ sprite=10248
+-mod_index=V_WEAPON
+-mod_value=484
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=42
++mod_index=V_MELEE_STR
++mod_value=57
++mod_index=V_MAGIC_ACC
++mod_value=35
++mod_index=V_MAGIC_DMG
++mod_value=7
++req_index=V_STAFF
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -288,10 +402,16 @@
+ description="A Staff made of steel."
+ value=637
+ sprite=10249
+-mod_index=V_WEAPON
+-mod_value=494
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=47
++mod_index=V_MELEE_STR
++mod_value=63
++mod_index=V_MAGIC_ACC
++mod_value=39
++mod_index=V_MAGIC_DMG
++mod_value=8
++req_index=V_STAFF
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -303,10 +423,16 @@
+ description="A Staff made of mithril."
+ value=476
+ sprite=10250
+-mod_index=V_WEAPON
+-mod_value=408
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=9
++mod_index=V_MELEE_STR
++mod_value=13
++mod_index=V_MAGIC_ACC
++mod_value=8
++mod_index=V_MAGIC_DMG
++mod_value=2
++req_index=V_STAFF
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -318,10 +444,16 @@
+ description="A Staff made of mithril."
+ value=595
+ sprite=10251
+-mod_index=V_WEAPON
+-mod_value=418
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=14
++mod_index=V_MELEE_STR
++mod_value=19
++mod_index=V_MAGIC_ACC
++mod_value=12
++mod_index=V_MAGIC_DMG
++mod_value=2
++req_index=V_STAFF
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -333,10 +465,16 @@
+ description="A Staff made of mithril."
+ value=714
+ sprite=10252
+-mod_index=V_WEAPON
+-mod_value=428
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=18
++mod_index=V_MELEE_STR
++mod_value=25
++mod_index=V_MAGIC_ACC
++mod_value=15
++mod_index=V_MAGIC_DMG
++mod_value=3
++req_index=V_STAFF
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -348,10 +486,16 @@
+ description="A Staff made of mithril."
+ value=833
+ sprite=10253
+-mod_index=V_WEAPON
+-mod_value=438
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=22
++mod_index=V_MELEE_STR
++mod_value=30
++mod_index=V_MAGIC_ACC
++mod_value=18
++mod_index=V_MAGIC_DMG
++mod_value=4
++req_index=V_STAFF
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -363,10 +507,16 @@
+ description="A Staff made of mithril."
+ value=952
+ sprite=10254
+-mod_index=V_WEAPON
+-mod_value=448
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=27
++mod_index=V_MELEE_STR
++mod_value=37
++mod_index=V_MAGIC_ACC
++mod_value=22
++mod_index=V_MAGIC_DMG
++mod_value=5
++req_index=V_STAFF
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -378,10 +528,16 @@
+ description="A Staff made of mithril."
+ value=1071
+ sprite=10255
+-mod_index=V_WEAPON
+-mod_value=458
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=32
++mod_index=V_MELEE_STR
++mod_value=43
++mod_index=V_MAGIC_ACC
++mod_value=26
++mod_index=V_MAGIC_DMG
++mod_value=5
++req_index=V_STAFF
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -393,10 +549,16 @@
+ description="A Staff made of mithril."
+ value=1190
+ sprite=10256
+-mod_index=V_WEAPON
+-mod_value=468
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=36
++mod_index=V_MELEE_STR
++mod_value=49
++mod_index=V_MAGIC_ACC
++mod_value=30
++mod_index=V_MAGIC_DMG
++mod_value=6
++req_index=V_STAFF
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -408,10 +570,16 @@
+ description="A Staff made of mithril."
+ value=1309
+ sprite=10257
+-mod_index=V_WEAPON
+-mod_value=478
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=40
++mod_index=V_MELEE_STR
++mod_value=54
++mod_index=V_MAGIC_ACC
++mod_value=34
++mod_index=V_MAGIC_DMG
++mod_value=7
++req_index=V_STAFF
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -423,10 +591,16 @@
+ description="A Staff made of mithril."
+ value=1428
+ sprite=10258
+-mod_index=V_WEAPON
+-mod_value=488
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=45
++mod_index=V_MELEE_STR
++mod_value=61
++mod_index=V_MAGIC_ACC
++mod_value=38
++mod_index=V_MAGIC_DMG
++mod_value=8
++req_index=V_STAFF
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -438,10 +612,16 @@
+ description="A Staff made of mithril."
+ value=1547
+ sprite=10259
+-mod_index=V_WEAPON
+-mod_value=498
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=50
++mod_index=V_MELEE_STR
++mod_value=67
++mod_index=V_MAGIC_ACC
++mod_value=42
++mod_index=V_MAGIC_DMG
++mod_value=8
++req_index=V_STAFF
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -453,10 +633,12 @@
+ description="A Dagger made of iron."
+ value=20
+ sprite=10170
+-mod_index=V_WEAPON
+-mod_value=398
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=9
++mod_index=V_MELEE_STR
++mod_value=5
++req_index=V_DAGGER
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -466,10 +648,12 @@
+ description="A Dagger made of iron."
+ value=25
+ sprite=10171
+-mod_index=V_WEAPON
+-mod_value=408
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=17
++mod_index=V_MELEE_STR
++mod_value=11
++req_index=V_DAGGER
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -479,10 +663,12 @@
+ description="A Dagger made of iron."
+ value=30
+ sprite=10172
+-mod_index=V_WEAPON
+-mod_value=418
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=24
++mod_index=V_MELEE_STR
++mod_value=17
++req_index=V_DAGGER
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -492,10 +678,12 @@
+ description="A Dagger made of iron."
+ value=35
+ sprite=10173
+-mod_index=V_WEAPON
+-mod_value=428
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=31
++mod_index=V_MELEE_STR
++mod_value=22
++req_index=V_DAGGER
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -505,10 +693,12 @@
+ description="A Dagger made of iron."
+ value=40
+ sprite=10174
+-mod_index=V_WEAPON
+-mod_value=438
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=39
++mod_index=V_MELEE_STR
++mod_value=29
++req_index=V_DAGGER
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -518,10 +708,12 @@
+ description="A Dagger made of iron."
+ value=45
+ sprite=10175
+-mod_index=V_WEAPON
+-mod_value=448
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=47
++mod_index=V_MELEE_STR
++mod_value=35
++req_index=V_DAGGER
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -531,10 +723,12 @@
+ description="A Dagger made of iron."
+ value=50
+ sprite=10176
+-mod_index=V_WEAPON
+-mod_value=458
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=54
++mod_index=V_MELEE_STR
++mod_value=41
++req_index=V_DAGGER
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -544,10 +738,12 @@
+ description="A Dagger made of iron."
+ value=55
+ sprite=10177
+-mod_index=V_WEAPON
+-mod_value=468
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=61
++mod_index=V_MELEE_STR
++mod_value=46
++req_index=V_DAGGER
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -557,10 +753,12 @@
+ description="A Dagger made of iron."
+ value=60
+ sprite=10178
+-mod_index=V_WEAPON
+-mod_value=478
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=69
++mod_index=V_MELEE_STR
++mod_value=53
++req_index=V_DAGGER
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -570,10 +768,12 @@
+ description="A Dagger made of iron."
+ value=65
+ sprite=10179
+-mod_index=V_WEAPON
+-mod_value=488
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=77
++mod_index=V_MELEE_STR
++mod_value=59
++req_index=V_DAGGER
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -583,10 +783,12 @@
+ description="A Dagger made of steel."
+ value=140
+ sprite=10180
+-mod_index=V_WEAPON
+-mod_value=400
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=14
++mod_index=V_MELEE_STR
++mod_value=9
++req_index=V_DAGGER
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -596,10 +798,12 @@
+ description="A Dagger made of steel."
+ value=175
+ sprite=10181
+-mod_index=V_WEAPON
+-mod_value=410
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=22
++mod_index=V_MELEE_STR
++mod_value=15
++req_index=V_DAGGER
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -609,10 +813,12 @@
+ description="A Dagger made of steel."
+ value=210
+ sprite=10182
+-mod_index=V_WEAPON
+-mod_value=420
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=29
++mod_index=V_MELEE_STR
++mod_value=21
++req_index=V_DAGGER
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -622,10 +828,12 @@
+ description="A Dagger made of steel."
+ value=245
+ sprite=10183
+-mod_index=V_WEAPON
+-mod_value=430
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=36
++mod_index=V_MELEE_STR
++mod_value=26
++req_index=V_DAGGER
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -635,10 +843,12 @@
+ description="A Dagger made of steel."
+ value=280
+ sprite=10184
+-mod_index=V_WEAPON
+-mod_value=440
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=44
++mod_index=V_MELEE_STR
++mod_value=33
++req_index=V_DAGGER
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -648,10 +858,12 @@
+ description="A Dagger made of steel."
+ value=315
+ sprite=10185
+-mod_index=V_WEAPON
+-mod_value=450
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=52
++mod_index=V_MELEE_STR
++mod_value=39
++req_index=V_DAGGER
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -661,10 +873,12 @@
+ description="A Dagger made of steel."
+ value=350
+ sprite=10186
+-mod_index=V_WEAPON
+-mod_value=460
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=59
++mod_index=V_MELEE_STR
++mod_value=45
++req_index=V_DAGGER
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -674,10 +888,12 @@
+ description="A Dagger made of steel."
+ value=385
+ sprite=10187
+-mod_index=V_WEAPON
+-mod_value=470
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=66
++mod_index=V_MELEE_STR
++mod_value=50
++req_index=V_DAGGER
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -687,10 +903,12 @@
+ description="A Dagger made of steel."
+ value=420
+ sprite=10188
+-mod_index=V_WEAPON
+-mod_value=480
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=74
++mod_index=V_MELEE_STR
++mod_value=57
++req_index=V_DAGGER
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -700,10 +918,12 @@
+ description="A Dagger made of steel."
+ value=455
+ sprite=10189
+-mod_index=V_WEAPON
+-mod_value=490
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=82
++mod_index=V_MELEE_STR
++mod_value=63
++req_index=V_DAGGER
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -713,10 +933,12 @@
+ description="A Dagger made of mithril."
+ value=340
+ sprite=10190
+-mod_index=V_WEAPON
+-mod_value=404
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=19
++mod_index=V_MELEE_STR
++mod_value=13
++req_index=V_DAGGER
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -726,10 +948,12 @@
+ description="A Dagger made of mithril."
+ value=425
+ sprite=10191
+-mod_index=V_WEAPON
+-mod_value=414
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=27
++mod_index=V_MELEE_STR
++mod_value=19
++req_index=V_DAGGER
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -739,10 +963,12 @@
+ description="A Dagger made of mithril."
+ value=510
+ sprite=10192
+-mod_index=V_WEAPON
+-mod_value=424
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=34
++mod_index=V_MELEE_STR
++mod_value=25
++req_index=V_DAGGER
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -752,10 +978,12 @@
+ description="A Dagger made of mithril."
+ value=595
+ sprite=10193
+-mod_index=V_WEAPON
+-mod_value=434
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=41
++mod_index=V_MELEE_STR
++mod_value=30
++req_index=V_DAGGER
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -765,10 +993,12 @@
+ description="A Dagger made of mithril."
+ value=680
+ sprite=10194
+-mod_index=V_WEAPON
+-mod_value=444
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=49
++mod_index=V_MELEE_STR
++mod_value=37
++req_index=V_DAGGER
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -778,10 +1008,12 @@
+ description="A Dagger made of mithril."
+ value=765
+ sprite=10195
+-mod_index=V_WEAPON
+-mod_value=454
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=57
++mod_index=V_MELEE_STR
++mod_value=43
++req_index=V_DAGGER
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -791,10 +1023,12 @@
+ description="A Dagger made of mithril."
+ value=850
+ sprite=10196
+-mod_index=V_WEAPON
+-mod_value=464
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=64
++mod_index=V_MELEE_STR
++mod_value=49
++req_index=V_DAGGER
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -804,10 +1038,12 @@
+ description="A Dagger made of mithril."
+ value=935
+ sprite=10197
+-mod_index=V_WEAPON
+-mod_value=474
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=71
++mod_index=V_MELEE_STR
++mod_value=54
++req_index=V_DAGGER
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -817,10 +1053,12 @@
+ description="A Dagger made of mithril."
+ value=1020
+ sprite=10198
+-mod_index=V_WEAPON
+-mod_value=484
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=79
++mod_index=V_MELEE_STR
++mod_value=61
++req_index=V_DAGGER
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -830,10 +1068,12 @@
+ description="A Dagger made of mithril."
+ value=1105
+ sprite=10199
+-mod_index=V_WEAPON
+-mod_value=494
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=87
++mod_index=V_MELEE_STR
++mod_value=67
++req_index=V_DAGGER
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_DAGGER
+@@ -843,10 +1083,12 @@
+ description="A Sword made of iron."
+ value=40
+ sprite=10200
+-mod_index=V_WEAPON
+-mod_value=404
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=5
++mod_index=V_MELEE_STR
++mod_value=6
++req_index=V_SWORD
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -857,10 +1099,12 @@
+ description="A Sword made of iron."
+ value=50
+ sprite=10201
+-mod_index=V_WEAPON
+-mod_value=414
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=13
++mod_index=V_MELEE_STR
++mod_value=14
++req_index=V_SWORD
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -871,10 +1115,12 @@
+ description="A Sword made of iron."
+ value=60
+ sprite=10202
+-mod_index=V_WEAPON
+-mod_value=424
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=20
++mod_index=V_MELEE_STR
++mod_value=21
++req_index=V_SWORD
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -885,10 +1131,12 @@
+ description="A Sword made of iron."
+ value=70
+ sprite=10203
+-mod_index=V_WEAPON
+-mod_value=434
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=27
++mod_index=V_MELEE_STR
++mod_value=28
++req_index=V_SWORD
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -899,10 +1147,12 @@
+ description="A Sword made of iron."
+ value=80
+ sprite=10204
+-mod_index=V_WEAPON
+-mod_value=444
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=35
++mod_index=V_MELEE_STR
++mod_value=36
++req_index=V_SWORD
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -913,10 +1163,12 @@
+ description="A Sword made of iron."
+ value=90
+ sprite=10205
+-mod_index=V_WEAPON
+-mod_value=454
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=43
++mod_index=V_MELEE_STR
++mod_value=44
++req_index=V_SWORD
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -927,10 +1179,12 @@
+ description="A Sword made of iron."
+ value=100
+ sprite=10206
+-mod_index=V_WEAPON
+-mod_value=464
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=50
++mod_index=V_MELEE_STR
++mod_value=51
++req_index=V_SWORD
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -941,10 +1195,12 @@
+ description="A Sword made of iron."
+ value=110
+ sprite=10207
+-mod_index=V_WEAPON
+-mod_value=474
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=57
++mod_index=V_MELEE_STR
++mod_value=58
++req_index=V_SWORD
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -955,10 +1211,12 @@
+ description="A Sword made of iron."
+ value=120
+ sprite=10208
+-mod_index=V_WEAPON
+-mod_value=484
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=65
++mod_index=V_MELEE_STR
++mod_value=66
++req_index=V_SWORD
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -969,10 +1227,12 @@
+ description="A Sword made of iron."
+ value=130
+ sprite=10209
+-mod_index=V_WEAPON
+-mod_value=494
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=73
++mod_index=V_MELEE_STR
++mod_value=74
++req_index=V_SWORD
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -983,10 +1243,12 @@
+ description="A Sword made of steel."
+ value=280
+ sprite=10210
+-mod_index=V_WEAPON
+-mod_value=406
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=10
++mod_index=V_MELEE_STR
++mod_value=11
++req_index=V_SWORD
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -997,10 +1259,12 @@
+ description="A Sword made of steel."
+ value=350
+ sprite=10211
+-mod_index=V_WEAPON
+-mod_value=416
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=18
++mod_index=V_MELEE_STR
++mod_value=19
++req_index=V_SWORD
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1011,10 +1275,12 @@
+ description="A Sword made of steel."
+ value=420
+ sprite=10212
+-mod_index=V_WEAPON
+-mod_value=426
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=25
++mod_index=V_MELEE_STR
++mod_value=26
++req_index=V_SWORD
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1025,10 +1291,12 @@
+ description="A Sword made of steel."
+ value=490
+ sprite=10213
+-mod_index=V_WEAPON
+-mod_value=436
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=32
++mod_index=V_MELEE_STR
++mod_value=33
++req_index=V_SWORD
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1039,10 +1307,12 @@
+ description="A Sword made of steel."
+ value=560
+ sprite=10214
+-mod_index=V_WEAPON
+-mod_value=446
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=40
++mod_index=V_MELEE_STR
++mod_value=41
++req_index=V_SWORD
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1053,10 +1323,12 @@
+ description="A Sword made of steel."
+ value=630
+ sprite=10215
+-mod_index=V_WEAPON
+-mod_value=456
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=48
++mod_index=V_MELEE_STR
++mod_value=49
++req_index=V_SWORD
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1067,10 +1339,12 @@
+ description="A Sword made of steel."
+ value=700
+ sprite=10216
+-mod_index=V_WEAPON
+-mod_value=466
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=55
++mod_index=V_MELEE_STR
++mod_value=56
++req_index=V_SWORD
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1081,10 +1355,12 @@
+ description="A Sword made of steel."
+ value=770
+ sprite=10217
+-mod_index=V_WEAPON
+-mod_value=476
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=62
++mod_index=V_MELEE_STR
++mod_value=63
++req_index=V_SWORD
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1095,10 +1371,12 @@
+ description="A Sword made of steel."
+ value=840
+ sprite=10218
+-mod_index=V_WEAPON
+-mod_value=486
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=70
++mod_index=V_MELEE_STR
++mod_value=71
++req_index=V_SWORD
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1109,10 +1387,12 @@
+ description="A Sword made of steel."
+ value=910
+ sprite=10219
+-mod_index=V_WEAPON
+-mod_value=496
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=78
++mod_index=V_MELEE_STR
++mod_value=79
++req_index=V_SWORD
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1123,10 +1403,12 @@
+ description="A Sword made of mithril."
+ value=680
+ sprite=10220
+-mod_index=V_WEAPON
+-mod_value=410
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=15
++mod_index=V_MELEE_STR
++mod_value=16
++req_index=V_SWORD
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1137,10 +1419,12 @@
+ description="A Sword made of mithril."
+ value=850
+ sprite=10221
+-mod_index=V_WEAPON
+-mod_value=420
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=23
++mod_index=V_MELEE_STR
++mod_value=24
++req_index=V_SWORD
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1151,10 +1435,12 @@
+ description="A Sword made of mithril."
+ value=1020
+ sprite=10222
+-mod_index=V_WEAPON
+-mod_value=430
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=30
++mod_index=V_MELEE_STR
++mod_value=31
++req_index=V_SWORD
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1165,10 +1451,12 @@
+ description="A Sword made of mithril."
+ value=1190
+ sprite=10223
+-mod_index=V_WEAPON
+-mod_value=440
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=37
++mod_index=V_MELEE_STR
++mod_value=38
++req_index=V_SWORD
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1179,10 +1467,12 @@
+ description="A Sword made of mithril."
+ value=1360
+ sprite=10224
+-mod_index=V_WEAPON
+-mod_value=450
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=45
++mod_index=V_MELEE_STR
++mod_value=46
++req_index=V_SWORD
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1193,10 +1483,12 @@
+ description="A Sword made of mithril."
+ value=1530
+ sprite=10225
+-mod_index=V_WEAPON
+-mod_value=460
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=53
++mod_index=V_MELEE_STR
++mod_value=54
++req_index=V_SWORD
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1207,10 +1499,12 @@
+ description="A Sword made of mithril."
+ value=1700
+ sprite=10226
+-mod_index=V_WEAPON
+-mod_value=470
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=60
++mod_index=V_MELEE_STR
++mod_value=61
++req_index=V_SWORD
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1221,10 +1515,12 @@
+ description="A Sword made of mithril."
+ value=1870
+ sprite=10227
+-mod_index=V_WEAPON
+-mod_value=480
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=67
++mod_index=V_MELEE_STR
++mod_value=68
++req_index=V_SWORD
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1235,10 +1531,12 @@
+ description="A Sword made of mithril."
+ value=2040
+ sprite=10228
+-mod_index=V_WEAPON
+-mod_value=490
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=75
++mod_index=V_MELEE_STR
++mod_value=76
++req_index=V_SWORD
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1249,10 +1547,12 @@
+ description="A Sword made of mithril."
+ value=2210
+ sprite=10229
+-mod_index=V_WEAPON
+-mod_value=500
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=83
++mod_index=V_MELEE_STR
++mod_value=84
++req_index=V_SWORD
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_SWORD
+@@ -1263,10 +1563,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=60
+ sprite=10260
+-mod_index=V_WEAPON
+-mod_value=410
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=9
++mod_index=V_MELEE_STR
++mod_value=11
++req_index=V_TWOHAND
++req_value=1
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1278,10 +1580,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=75
+ sprite=10261
+-mod_index=V_WEAPON
+-mod_value=420
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=23
++mod_index=V_MELEE_STR
++mod_value=25
++req_index=V_TWOHAND
++req_value=9
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1293,10 +1597,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=90
+ sprite=10262
+-mod_index=V_WEAPON
+-mod_value=430
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=36
++mod_index=V_MELEE_STR
++mod_value=38
++req_index=V_TWOHAND
++req_value=16
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1308,10 +1614,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=105
+ sprite=10263
+-mod_index=V_WEAPON
+-mod_value=440
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=49
++mod_index=V_MELEE_STR
++mod_value=50
++req_index=V_TWOHAND
++req_value=23
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1323,10 +1631,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=120
+ sprite=10264
+-mod_index=V_WEAPON
+-mod_value=450
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=63
++mod_index=V_MELEE_STR
++mod_value=65
++req_index=V_TWOHAND
++req_value=31
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1338,10 +1648,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=135
+ sprite=10265
+-mod_index=V_WEAPON
+-mod_value=460
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=77
++mod_index=V_MELEE_STR
++mod_value=79
++req_index=V_TWOHAND
++req_value=39
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1353,10 +1665,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=150
+ sprite=10266
+-mod_index=V_WEAPON
+-mod_value=470
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=90
++mod_index=V_MELEE_STR
++mod_value=92
++req_index=V_TWOHAND
++req_value=46
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1368,10 +1682,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=165
+ sprite=10267
+-mod_index=V_WEAPON
+-mod_value=480
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=103
++mod_index=V_MELEE_STR
++mod_value=104
++req_index=V_TWOHAND
++req_value=53
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1383,10 +1699,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=180
+ sprite=10268
+-mod_index=V_WEAPON
+-mod_value=490
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=117
++mod_index=V_MELEE_STR
++mod_value=119
++req_index=V_TWOHAND
++req_value=61
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1398,10 +1716,12 @@
+ description="A Two-Handed Sword made of iron."
+ value=195
+ sprite=10269
+-mod_index=V_WEAPON
+-mod_value=500
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=131
++mod_index=V_MELEE_STR
++mod_value=133
++req_index=V_TWOHAND
++req_value=69
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1413,10 +1733,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=420
+ sprite=10270
+-mod_index=V_WEAPON
+-mod_value=412
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=18
++mod_index=V_MELEE_STR
++mod_value=20
++req_index=V_TWOHAND
++req_value=6
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1428,10 +1750,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=525
+ sprite=10271
+-mod_index=V_WEAPON
+-mod_value=422
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=32
++mod_index=V_MELEE_STR
++mod_value=34
++req_index=V_TWOHAND
++req_value=14
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1443,10 +1767,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=630
+ sprite=10272
+-mod_index=V_WEAPON
+-mod_value=432
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=45
++mod_index=V_MELEE_STR
++mod_value=47
++req_index=V_TWOHAND
++req_value=21
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1458,10 +1784,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=735
+ sprite=10273
+-mod_index=V_WEAPON
+-mod_value=442
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=58
++mod_index=V_MELEE_STR
++mod_value=59
++req_index=V_TWOHAND
++req_value=28
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1473,10 +1801,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=840
+ sprite=10274
+-mod_index=V_WEAPON
+-mod_value=452
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=72
++mod_index=V_MELEE_STR
++mod_value=74
++req_index=V_TWOHAND
++req_value=36
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1488,10 +1818,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=945
+ sprite=10275
+-mod_index=V_WEAPON
+-mod_value=462
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=86
++mod_index=V_MELEE_STR
++mod_value=88
++req_index=V_TWOHAND
++req_value=44
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1503,10 +1835,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=1050
+ sprite=10276
+-mod_index=V_WEAPON
+-mod_value=472
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=99
++mod_index=V_MELEE_STR
++mod_value=101
++req_index=V_TWOHAND
++req_value=51
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1518,10 +1852,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=1155
+ sprite=10277
+-mod_index=V_WEAPON
+-mod_value=482
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=112
++mod_index=V_MELEE_STR
++mod_value=113
++req_index=V_TWOHAND
++req_value=58
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1533,10 +1869,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=1260
+ sprite=10278
+-mod_index=V_WEAPON
+-mod_value=492
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=126
++mod_index=V_MELEE_STR
++mod_value=128
++req_index=V_TWOHAND
++req_value=66
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1548,10 +1886,12 @@
+ description="A Two-Handed Sword made of steel."
+ value=1365
+ sprite=10279
+-mod_index=V_WEAPON
+-mod_value=502
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=140
++mod_index=V_MELEE_STR
++mod_value=142
++req_index=V_TWOHAND
++req_value=74
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1563,10 +1903,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=1020
+ sprite=10280
+-mod_index=V_WEAPON
+-mod_value=416
+-mod_index=V_DEFENSE
+-mod_value=-1
++mod_index=V_MELEE_ACC
++mod_value=27
++mod_index=V_MELEE_STR
++mod_value=29
++req_index=V_TWOHAND
++req_value=11
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1578,10 +1920,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=1275
+ sprite=10281
+-mod_index=V_WEAPON
+-mod_value=426
+-mod_index=V_DEFENSE
+-mod_value=-3
++mod_index=V_MELEE_ACC
++mod_value=41
++mod_index=V_MELEE_STR
++mod_value=43
++req_index=V_TWOHAND
++req_value=19
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1593,10 +1937,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=1530
+ sprite=10282
+-mod_index=V_WEAPON
+-mod_value=436
+-mod_index=V_DEFENSE
+-mod_value=-5
++mod_index=V_MELEE_ACC
++mod_value=54
++mod_index=V_MELEE_STR
++mod_value=56
++req_index=V_TWOHAND
++req_value=26
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1608,10 +1954,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=1785
+ sprite=10283
+-mod_index=V_WEAPON
+-mod_value=446
+-mod_index=V_DEFENSE
+-mod_value=-7
++mod_index=V_MELEE_ACC
++mod_value=67
++mod_index=V_MELEE_STR
++mod_value=68
++req_index=V_TWOHAND
++req_value=33
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1623,10 +1971,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=2040
+ sprite=10284
+-mod_index=V_WEAPON
+-mod_value=456
+-mod_index=V_DEFENSE
+-mod_value=-9
++mod_index=V_MELEE_ACC
++mod_value=81
++mod_index=V_MELEE_STR
++mod_value=83
++req_index=V_TWOHAND
++req_value=41
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1638,10 +1988,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=2295
+ sprite=10285
+-mod_index=V_WEAPON
+-mod_value=466
+-mod_index=V_DEFENSE
+-mod_value=-11
++mod_index=V_MELEE_ACC
++mod_value=95
++mod_index=V_MELEE_STR
++mod_value=97
++req_index=V_TWOHAND
++req_value=49
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1653,10 +2005,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=2550
+ sprite=10286
+-mod_index=V_WEAPON
+-mod_value=476
+-mod_index=V_DEFENSE
+-mod_value=-13
++mod_index=V_MELEE_ACC
++mod_value=108
++mod_index=V_MELEE_STR
++mod_value=110
++req_index=V_TWOHAND
++req_value=56
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1668,10 +2022,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=2805
+ sprite=10287
+-mod_index=V_WEAPON
+-mod_value=486
+-mod_index=V_DEFENSE
+-mod_value=-15
++mod_index=V_MELEE_ACC
++mod_value=121
++mod_index=V_MELEE_STR
++mod_value=122
++req_index=V_TWOHAND
++req_value=63
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1683,10 +2039,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=3060
+ sprite=10288
+-mod_index=V_WEAPON
+-mod_value=496
+-mod_index=V_DEFENSE
+-mod_value=-17
++mod_index=V_MELEE_ACC
++mod_value=135
++mod_index=V_MELEE_STR
++mod_value=137
++req_index=V_TWOHAND
++req_value=71
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED
+@@ -1698,10 +2056,12 @@
+ description="A Two-Handed Sword made of mithril."
+ value=3315
+ sprite=10289
+-mod_index=V_WEAPON
+-mod_value=506
+-mod_index=V_DEFENSE
+-mod_value=-19
++mod_index=V_MELEE_ACC
++mod_value=149
++mod_index=V_MELEE_STR
++mod_value=151
++req_index=V_TWOHAND
++req_value=79
+ flag=IF_TAKE
+ flag=IF_WNRHAND
+ flag=IF_WNTWOHANDED

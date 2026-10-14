@@ -1,0 +1,134 @@
+diff -ru a/src/act.c b/src/act.c
+--- a/src/act.c	2026-10-13 23:23:44.476538780 +0000
++++ b/src/act.c	2026-10-13 23:23:44.480172451 +0000
+@@ -31,6 +31,7 @@
+ #include "clan.h"
+ #include "act.h"
+ #include "skillreg.h"
++#include "skilling.h"
+ 
+ void hurt_equipment(int cn, int divi);
+ 
+@@ -1258,9 +1259,15 @@
+     }
+ }
+ 
+-// skill XP for a successful skill use (spells, warcry); ret is the action's result
++// skill XP for a successful skill use (spells, warcry); ret is the action's result.
++// Spells give the fixed spell_xp_* of skilling.cfg per cast (Fire and Lightning 0 by default: they get
++// Magic XP from their damage only), anything else the skill's use_xp.
+ static int skill_use(int cn, int v, int ret) {
+-    if (ret) skill_used(cn, skill_for_value(v));
++    int xp;
++
++    if (!ret) return ret;
++    if ((xp = skilling_spell_xp(v)) < 0) skill_used(cn, skill_for_value(v));
++    else if (xp) add_skill_xp(cn, skill_for_value(v), xp);
+     return ret;
+ }
+ 
+diff -ru a/src/skilling.c b/src/skilling.c
+--- a/src/skilling.c	2026-10-13 23:23:44.476587361 +0000
++++ b/src/skilling.c	2026-10-13 23:23:44.480387743 +0000
+@@ -103,8 +103,25 @@
+ // config (step 15): body_control_gather tenths of a percent per Body Control level are added to the
+ // gather chance, clarity_luck tenths of a percent per Clarity level is the chance of one extra resource
+ static int body_control_gather = 2, clarity_luck = 2;
++// config: Magic XP per successful cast. Fire and Lightning default to 0: they train Magic only through the
++// damage they deal (dmg_xp of MAGIC in skills.cfg)
++static int spell_xp_heal = 15, spell_xp_bless = 15, spell_xp_freeze = 15, spell_xp_magicshield = 15;
++static int spell_xp_fire = 0, spell_xp_lightning = 0;
+ static int type_skill[SKT_MAX + 1]; // skill of the recipes of a type (smelt, smith, craft), for headers and the window
+ 
++// Magic XP for one successful cast of the spell in value slot v, -1 if v is not a spell (use the skill's use_xp)
++int skilling_spell_xp(int v) {
++    switch (v) {
++    case V_HEAL: return spell_xp_heal;
++    case V_BLESS: return spell_xp_bless;
++    case V_FREEZE: return spell_xp_freeze;
++    case V_MAGICSHIELD: return spell_xp_magicshield;
++    case V_FIRE: return spell_xp_fire;
++    case V_FLASH: return spell_xp_lightning;
++    default: return -1;
++    }
++}
++
+ static int is_node(int type) {
+     return type == SKT_ROCK || type == SKT_TREE || type == SKT_PLANT;
+ }
+@@ -268,6 +285,12 @@
+                 else if (!strcasecmp(name, "immunity_defence")) immunity_defence = max(0, atoi(value));
+                 else if (!strcasecmp(name, "body_control_gather")) body_control_gather = max(0, atoi(value));
+                 else if (!strcasecmp(name, "clarity_luck")) clarity_luck = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_heal")) spell_xp_heal = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_bless")) spell_xp_bless = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_freeze")) spell_xp_freeze = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_magicshield")) spell_xp_magicshield = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_fire")) spell_xp_fire = max(0, atoi(value));
++                else if (!strcasecmp(name, "spell_xp_lightning")) spell_xp_lightning = max(0, atoi(value));
+                 else {
+                     elog("%s line %d: unknown config setting %s.", SKILLING_CFG, line, name);
+                     return 0;
+@@ -516,6 +539,8 @@
+     bless_gather = bless_craft = 10;
+     bless_gather_strength = bless_craft_strength = 0;
+     body_control_gather = clarity_luck = 2;
++    spell_xp_heal = spell_xp_bless = spell_xp_freeze = spell_xp_magicshield = 15;
++    spell_xp_fire = spell_xp_lightning = 0;
+     combat_settings_reset();
+     for (n = 0; n <= SKT_MAX; n++) type_skill[n] = is_recipe(n) ? skill_lookup_key(default_skill(n)) : -1;
+ 
+diff -ru a/src/skilling.h b/src/skilling.h
+--- a/src/skilling.h	2026-10-13 23:23:44.476623164 +0000
++++ b/src/skilling.h	2026-10-13 23:23:44.480557005 +0000
+@@ -8,6 +8,7 @@
+ int skilling_load(void); // after the item templates are loaded
+ int skilling_item_driver(int nr, int in, int cn);
+ int skilling_command(int cn, char *cmd, char *args); // /smelt, /smith, /craft
++int skilling_spell_xp(int v); // Magic XP per cast of the spell in value slot v (spell_xp_* in config:), -1 = not a spell
+ 
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+diff -ru a/zones/generic/skilling.cfg b/zones/generic/skilling.cfg
+--- a/zones/generic/skilling.cfg	2026-10-13 23:23:44.478442343 +0000
++++ b/zones/generic/skilling.cfg	2026-10-13 23:23:44.482289816 +0000
+@@ -126,6 +126,12 @@
+ #   and attack speed; 50 = +49 Speed at Athletics 99).
+ # immunity_defence: resistance to spells is at least this percent of your
+ #   Defence (enemies: or their Immunity value, whichever is higher).
++#
++# Magic XP per spell cast (only casts that work; the Mana feed of skills.cfg
++# applies as usual): spell_xp_heal, spell_xp_bless, spell_xp_freeze,
++# spell_xp_magicshield give this much XP every cast. spell_xp_fire and
++# spell_xp_lightning are 0, so Fire and Lightning only give XP for the
++# damage they do to an enemy (dmg_xp of MAGIC in skills.cfg, per hitpoint).
+ config:
+ bless_gather=10
+ bless_craft=10
+@@ -150,6 +156,12 @@
+ wisdom_bonus=0
+ athletics_speed=50
+ immunity_defence=50
++spell_xp_heal=15
++spell_xp_bless=15
++spell_xp_freeze=15
++spell_xp_magicshield=15
++spell_xp_fire=0
++spell_xp_lightning=0
+ ;
+ 
+ # ---------- resources (ids 1-99) ----------
+diff -ru a/zones/generic/skills.cfg b/zones/generic/skills.cfg
+--- a/zones/generic/skills.cfg	2026-10-13 23:23:44.478412103 +0000
++++ b/zones/generic/skills.cfg	2026-10-13 23:23:44.482242260 +0000
+@@ -181,7 +181,9 @@
+ mirror=V_MAGICSHIELD
+ start=1
+ max=99
+-use_xp=15
++# XP per cast is set per spell in skilling.cfg (spell_xp_heal ... in config:),
++# so use_xp is not used for spells. Fire and Lightning train Magic by damage.
++use_xp=0
+ dmg_xp=8
+ feed=MANA,25
+ description="The power of every spell: Fire, Lightning, Freeze, Heal, Bless and Magic Shield. Trained by casting."

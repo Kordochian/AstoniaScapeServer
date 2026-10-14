@@ -1,0 +1,1974 @@
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/Makefile.win new/Makefile.win
+--- orig/Makefile.win	2026-10-14 21:36:54.125096559 +0000
++++ new/Makefile.win	2026-10-14 21:39:45.961511041 +0000
+@@ -40,7 +40,7 @@
+ .wobj/respawn.o .wobj/poison.o .wobj/swear.o .wobj/lab.o \
+ .wobj/consistency.o .wobj/btrace.o .wobj/club.o .wobj/balance.o \
+ .wobj/questlog.o .wobj/badip.o .wobj/escape.o .wobj/argon.o \
+-.wobj/config.o .wobj/skillreg.o .wobj/skilling.o .wobj/version.o
++.wobj/config.o .wobj/skillreg.o .wobj/skilling.o .wobj/skillquest.o .wobj/version.o
+ 
+ DLLS= \
+ runtime/generic/base.dll \
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/command.c new/src/command.c
+--- orig/src/command.c	2026-10-14 21:36:54.114234473 +0000
++++ new/src/command.c	2026-10-14 21:39:50.036744386 +0000
+@@ -18,6 +18,7 @@
+ #include "chat.h"
+ #include "create.h"
+ #include "skilling.h"
++#include "skillquest.h"
+ #include "drvlib.h"
+ #include "player.h"
+ #include "clan.h"
+@@ -1426,6 +1427,10 @@
+         skilling_command(cn, "craft", ptr + len);
+         return 1;
+     }
++    if ((len = cmdcmp(ptr, "tasks", 5))) { // /tasks: skilling quests and the daily task board
++        skillquest_command(cn, ptr + len);
++        return 1;
++    }
+     if ((len = cmdcmp(ptr, "style", 5))) { // /style [shared|attack|strength|defence], melee XP
+         style_command(cn, ptr + len);
+         return 1;
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/create.c new/src/create.c
+--- orig/src/create.c	2026-10-14 21:36:54.114659651 +0000
++++ new/src/create.c	2026-10-14 21:50:09.690749714 +0000
+@@ -32,6 +32,7 @@
+ #include "create.h"
+ #include "skillreg.h"
+ #include "skilling.h"
++#include "skillquest.h"
+ #include "respawn.h"
+ #include "balance.h"
+ #include "map.h"
+@@ -195,7 +196,8 @@
+         return NULL;
+     } else ptr++;
+ 
+-    while (isspace(*ptr)) ptr++;
++    // stay on this line: a blank value ("sprite=") reads as empty instead of eating the next name
++    while (*ptr == ' ' || *ptr == '\t') ptr++;
+ 
+     if (*ptr == '"') { // read value with quotation marks
+         ptr++;
+@@ -1529,6 +1531,7 @@
+     if (!skills_load()) return 0; // before the .chr files, they use SK_ names
+     if (!create_items()) return 0;
+     if (!skilling_load()) return 0; // patches the item templates it uses
++    if (!skillquest_load()) return 0; // skilling quests + task board, uses skilling.cfg keys
+     if (!create_characters()) return 0;
+     if (!create_map()) return 0;
+     add_map_border();
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/drdata.h new/src/drdata.h
+--- orig/src/drdata.h	2026-10-14 21:36:54.115739744 +0000
++++ new/src/drdata.h	2026-10-14 21:39:45.955246014 +0000
+@@ -210,3 +210,6 @@
+ 
+ // Astonia rebuild: per-skill XP (skillreg.c)
+ #define DRD_SKILL_PPD MAKE_DRD(DEV_ID_RB, 1 | PERSISTENT_PLAYER_DATA)
++// skilling quests / daily task board (skillquest.c)
++#define DRD_SKILLQUEST_PPD MAKE_DRD(DEV_ID_RB, 2 | PERSISTENT_PLAYER_DATA)
++#define DRD_SKILLQUESTDRIVER MAKE_DRD(DEV_ID_RB, 3)
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/drvlib.h new/src/drvlib.h
+--- orig/src/drvlib.h	2026-10-14 21:36:54.115824557 +0000
++++ new/src/drvlib.h	2026-10-14 21:39:45.955983759 +0000
+@@ -153,6 +153,7 @@
+ 
+ #define CDR_FORESTBOREAS 153 // forest quest giver
+ #define CDR_BLAKE 154 // minoa quest giver
++#define CDR_SKILLQUEST 160 // skillquest.c (core): skilling quest givers and the daily task board
+ 
+ 
+ #define CDR_MONK_WORKER 186 // monk nomads plain (the ones to protect)
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/libload.c new/src/libload.c
+--- orig/src/libload.c	2026-10-14 21:36:54.117553485 +0000
++++ new/src/libload.c	2026-10-14 21:39:45.959220674 +0000
+@@ -45,6 +45,7 @@
+ #include "drvlib.h"
+ #include "talk.h"
+ #include "skilling.h"
++#include "skillquest.h"
+ 
+ #define MAXLIB 100
+ #define MAXDRV 200
+@@ -186,6 +187,8 @@
+         return 0;
+     }
+ 
++    if (nr == CDR_SKILLQUEST) return skillquest_driver(type, cn, ret, last_action); // core, all areas
++
+     if ((n = fast_chdrv[nr]) && libs[n].used && load_lib(libs + n) && (val = libs[n].driver(type, nr, cn, ret, last_action))) return val;
+ 
+     for (n = 1; n < MAXLIB; n++)
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/questlog.c new/src/questlog.c
+--- orig/src/questlog.c	2026-10-14 21:36:54.119828259 +0000
++++ new/src/questlog.c	2026-10-14 21:40:04.287513952 +0000
+@@ -119,9 +119,36 @@
+     {"The Mysterious Language", 60, 65, "Johnatan", "Arkhata", 60000, 0}, //78,
+ 
+     {"Forest Robbers", 20, 30, "Boreas", "Forest", 25000, QLF_REPEATABLE}, //79
+-    {"Warm Clothes", 70, 120, "Blake", "Minoa", 600000, 0} //80
++    {"Warm Clothes", 70, 120, "Blake", "Minoa", 600000, 0}, //80
++
++    // skilling quests (skillquest.c, rewards in zones/generic/skillquests.cfg). The client has the same list.
++    {"Copper and Tin", 1, 15, "Garrick", "Thornwood Vale", 0, 0}, //81
++    {"Iron in the Hills", 5, 40, "Garrick", "Thornwood Vale", 0, 0}, //82
++    {"Coal for the Forge", 10, 60, "Garrick", "Thornwood Vale", 0, 0}, //83
++    {"The Apprentice's Bars", 1, 15, "Torvald", "Thornwood Vale", 0, 0}, //84
++    {"Daggers for the Watch", 5, 40, "Torvald", "Thornwood Vale", 0, 0}, //85
++    {"Steel for the Keep", 10, 60, "Torvald", "Thornwood Vale", 0, 0}, //86
++    {"Firewood", 1, 15, "Edda", "Thornwood Vale", 0, 0}, //87
++    {"Oak for the Palisade", 5, 40, "Edda", "Thornwood Vale", 0, 0}, //88
++    {"Willow Wood", 10, 60, "Edda", "Thornwood Vale", 0, 0}, //89
++    {"Arrow Shafts", 1, 15, "Fenn", "Thornwood Vale", 0, 0}, //90
++    {"A Bow for the Hunt", 5, 40, "Fenn", "Thornwood Vale", 0, 0}, //91
++    {"Iron-Tipped Arrows", 10, 60, "Fenn", "Thornwood Vale", 0, 0}, //92
++    {"Flax for the Weaver", 1, 15, "Wyn", "Thornwood Vale", 0, 0}, //93
++    {"A Good Harvest", 5, 40, "Wyn", "Thornwood Vale", 0, 0}, //94
++    {"Thornwick Task Board", 1, 200, "Reeve Hale", "Thornwood Vale", 0, 0} //95, daily tasks, open while one is taken
+ };
+ 
++#define QUESTLOG_COUNT ((int)(sizeof(questlog) / sizeof(questlog[0])))
++
++char *questlog_name(int qnr) {
++    return (qnr >= 0 && qnr < QUESTLOG_COUNT) ? questlog[qnr].name : "?";
++}
++
++char *questlog_giver(int qnr) {
++    return (qnr >= 0 && qnr < QUESTLOG_COUNT) ? questlog[qnr].giver : "?";
++}
++
+ void questlog_open(int cn, int qnr) {
+     struct quest *quest;
+ 
+@@ -194,7 +221,7 @@
+     cnt = quest[qnr].done++;
+     quest[qnr].flags = QF_DONE;
+ 
+-    val = questlog_scale(cnt, questlog[qnr].exp);
++    val = qnr < QUESTLOG_COUNT ? questlog_scale(cnt, questlog[qnr].exp) : 0;
+ 
+     // scale down by level for those rushing ahead
+     if (ch[cn].level > 44) val = min(level_value(ch[cn].level) / 6, val);
+@@ -204,7 +231,7 @@
+ 
+     give_exp(cn, val);
+     skill_quest_reward(cn, qnr, cnt);
+-    if (questlog[qnr].exp > 0) dlog(cn, 0, "Received %d exp for doing quest %s for the %d. time (nominal value %d exp)", val, questlog[qnr].name, (cnt + 1), questlog[qnr].exp);
++    if (qnr < QUESTLOG_COUNT && questlog[qnr].exp > 0) dlog(cn, 0, "Received %d exp for doing quest %s for the %d. time (nominal value %d exp)", val, questlog[qnr].name, (cnt + 1), questlog[qnr].exp);
+     sendquestlog(cn, ch[cn].player);
+ 
+     return quest[qnr].done;
+@@ -460,7 +487,7 @@
+         log_char(cn, LOG_SYSTEM, 0, "You cannot open this quest again.");
+         return;
+     }
+-    if ((!questlog[qnr].flags & QLF_REPEATABLE)) {
++    if (qnr >= QUESTLOG_COUNT || (!questlog[qnr].flags & QLF_REPEATABLE)) {
+         log_char(cn, LOG_SYSTEM, 0, "You cannot open this quest again.");
+         return;
+     }
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/questlog.h new/src/questlog.h
+--- orig/src/questlog.h	2026-10-14 21:36:54.119872399 +0000
++++ new/src/questlog.h	2026-10-14 21:40:04.288144207 +0000
+@@ -19,3 +19,5 @@
+ int questlog_count(int cn, int qnr);
+ int questlog_scale(int cnt, int ex);
+ void questlog_close(int cn, int qnr);
++char *questlog_name(int qnr);
++char *questlog_giver(int qnr);
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/skilling.c new/src/skilling.c
+--- orig/src/skilling.c	2026-10-14 21:36:54.120705745 +0000
++++ new/src/skilling.c	2026-10-14 21:44:34.965235257 +0000
+@@ -1305,3 +1305,101 @@
+     snprintf(desc, sizeof(desc), "Chance to get one extra resource when gathering: %.1f%% per Clarity level.", clarity_luck / 10.0);
+     if (ch[cn].value[0][V_CLARITY]) effect_add(e, EG_GATHERING, "Extra resource", desc, "%.1f%%", min(1000, ch[cn].value[0][V_CLARITY] * clarity_luck) / 10.0);
+ }
++
++// ---------- things a player carries, for other modules (skillquest.c) ----------
++
++// a skilling.cfg key naming something a player can carry: a resource (stack), a tool, or a recipe that makes
++// an item (a recipe that makes a resource stands for that resource). -1 if unknown or not carryable.
++int skilling_thing(char *key) {
++    int d;
++
++    if ((d = lookup_def(key)) == -1) return -1;
++    if (skdef[d].type == SKT_RESOURCE || is_tool(skdef[d].type)) return d;
++    if (is_recipe(skdef[d].type)) return skdef[d].make_res != -1 ? skdef[d].make_res : d;
++    return -1;
++}
++
++int skilling_thing_is_stack(int d) {
++    return d >= 0 && d < nskdef && skdef[d].type == SKT_RESOURCE;
++}
++
++char *skilling_thing_name(int d) {
++    if (d < 0 || d >= nskdef) return "?";
++    if (is_recipe(skdef[d].type)) return skdef[d].name;
++    return item_template(skdef[d].tmp)->name;
++}
++
++// does item in count as thing d? Recipe items are matched by template ID and the recipe's name, so a bought
++// dagger is not a smithed Iron Dagger.
++static int thing_item(int in, int d) {
++    if (!in) return 0;
++    if (!is_recipe(skdef[d].type)) return it[in].ID == MAKE_ITEMID(DEV_ID_SKILLING, skdef[d].id);
++    return it[in].ID == item_template(skdef[d].make_tmp)->ID && !strcmp(it[in].name, skdef[d].name);
++}
++
++// how many of thing d the character carries (inventory and hand, not worn)
++int skilling_thing_count(int cn, int d) {
++    int n, in, cnt = 0;
++
++    if (d < 0 || d >= nskdef) return 0;
++    if (skdef[d].type == SKT_RESOURCE) return res_count(cn, d);
++    for (n = 30; n <= INVENTORYSIZE; n++) {
++        in = (n == INVENTORYSIZE) ? ch[cn].citem : ch[cn].item[n];
++        if (thing_item(in, d)) cnt++;
++    }
++    return cnt;
++}
++
++// takes cnt of thing d (check skilling_thing_count first)
++void skilling_thing_take(int cn, int d, int cnt) {
++    int n, in;
++
++    if (d < 0 || d >= nskdef || cnt < 1) return;
++    if (skdef[d].type == SKT_RESOURCE) {
++        res_take(cn, d, cnt);
++        return;
++    }
++    for (n = 30; n <= INVENTORYSIZE && cnt > 0; n++) {
++        in = (n == INVENTORYSIZE) ? ch[cn].citem : ch[cn].item[n];
++        if (!thing_item(in, d)) continue;
++        if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "handed in for a quest");
++        remove_item_char(in);
++        destroy_item(in);
++        cnt--;
++    }
++    ch[cn].flags |= CF_ITEMS;
++}
++
++// is there room to give cnt of thing d?
++int skilling_thing_room(int cn, int d, int cnt) {
++    int n, nfree = 0;
++
++    if (d < 0 || d >= nskdef) return 0;
++    if (skdef[d].type == SKT_RESOURCE) return res_room(cn, d);
++    for (n = 30; n < INVENTORYSIZE; n++)
++        if (!ch[cn].item[n]) nfree++;
++    return nfree >= cnt;
++}
++
++// gives cnt of thing d, returns how many were given
++int skilling_thing_give(int cn, int d, int cnt) {
++    int n, in, tmp;
++
++    if (d < 0 || d >= nskdef || cnt < 1) return 0;
++    if (skdef[d].type == SKT_RESOURCE) return res_give(cn, d, cnt) ? cnt : 0;
++    tmp = is_recipe(skdef[d].type) ? skdef[d].make_tmp : skdef[d].tmp;
++    for (n = 0; n < cnt; n++) {
++        if (!(in = create_item_nr(tmp))) break;
++        if (is_recipe(skdef[d].type)) {
++            if (skdef[d].name[0]) cfgcopy(it[in].name, skdef[d].name, sizeof(it[in].name));
++            if (skdef[d].desc[0]) cfgcopy(it[in].description, skdef[d].desc, sizeof(it[in].description));
++        }
++        if (!store_item(cn, in)) {
++            destroy_item(in);
++            break;
++        }
++        if (ch[cn].flags & CF_PLAYER) dlog(cn, in, "quest reward");
++    }
++    ch[cn].flags |= CF_ITEMS;
++    return n;
++}
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/skilling.h new/src/skilling.h
+--- orig/src/skilling.h	2026-10-14 21:36:54.120760580 +0000
++++ new/src/skilling.h	2026-10-14 21:37:11.650701881 +0000
+@@ -12,6 +12,15 @@
+ void skilling_walk_xp(int cn); // XP for one step by speed mode (walk_xp ... in config:)
+ int skilling_spell_xp(int v); // Magic XP per cast of the spell in value slot v (spell_xp_* in config:), -1 = not a spell
+ 
++// things a player carries (resource stacks, tools, items a recipe makes), by skilling.cfg key; used by skillquest.c
++int skilling_thing(char *key); // -1 = unknown / not carryable
++int skilling_thing_is_stack(int d);
++char *skilling_thing_name(int d);
++int skilling_thing_count(int cn, int d);
++void skilling_thing_take(int cn, int d, int cnt);
++int skilling_thing_room(int cn, int d, int cnt);
++int skilling_thing_give(int cn, int d, int cnt);
++
+ // furnace / anvil window in the client (protocol 7). Uses a free command number of client.h (was SV_RESERVED3).
+ // u16 total length, station (1 furnace, 2 anvil), flags (CRAFT_OPEN, CRAFT_NOHAMMER), Smithing level, count,
+ // then per recipe: nr, level, can make (0-100), xp u16, sprite u32, material (first need, 255 none),
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/skillquest.c new/src/skillquest.c
+--- orig/src/skillquest.c	1970-01-01 00:00:00.000000000 +0000
++++ new/src/skillquest.c	2026-10-14 21:53:51.632502579 +0000
+@@ -0,0 +1,896 @@
++/*
++ * Skilling quests and the daily task board (Astonia rebuild).
++ * Everything is defined in zones/generic/skillquests.cfg, see the header of that file.
++ *
++ * Character driver CDR_SKILLQUEST (core, not in a DLL, so it works in every area). The NPC's .chr template
++ * has driver=160 and arg="npc=KEY;dir=N;". An NPC with quests (npc=KEY in a quest block) gives them in file
++ * order; an NPC whose key is the board= of config: hands out daily tasks.
++ *
++ * Players talk to the NPC: "quest" (what is there to do), "accept", "done" (hand in), and at the board "task",
++ * "done", "cancel". /tasks lists the player's progress.
++ *
++ * Quest state lives in the questlog (open / done), the daily task in DRD_SKILLQUEST_PPD.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <ctype.h>
++
++#include "server.h"
++#include "log.h"
++#include "notify.h"
++#include "do.h"
++#include "drdata.h"
++#include "see.h"
++#include "talk.h"
++#include "tool.h"
++#include "drvlib.h"
++#include "mem.h"
++#include "questlog.h"
++#include "database.h"
++#include "direction.h"
++#include "skillreg.h"
++#include "skilling.h"
++#include "skillquest.h"
++
++#define SKILLQUESTS_CFG "zones/generic/skillquests.cfg"
++
++#define MAXSQ 64
++#define MAXTASK 64
++#define MAXSQNEED 4
++#define MAXSQXP 4
++#define TALKDIST 6 // NPCs answer players this close
++
++struct sqdef { // one quest
++    char key[32];
++    int quest; // questlog number
++    char npc[32]; // NPC key that gives it
++    char skill_key[32];
++    int skill, level; // skill level needed to accept (-1 = none)
++    char after_key[32];
++    int after; // quest that must be done first, -1 = none
++
++    int nneed;
++    char need_key[MAXSQNEED][32];
++    int need[MAXSQNEED], needcnt[MAXSQNEED];
++
++    int nxp;
++    char xp_key[MAXSQXP][32];
++    int xpskill[MAXSQXP], xp[MAXSQXP];
++
++    int gold; // in gold coins
++    char reward_key[32];
++    int reward, reward_cnt; // skilling thing, -1 = none
++
++    char offer[256], remind[256], thanks[256];
++};
++
++struct taskdef { // one daily task
++    char key[32];
++    int id; // saved in the player's data: never change or reuse
++    char skill_key[32];
++    int skill, level, maxlevel;
++    char need_key[32];
++    int need, min, max;
++    int xp_each; // XP per item for the task's skill
++    int silver_each; // money per item, in silver (100 = 1 gold)
++    char text[256]; // what the board NPC says, {count} and {item} are filled in
++};
++
++struct skillquest_ppd {
++    int day; // the day done_today counts for
++    int done_today; // tasks finished or cancelled today
++    int task_id; // current task (taskdef id), 0 = none
++    int task_count; // how many items it asks for
++    int total; // tasks finished ever
++    int last_id; // the task before, not given twice in a row
++    int reserved[10];
++};
++
++struct sqnpc_data {
++    int init;
++    int dir;
++    char npc[32];
++    int last_talk;
++};
++
++static struct sqdef sq[MAXSQ];
++static int nsq = 0;
++static struct taskdef task[MAXTASK];
++static int ntask = 0;
++
++static char board_npc[32] = "BOARD";
++static int board_quest = -1; // questlog number shown while a daily task is open
++static int tasks_per_day = 3, reset_hour = 0, board_bonus_gold = 0;
++
++static void scopy(char *dst, char *src, int size) {
++    int n;
++
++    for (n = 0; n < size - 1 && src[n]; n++) dst[n] = src[n];
++    dst[n] = 0;
++}
++
++static void upcase(char *s) {
++    for (; *s; s++) *s = toupper(*s);
++}
++
++// ---------- config ----------
++
++static int lookup_sq(char *key) {
++    int n;
++
++    for (n = 0; n < nsq; n++)
++        if (!strcasecmp(sq[n].key, key)) return n;
++    return -1;
++}
++
++static int parse_cfg(char *text) {
++    char *ptr = text, name[64], value[256], blockkey[64], *comma;
++    struct sqdef *q = NULL;
++    struct taskdef *t = NULL;
++    int line = 1, inblock = 0, is_config = 0;
++
++    while ((ptr = skillcfg_line(ptr, name, value, &line))) {
++        if (name[0] == '#') continue;
++        if (value[0] == '!') {
++            elog("%s line %d: syntax error near \"%s\".", SKILLQUESTS_CFG, line, name);
++            return 0;
++        }
++        if (value[0] == ':') {
++            if (inblock) {
++                elog("%s line %d: missing ; before %s:", SKILLQUESTS_CFG, line, name);
++                return 0;
++            }
++            inblock = 1;
++            q = NULL;
++            t = NULL;
++            scopy(blockkey, name, sizeof(blockkey));
++            is_config = !strcasecmp(name, "config");
++            continue;
++        }
++        if (value[0] == ';') {
++            if (!inblock) {
++                elog("%s line %d: ; without block.", SKILLQUESTS_CFG, line);
++                return 0;
++            }
++            if (!is_config && !q && !t) {
++                elog("%s line %d: %s needs type=quest or type=task first.", SKILLQUESTS_CFG, line, blockkey);
++                return 0;
++            }
++            if (q && (q->quest < 0 || q->quest >= MAXQUEST || !q->npc[0] || !q->nneed)) {
++                elog("%s: quest %s needs quest= (0-%d), npc= and at least one need=.", SKILLQUESTS_CFG, q->key, MAXQUEST - 1);
++                return 0;
++            }
++            if (t && (t->id < 1 || !t->need_key[0] || !t->skill_key[0])) {
++                elog("%s: task %s needs id= (1 or more), skill= and need=.", SKILLQUESTS_CFG, t->key);
++                return 0;
++            }
++            inblock = 0;
++            continue;
++        }
++        if (!inblock) {
++            elog("%s line %d: %s outside a block.", SKILLQUESTS_CFG, line, name);
++            return 0;
++        }
++
++        if (is_config) {
++            if (!strcasecmp(name, "tasks_per_day")) tasks_per_day = max(1, atoi(value));
++            else if (!strcasecmp(name, "reset_hour")) reset_hour = max(0, min(23, atoi(value)));
++            else if (!strcasecmp(name, "board")) {
++                scopy(board_npc, value, sizeof(board_npc));
++                upcase(board_npc);
++            } else if (!strcasecmp(name, "board_quest")) board_quest = atoi(value);
++            else if (!strcasecmp(name, "bonus_gold")) board_bonus_gold = max(0, atoi(value));
++            else {
++                elog("%s line %d: unknown config setting %s.", SKILLQUESTS_CFG, line, name);
++                return 0;
++            }
++            continue;
++        }
++
++        if (!strcasecmp(name, "type")) {
++            if (q || t) {
++                elog("%s line %d: type= must come first and only once.", SKILLQUESTS_CFG, line);
++                return 0;
++            }
++            if (!strcasecmp(value, "quest")) {
++                if (nsq >= MAXSQ) {
++                    elog("%s: more than %d quests.", SKILLQUESTS_CFG, MAXSQ);
++                    return 0;
++                }
++                q = sq + nsq++;
++                bzero(q, sizeof(*q));
++                scopy(q->key, blockkey, sizeof(q->key));
++                q->quest = -1;
++                q->skill = q->after = q->reward = -1;
++            } else if (!strcasecmp(value, "task")) {
++                if (ntask >= MAXTASK) {
++                    elog("%s: more than %d tasks.", SKILLQUESTS_CFG, MAXTASK);
++                    return 0;
++                }
++                t = task + ntask++;
++                bzero(t, sizeof(*t));
++                scopy(t->key, blockkey, sizeof(t->key));
++                t->skill = t->need = -1;
++                t->min = t->max = 1;
++                t->maxlevel = 999;
++            } else {
++                elog("%s line %d: type=%s, expected quest or task.", SKILLQUESTS_CFG, line, value);
++                return 0;
++            }
++            continue;
++        }
++        if (!q && !t) {
++            elog("%s line %d: %s needs type=quest or type=task first.", SKILLQUESTS_CFG, line, blockkey);
++            return 0;
++        }
++
++        comma = strchr(value, ',');
++        if (q) {
++            if (!strcasecmp(name, "quest")) q->quest = atoi(value);
++            else if (!strcasecmp(name, "npc")) {
++                scopy(q->npc, value, sizeof(q->npc));
++                upcase(q->npc);
++            } else if (!strcasecmp(name, "skill")) scopy(q->skill_key, value, sizeof(q->skill_key));
++            else if (!strcasecmp(name, "level")) q->level = atoi(value);
++            else if (!strcasecmp(name, "after")) scopy(q->after_key, value, sizeof(q->after_key));
++            else if (!strcasecmp(name, "need")) { // need=KEY,count
++                if (q->nneed >= MAXSQNEED) {
++                    elog("%s line %d: at most %d need= per quest.", SKILLQUESTS_CFG, line, MAXSQNEED);
++                    return 0;
++                }
++                if (comma) *comma = 0;
++                scopy(q->need_key[q->nneed], value, sizeof(q->need_key[0]));
++                q->needcnt[q->nneed] = comma ? max(1, atoi(comma + 1)) : 1;
++                q->nneed++;
++            } else if (!strcasecmp(name, "xp")) { // xp=SKILL,amount
++                if (q->nxp >= MAXSQXP) {
++                    elog("%s line %d: at most %d xp= per quest.", SKILLQUESTS_CFG, line, MAXSQXP);
++                    return 0;
++                }
++                if (!comma) {
++                    elog("%s line %d: xp=SKILL,amount.", SKILLQUESTS_CFG, line);
++                    return 0;
++                }
++                *comma = 0;
++                scopy(q->xp_key[q->nxp], value, sizeof(q->xp_key[0]));
++                q->xp[q->nxp] = max(0, atoi(comma + 1));
++                q->nxp++;
++            } else if (!strcasecmp(name, "gold")) q->gold = max(0, atoi(value));
++            else if (!strcasecmp(name, "reward")) { // reward=KEY[,count]
++                if (comma) *comma = 0;
++                scopy(q->reward_key, value, sizeof(q->reward_key));
++                q->reward_cnt = comma ? max(1, atoi(comma + 1)) : 1;
++            } else if (!strcasecmp(name, "offer")) scopy(q->offer, value, sizeof(q->offer));
++            else if (!strcasecmp(name, "remind")) scopy(q->remind, value, sizeof(q->remind));
++            else if (!strcasecmp(name, "thanks")) scopy(q->thanks, value, sizeof(q->thanks));
++            else {
++                elog("%s line %d: unknown quest setting %s.", SKILLQUESTS_CFG, line, name);
++                return 0;
++            }
++        } else {
++            if (!strcasecmp(name, "id")) t->id = atoi(value);
++            else if (!strcasecmp(name, "skill")) scopy(t->skill_key, value, sizeof(t->skill_key));
++            else if (!strcasecmp(name, "level")) t->level = atoi(value);
++            else if (!strcasecmp(name, "maxlevel")) t->maxlevel = atoi(value);
++            else if (!strcasecmp(name, "need")) { // need=KEY,min[,max]
++                char *c2;
++
++                if (comma) *comma = 0;
++                scopy(t->need_key, value, sizeof(t->need_key));
++                t->min = t->max = comma ? max(1, atoi(comma + 1)) : 1;
++                if (comma && (c2 = strchr(comma + 1, ','))) t->max = max(t->min, atoi(c2 + 1));
++            } else if (!strcasecmp(name, "xp_each")) t->xp_each = max(0, atoi(value));
++            else if (!strcasecmp(name, "silver_each")) t->silver_each = max(0, atoi(value));
++            else if (!strcasecmp(name, "text")) scopy(t->text, value, sizeof(t->text));
++            else {
++                elog("%s line %d: unknown task setting %s.", SKILLQUESTS_CFG, line, name);
++                return 0;
++            }
++        }
++    }
++    if (inblock) {
++        elog("%s: missing ; at the end.", SKILLQUESTS_CFG);
++        return 0;
++    }
++    return 1;
++}
++
++static int resolve(void) {
++    int n, m;
++    struct sqdef *q;
++    struct taskdef *t;
++
++    for (n = 0; n < nsq; n++) {
++        q = sq + n;
++        for (m = 0; m < n; m++) {
++            if (sq[m].quest == q->quest) {
++                elog("%s: %s and %s use the same quest number %d.", SKILLQUESTS_CFG, sq[m].key, q->key, q->quest);
++                return 0;
++            }
++        }
++        if (q->quest == board_quest) {
++            elog("%s: %s uses the task board's quest number %d.", SKILLQUESTS_CFG, q->key, q->quest);
++            return 0;
++        }
++        if (q->skill_key[0] && (q->skill = skill_lookup_key(q->skill_key)) == -1) {
++            elog("%s: %s: skill=%s is not in skills.cfg.", SKILLQUESTS_CFG, q->key, q->skill_key);
++            return 0;
++        }
++        if (q->after_key[0] && (q->after = lookup_sq(q->after_key)) == -1) {
++            elog("%s: %s: after=%s is not a quest in this file.", SKILLQUESTS_CFG, q->key, q->after_key);
++            return 0;
++        }
++        for (m = 0; m < q->nneed; m++) {
++            if ((q->need[m] = skilling_thing(q->need_key[m])) == -1) {
++                elog("%s: %s: need=%s is not a resource, tool or recipe in skilling.cfg.", SKILLQUESTS_CFG, q->key, q->need_key[m]);
++                return 0;
++            }
++        }
++        for (m = 0; m < q->nxp; m++) {
++            if ((q->xpskill[m] = skill_lookup_key(q->xp_key[m])) == -1) {
++                elog("%s: %s: xp=%s is not in skills.cfg.", SKILLQUESTS_CFG, q->key, q->xp_key[m]);
++                return 0;
++            }
++        }
++        if (q->reward_key[0] && (q->reward = skilling_thing(q->reward_key)) == -1) {
++            elog("%s: %s: reward=%s is not a resource, tool or recipe in skilling.cfg.", SKILLQUESTS_CFG, q->key, q->reward_key);
++            return 0;
++        }
++    }
++    for (n = 0; n < ntask; n++) {
++        t = task + n;
++        for (m = 0; m < n; m++) {
++            if (task[m].id == t->id) {
++                elog("%s: tasks %s and %s have the same id %d.", SKILLQUESTS_CFG, task[m].key, t->key, t->id);
++                return 0;
++            }
++        }
++        if ((t->skill = skill_lookup_key(t->skill_key)) == -1) {
++            elog("%s: task %s: skill=%s is not in skills.cfg.", SKILLQUESTS_CFG, t->key, t->skill_key);
++            return 0;
++        }
++        if ((t->need = skilling_thing(t->need_key)) == -1) {
++            elog("%s: task %s: need=%s is not a resource, tool or recipe in skilling.cfg.", SKILLQUESTS_CFG, t->key, t->need_key);
++            return 0;
++        }
++    }
++    if (ntask && (board_quest < 0 || board_quest >= MAXQUEST)) {
++        elog("%s: config: needs board_quest= (the questlog number of the task board).", SKILLQUESTS_CFG);
++        return 0;
++    }
++    return 1;
++}
++
++int skillquest_load(void) {
++    char *text;
++    int ok;
++
++    nsq = ntask = 0;
++    tasks_per_day = 3;
++    reset_hour = 0;
++    board_bonus_gold = 0;
++    board_quest = -1;
++    strcpy(board_npc, "BOARD");
++
++    if (!(text = skillcfg_read(SKILLQUESTS_CFG))) {
++        xlog("No %s, skilling quests and the task board are off.", SKILLQUESTS_CFG);
++        return 1;
++    }
++    ok = parse_cfg(text);
++    xfree(text);
++    if (!ok || !resolve()) {
++        nsq = ntask = 0;
++        return 0;
++    }
++    xlog("Loaded %s: %d quests, %d daily tasks.", SKILLQUESTS_CFG, nsq, ntask);
++    return 1;
++}
++
++// ---------- helpers ----------
++
++static int skill_lvl(int cn, int sk) {
++    return sk == -1 ? 999 : skill_get_level(cn, sk);
++}
++
++static char *skname(int sk) {
++    return (sk >= 0 && sk < MAXSKILLS && skilldef[sk].used) ? skilldef[sk].name : "?";
++}
++
++static int quest_open(int cn, int nr) { // questlog says open
++    struct quest *quest;
++
++    if (!(quest = set_data(cn, DRD_QUESTLOG_PPD, sizeof(struct quest) * MAXQUEST))) return 0;
++    return quest[nr].flags == QF_OPEN;
++}
++
++// "10 Copper Ore and 5 Tin Ore"; with have=1 the counts read "4/10 Copper Ore"
++static void need_text(int cn, struct sqdef *q, char *buf, int size, int have) {
++    int m, len = 0;
++
++    buf[0] = 0;
++    for (m = 0; m < q->nneed && len < size - 1; m++) {
++        if (m) len += snprintf(buf + len, size - len, m == q->nneed - 1 ? " and " : ", ");
++        if (len >= size - 1) break;
++        if (have) len += snprintf(buf + len, size - len, "%d/%d %s", min(skilling_thing_count(cn, q->need[m]), q->needcnt[m]), q->needcnt[m], skilling_thing_name(q->need[m]));
++        else len += snprintf(buf + len, size - len, "%d %s", q->needcnt[m], skilling_thing_name(q->need[m]));
++    }
++}
++
++// the quest this NPC has for cn: the open one, else the first not done. *state: 1 open, 2 can accept,
++// 3 level too low, 4 needs an earlier quest, 0 = nothing left
++static int npc_quest(int cn, char *npc, int *state) {
++    int n;
++
++    for (n = 0; n < nsq; n++) {
++        if (strcmp(sq[n].npc, npc)) continue;
++        if (quest_open(cn, sq[n].quest)) {
++            *state = 1;
++            return n;
++        }
++    }
++    for (n = 0; n < nsq; n++) {
++        if (strcmp(sq[n].npc, npc)) continue;
++        if (questlog_isdone(cn, sq[n].quest)) continue;
++        if (sq[n].after != -1 && !questlog_isdone(cn, sq[sq[n].after].quest)) *state = 4;
++        else if (sq[n].skill != -1 && skill_lvl(cn, sq[n].skill) < sq[n].level) *state = 3;
++        else *state = 2;
++        return n;
++    }
++    *state = 0;
++    return -1;
++}
++
++// ---------- quests ----------
++
++static void quest_talk(int cn, int co, char *npc) {
++    int state, n;
++    char buf[256];
++
++    n = npc_quest(co, npc, &state);
++    switch (state) {
++    case 0:
++        quiet_say(cn, "Thou hast done all I could ask of thee, %s. The task board in the village square always has work.", ch[co].name);
++        return;
++    case 1:
++        need_text(co, sq + n, buf, sizeof(buf), 1);
++        if (sq[n].remind[0]) quiet_say(cn, "%s", sq[n].remind);
++        quiet_say(cn, "Thou hast %s. Say '\260c4done\260c0' when thou hast all of it.", buf);
++        return;
++    case 3:
++        quiet_say(cn, "Come back when thy %s is level %d, %s. I may have work for thee then.", skname(sq[n].skill), sq[n].level, ch[co].name);
++        return;
++    case 4:
++        quiet_say(cn, "Finish \"%s\" first, %s.", questlog_name(sq[sq[n].after].quest), ch[co].name);
++        return;
++    }
++    need_text(co, sq + n, buf, sizeof(buf), 0);
++    if (sq[n].offer[0]) quiet_say(cn, "%s", sq[n].offer);
++    quiet_say(cn, "Bring me %s. Say '\260c4accept\260c0' if thou wilt do it.", buf);
++}
++
++static void quest_accept(int cn, int co, char *npc) {
++    int state, n;
++    char buf[256];
++
++    n = npc_quest(co, npc, &state);
++    if (state != 2) {
++        quest_talk(cn, co, npc);
++        return;
++    }
++    questlog_open(co, sq[n].quest);
++    need_text(co, sq + n, buf, sizeof(buf), 0);
++    quiet_say(cn, "Good! Bring me %s, and say '\260c4done\260c0' when thou hast it all.", buf);
++    log_char(co, LOG_SYSTEM, 0, "\260c3New quest: %s.", questlog_name(sq[n].quest));
++}
++
++static void quest_done(int cn, int co, char *npc) {
++    int state, n, m;
++    char buf[256];
++    struct sqdef *q;
++
++    n = npc_quest(co, npc, &state);
++    if (state != 1) {
++        quest_talk(cn, co, npc);
++        return;
++    }
++    q = sq + n;
++    for (m = 0; m < q->nneed; m++) {
++        if (skilling_thing_count(co, q->need[m]) < q->needcnt[m]) {
++            need_text(co, q, buf, sizeof(buf), 1);
++            quiet_say(cn, "That is not all of it yet, %s. Thou hast %s.", ch[co].name, buf);
++            return;
++        }
++    }
++    if (q->reward != -1 && !skilling_thing_room(co, q->reward, q->reward_cnt)) {
++        quiet_say(cn, "Make some room in thy pack first, %s, I have something for thee.", ch[co].name);
++        return;
++    }
++
++    for (m = 0; m < q->nneed; m++) skilling_thing_take(co, q->need[m], q->needcnt[m]);
++    dlog(co, 0, "finished skilling quest %s (%d)", q->key, q->quest);
++    questlog_done(co, q->quest);
++
++    quiet_say(cn, "%s", q->thanks[0] ? q->thanks : "Well done, and thank thee!");
++    for (m = 0; m < q->nxp; m++) {
++        if (!q->xp[m]) continue;
++        log_char(co, LOG_SYSTEM, 0, "\260c3Quest reward: %d %s XP.", q->xp[m], skname(q->xpskill[m]));
++        add_skill_xp(co, q->xpskill[m], q->xp[m]);
++    }
++    if (q->gold) {
++        give_money(co, q->gold * 100, "skilling quest");
++        log_char(co, LOG_SYSTEM, 0, "\260c3Quest reward: %d gold.", q->gold);
++    }
++    if (q->reward != -1 && skilling_thing_give(co, q->reward, q->reward_cnt)) {
++        if (q->reward_cnt > 1) log_char(co, LOG_SYSTEM, 0, "\260c3Quest reward: %d %s.", q->reward_cnt, skilling_thing_name(q->reward));
++        else log_char(co, LOG_SYSTEM, 0, "\260c3Quest reward: %s.", skilling_thing_name(q->reward));
++    }
++
++    // what next?
++    n = npc_quest(co, npc, &state);
++    if (state == 2) quiet_say(cn, "I have more work, if thou wantst it. Say '\260c4quest\260c0'.");
++    else if (state == 3) quiet_say(cn, "Come back when thy %s is level %d, I will have more work then.", skname(sq[n].skill), sq[n].level);
++}
++
++// ---------- daily task board ----------
++
++static struct taskdef *task_by_id(int id) {
++    int n;
++
++    for (n = 0; n < ntask; n++)
++        if (task[n].id == id) return task + n;
++    return NULL;
++}
++
++static int today(void) {
++    return (time_now - reset_hour * 3600) / (24 * 3600);
++}
++
++static struct skillquest_ppd *board_ppd(int cn) {
++    struct skillquest_ppd *ppd;
++
++    if (!(ppd = set_data(cn, DRD_SKILLQUEST_PPD, sizeof(struct skillquest_ppd)))) return NULL;
++    if (ppd->day != today()) {
++        ppd->day = today();
++        ppd->done_today = 0;
++    }
++    return ppd;
++}
++
++// the task's text= with {count} and {item} filled in
++static void task_text(struct taskdef *t, int cnt, char *buf, int size) {
++    char *src = t->text[0] ? t->text : "Bring me {count} {item}.";
++    int len = 0;
++
++    while (*src && len < size - 1) {
++        if (!strncmp(src, "{count}", 7)) {
++            len += snprintf(buf + len, size - len, "%d", cnt);
++            src += 7;
++        } else if (!strncmp(src, "{item}", 6)) {
++            len += snprintf(buf + len, size - len, "%s", skilling_thing_name(t->need));
++            src += 6;
++        } else buf[len++] = *src++;
++    }
++    buf[min(len, size - 1)] = 0;
++}
++
++static void hours_left(char *buf, int size) {
++    int left = (today() + 1) * 24 * 3600 + reset_hour * 3600 - time_now;
++
++    if (left >= 3600) snprintf(buf, size, "%d hour%s", left / 3600, left / 3600 == 1 ? "" : "s");
++    else snprintf(buf, size, "%d minute%s", max(1, left / 60), left / 60 == 1 ? "" : "s");
++}
++
++static void board_talk(int cn, int co) {
++    struct skillquest_ppd *ppd;
++    struct taskdef *t;
++    int n, cnt, pick, list[MAXTASK];
++    char buf[300], tmp[40];
++
++    if (!ntask) {
++        quiet_say(cn, "I have no tasks today, %s.", ch[co].name);
++        return;
++    }
++    if (!(ppd = board_ppd(co))) return;
++
++    if (ppd->task_id && (t = task_by_id(ppd->task_id))) {
++        task_text(t, ppd->task_count, buf, sizeof(buf));
++        quiet_say(cn, "%s", buf);
++        quiet_say(cn, "Thou hast %d of %d. Say '\260c4done\260c0' when thou hast them, or '\260c4cancel\260c0' to drop the task.",
++                  min(skilling_thing_count(co, t->need), ppd->task_count), ppd->task_count);
++        return;
++    }
++    ppd->task_id = 0;
++    if (ppd->done_today >= tasks_per_day) {
++        hours_left(tmp, sizeof(tmp));
++        quiet_say(cn, "That is all the work for today, %s. Come back in %s.", ch[co].name, tmp);
++        return;
++    }
++
++    for (n = cnt = 0; n < ntask; n++) {
++        t = task + n;
++        if (skill_lvl(co, t->skill) < t->level || skill_lvl(co, t->skill) > t->maxlevel) continue;
++        list[cnt++] = n;
++    }
++    if (!cnt) {
++        quiet_say(cn, "I have nothing for thee yet, %s. Learn to mine, chop or pick flax first.", ch[co].name);
++        return;
++    }
++    if (cnt > 1) { // not the same task twice in a row
++        for (n = 0; n < cnt; n++) {
++            if (task[list[n]].id == ppd->last_id) {
++                list[n] = list[--cnt];
++                break;
++            }
++        }
++    }
++    pick = list[RANDOM(cnt)];
++    t = task + pick;
++    ppd->task_id = t->id;
++    ppd->task_count = t->min + RANDOM(t->max - t->min + 1);
++    questlog_open(co, board_quest);
++
++    task_text(t, ppd->task_count, buf, sizeof(buf));
++    quiet_say(cn, "%s", buf);
++    quiet_say(cn, "Say '\260c4done\260c0' when thou hast them. That is task %d of %d for today.", ppd->done_today + 1, tasks_per_day);
++}
++
++static void board_finish(int cn, int co, struct skillquest_ppd *ppd, int finished) {
++    if (finished) {
++        ppd->total++;
++        if (questlog_count(co, board_quest) < 63) questlog_done(co, board_quest); // the count has 6 bits
++        else questlog_close(co, board_quest);
++    } else questlog_close(co, board_quest);
++    ppd->last_id = ppd->task_id;
++    ppd->task_id = 0;
++    ppd->task_count = 0;
++    ppd->done_today++;
++}
++
++static void board_done(int cn, int co) {
++    struct skillquest_ppd *ppd;
++    struct taskdef *t;
++    int have, xp, silver;
++
++    if (!(ppd = board_ppd(co))) return;
++    if (!ppd->task_id || !(t = task_by_id(ppd->task_id))) {
++        ppd->task_id = 0;
++        board_talk(cn, co);
++        return;
++    }
++    if ((have = skilling_thing_count(co, t->need)) < ppd->task_count) {
++        quiet_say(cn, "Thou hast only %d of %d %s, %s.", have, ppd->task_count, skilling_thing_name(t->need), ch[co].name);
++        return;
++    }
++    skilling_thing_take(co, t->need, ppd->task_count);
++    xp = t->xp_each * ppd->task_count;
++    silver = t->silver_each * ppd->task_count;
++    dlog(co, 0, "finished daily task %s (%d x %s)", t->key, ppd->task_count, t->need_key);
++    board_finish(cn, co, ppd, 1);
++
++    quiet_say(cn, "Splendid work, %s! Here is thy pay.", ch[co].name);
++    if (xp) {
++        log_char(co, LOG_SYSTEM, 0, "\260c3Task reward: %d %s XP.", xp, skname(t->skill));
++        add_skill_xp(co, t->skill, xp);
++    }
++    if (ppd->done_today == tasks_per_day && board_bonus_gold) { // all of today's tasks done
++        silver += board_bonus_gold * 100;
++        log_char(co, LOG_SYSTEM, 0, "\260c3All of today's tasks done: %d gold bonus.", board_bonus_gold);
++    }
++    if (silver) {
++        give_money(co, silver, "daily task");
++        if (silver % 100) log_char(co, LOG_SYSTEM, 0, "\260c3Task reward: %d gold %d silver.", silver / 100, silver % 100);
++        else log_char(co, LOG_SYSTEM, 0, "\260c3Task reward: %d gold.", silver / 100);
++    }
++    if (ppd->done_today < tasks_per_day) quiet_say(cn, "I have more work today. Say '\260c4task\260c0'.");
++    else quiet_say(cn, "That was the last task for today. Come back tomorrow!");
++}
++
++static void board_cancel(int cn, int co) {
++    struct skillquest_ppd *ppd;
++
++    if (!(ppd = board_ppd(co))) return;
++    if (!ppd->task_id) {
++        quiet_say(cn, "Thou hast no task from me, %s.", ch[co].name);
++        return;
++    }
++    board_finish(cn, co, ppd, 0);
++    quiet_say(cn, "As thou wilt. That counts as one of today's tasks, %s.", ch[co].name);
++}
++
++// ---------- the NPC ----------
++
++static int has_word(char *text, char *word) {
++    int len = strlen(word);
++    char *p;
++
++    for (p = text; (p = strcasestr(p, word)); p += len) {
++        if ((p == text || !isalpha(p[-1])) && !isalpha(p[len])) return 1;
++    }
++    return 0;
++}
++
++static void npc_text(int cn, struct sqnpc_data *dat, int co, char *text) {
++    char *said;
++    int board;
++
++    if (co == cn || co < 1 || co >= MAXCHARS || !(ch[co].flags & CF_PLAYER)) return;
++    if (char_dist(cn, co) > TALKDIST || !char_see_char(cn, co)) return;
++    if (!(said = strchr(text, '"'))) return; // "Name says: "text""
++    said++;
++
++    board = !strcmp(dat->npc, board_npc);
++    if (board) {
++        if (has_word(said, "task") || has_word(said, "tasks") || has_word(said, "daily") || has_word(said, "work") || has_word(said, "quest")) board_talk(cn, co);
++        else if (has_word(said, "done") || has_word(said, "finished") || has_word(said, "deliver")) board_done(cn, co);
++        else if (has_word(said, "cancel") || has_word(said, "abandon")) board_cancel(cn, co);
++        else if (has_word(said, "hi") || has_word(said, "hello") || has_word(said, "help")) quiet_say(cn, "Hello %s! Say '\260c4task\260c0' and I will find thee some honest work.", ch[co].name);
++        else return;
++    } else {
++        if (has_word(said, "quest") || has_word(said, "work") || has_word(said, "job") || has_word(said, "task")) quest_talk(cn, co, dat->npc);
++        else if (has_word(said, "accept") || has_word(said, "yes")) quest_accept(cn, co, dat->npc);
++        else if (has_word(said, "done") || has_word(said, "finished") || has_word(said, "deliver")) quest_done(cn, co, dat->npc);
++        else if (has_word(said, "hi") || has_word(said, "hello") || has_word(said, "help")) quest_talk(cn, co, dat->npc);
++        else return;
++    }
++    dat->last_talk = ticker;
++}
++
++static void npc_greet(int cn, struct sqnpc_data *dat, int co) {
++    int state;
++
++    if (co == cn || !(ch[co].flags & CF_PLAYER) || !char_see_char(cn, co) || char_dist(cn, co) > TALKDIST) return;
++    if (mem_check_driver(cn, co, 7)) return;
++    mem_add_driver(cn, co, 7);
++
++    if (!strcmp(dat->npc, board_npc)) {
++        quiet_say(cn, "Hello %s! Looking for work? Say '\260c4task\260c0'.", ch[co].name);
++        return;
++    }
++    npc_quest(co, dat->npc, &state);
++    if (state == 1) quiet_say(cn, "Back again, %s? Say '\260c4done\260c0' if thou hast everything.", ch[co].name);
++    else if (state == 2) quiet_say(cn, "Hello %s! I could use a hand. Say '\260c4quest\260c0'.", ch[co].name);
++}
++
++static void npc_parse(int cn, struct sqnpc_data *dat) {
++    char *ptr, name[64], value[64];
++
++    for (ptr = nextnv(ch[cn].arg, name, value); ptr; ptr = nextnv(ptr, name, value)) {
++        if (!strcmp(name, "dir")) dat->dir = atoi(value);
++        else if (!strcmp(name, "npc")) {
++            scopy(dat->npc, value, sizeof(dat->npc));
++            upcase(dat->npc);
++        } else elog("unknown arg for %s (%d): %s", ch[cn].name, cn, name);
++    }
++}
++
++static void npc_driver(int cn, int ret, int lastact) {
++    struct sqnpc_data *dat;
++    struct msg *msg, *next;
++    int co, in;
++
++    if (!(dat = set_data(cn, DRD_SKILLQUESTDRIVER, sizeof(struct sqnpc_data)))) return;
++    if (!dat->init) {
++        dat->init = 1;
++        dat->dir = DX_DOWN;
++        if (ch[cn].arg) npc_parse(cn, dat);
++        ch[cn].arg = NULL;
++        if (!dat->npc[0]) elog("%s (%d) has driver %d but no npc= in its arg.", ch[cn].name, cn, CDR_SKILLQUEST);
++    }
++
++    for (msg = ch[cn].msg; msg; msg = next) {
++        next = msg->next;
++
++        switch (msg->type) {
++        case NT_CHAR:
++            npc_greet(cn, dat, (int)msg->dat1);
++            break;
++        case NT_TEXT:
++            if (msg->dat1 == LOG_TALK || msg->dat1 == LOG_SHOUT) npc_text(cn, dat, (int)msg->dat3, (char *)msg->dat2);
++            break;
++        case NT_GIVE: // give it back, items are handed in by saying "done"
++            co = (int)msg->dat1;
++            if ((in = ch[cn].citem)) {
++                ch[cn].citem = 0;
++                it[in].carried = 0;
++                if (co > 0 && co < MAXCHARS && (ch[co].flags & CF_PLAYER) && give_char_item(co, in)) {
++                    quiet_say(cn, "Keep that, %s. Just say '\260c4done\260c0' when thou hast everything.", ch[co].name);
++                } else {
++                    destroy_item(in);
++                }
++            }
++            break;
++        }
++        remove_message(cn, msg);
++    }
++
++    if (secure_move_driver(cn, ch[cn].tmpx, ch[cn].tmpy, dat->dir, ret, lastact)) return;
++    do_idle(cn, TICKS);
++}
++
++int skillquest_driver(int type, int cn, intptr_t ret, int lastact) {
++    if (type == 0) npc_driver(cn, (int)ret, lastact);
++    return 1; // item (1) and death (2) calls: nothing to do
++}
++
++// ---------- /tasks ----------
++
++void skillquest_command(int cn, char *args) {
++    struct skillquest_ppd *ppd;
++    struct taskdef *t;
++    int n, state, any = 0;
++    char buf[256], tmp[40];
++
++    if (!nsq && !ntask) {
++        log_char(cn, LOG_SYSTEM, 0, "There are no skilling quests on this server.");
++        return;
++    }
++    while (isspace(*args)) args++;
++    if (!strcasecmp(args, "reset") && (ch[cn].flags & CF_GOD)) {
++        if ((ppd = set_data(cn, DRD_SKILLQUEST_PPD, sizeof(struct skillquest_ppd)))) ppd->day = -1;
++        log_char(cn, LOG_SYSTEM, 0, "Today's task count reset.");
++        return;
++    }
++    if (!strncasecmp(args, "give ", 5) && (ch[cn].flags & CF_GOD)) { // /tasks give <KEY> [count], for testing
++        char key[64];
++        int d, cnt;
++
++        args += 5;
++        while (isspace(*args)) args++;
++        for (n = 0; n < 63 && *args && !isspace(*args); n++) key[n] = *args++;
++        key[n] = 0;
++        cnt = max(1, atoi(args));
++        upcase(key);
++        if ((d = skilling_thing(key)) == -1) log_char(cn, LOG_SYSTEM, 0, "Unknown skilling key \"%s\".", key);
++        else if (!skilling_thing_room(cn, d, cnt) || !skilling_thing_give(cn, d, cnt)) log_char(cn, LOG_SYSTEM, 0, "No room for %d %s.", cnt, skilling_thing_name(d));
++        else log_char(cn, LOG_SYSTEM, 0, "Gave %d %s.", cnt, skilling_thing_name(d));
++        return;
++    }
++
++    log_char(cn, LOG_SYSTEM, 0, "\260c3Skilling quests:");
++    for (n = 0; n < nsq; n++) {
++        int q, k, done = 0, total = 0;
++
++        for (k = 0; k < n; k++)
++            if (!strcmp(sq[k].npc, sq[n].npc)) break;
++        if (k < n) continue; // one line per quest giver
++
++        for (k = 0; k < nsq; k++) {
++            if (strcmp(sq[k].npc, sq[n].npc)) continue;
++            total++;
++            if (questlog_isdone(cn, sq[k].quest)) done++;
++        }
++        q = npc_quest(cn, sq[n].npc, &state);
++        any = 1;
++        switch (state) {
++        case 0:
++            log_char(cn, LOG_SYSTEM, 0, "  %s: all %d quests done.", questlog_giver(sq[n].quest), total);
++            break;
++        case 1:
++            need_text(cn, sq + q, buf, sizeof(buf), 1);
++            log_char(cn, LOG_SYSTEM, 0, "  %s: \"%s\", %s.", questlog_giver(sq[q].quest), questlog_name(sq[q].quest), buf);
++            break;
++        case 2:
++            log_char(cn, LOG_SYSTEM, 0, "  %s: \"%s\" is waiting for thee (%d of %d done).", questlog_giver(sq[q].quest), questlog_name(sq[q].quest), done, total);
++            break;
++        case 3:
++            log_char(cn, LOG_SYSTEM, 0, "  %s: next quest at %s level %d (%d of %d done).", questlog_giver(sq[q].quest), skname(sq[q].skill), sq[q].level, done, total);
++            break;
++        default:
++            log_char(cn, LOG_SYSTEM, 0, "  %s: next quest after \"%s\" (%d of %d done).", questlog_giver(sq[q].quest), questlog_name(sq[sq[q].after].quest), done, total);
++            break;
++        }
++    }
++    if (!any) log_char(cn, LOG_SYSTEM, 0, "  none");
++
++    if (ntask && (ppd = board_ppd(cn))) {
++        log_char(cn, LOG_SYSTEM, 0, "\260c3Task board (%s):", board_quest >= 0 ? questlog_giver(board_quest) : "?");
++        if (ppd->task_id && (t = task_by_id(ppd->task_id))) {
++            log_char(cn, LOG_SYSTEM, 0, "  Bring %d/%d %s.", min(skilling_thing_count(cn, t->need), ppd->task_count), ppd->task_count, skilling_thing_name(t->need));
++        }
++        hours_left(tmp, sizeof(tmp));
++        log_char(cn, LOG_SYSTEM, 0, "  %d of %d tasks done today (new tasks in %s), %d done in all.", min(ppd->done_today, tasks_per_day), tasks_per_day, tmp, ppd->total);
++    }
++}
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/src/skillquest.h new/src/skillquest.h
+--- orig/src/skillquest.h	1970-01-01 00:00:00.000000000 +0000
++++ new/src/skillquest.h	2026-10-14 21:39:45.928045338 +0000
+@@ -0,0 +1,7 @@
++/*
++ * Skilling quests and the daily task board, see skillquest.c and zones/generic/skillquests.cfg.
++ */
++
++int skillquest_load(void); // after skilling_load (uses its keys) and skills_load
++int skillquest_driver(int type, int cn, intptr_t ret, int lastact); // character driver CDR_SKILLQUEST
++void skillquest_command(int cn, char *args); // /tasks
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/zones/40/skillquests.place new/zones/40/skillquests.place
+--- orig/zones/40/skillquests.place	1970-01-01 00:00:00.000000000 +0000
++++ new/zones/40/skillquests.place	2026-10-14 21:46:17.720351672 +0000
+@@ -0,0 +1,66 @@
++# =====================================================================
++# skillquests.place - zone 40 additions for the skilling quests (read after thornwood.map, 1024 version)
++# at="x,y" keeps the map tile and adds the item or character. NPC templates are in thornwood.chr,
++# quests in zones\generic\skillquests.cfg.
++# =====================================================================
++
++# ---- quest givers and the task board
++at="518,470"
++ch=z40_garrick
++at="536,510"
++ch=z40_torvald
++at="505,511"
++ch=z40_reeve
++at="475,511"
++ch=z40_edda
++at="487,510"
++ch=z40_fenn
++at="494,545"
++ch=z40_wyn
++
++# ---- the grove west of the village (around 466-487,506-521): woodcutting supplies, workbench, trees
++at="473,509"
++it=sk_woodcutting_supplies
++at="485,510"
++it=sk_workbench
++
++at="466,506"
++it=sk_tree_normal
++at="470,507"
++it=sk_tree_normal
++at="468,509"
++it=sk_tree_normal
++at="466,512"
++it=sk_tree_normal
++at="470,513"
++it=sk_tree_normal
++at="468,516"
++it=sk_tree_normal
++
++at="476,517"
++it=sk_tree_oak
++at="480,519"
++it=sk_tree_oak
++at="484,517"
++it=sk_tree_oak
++at="474,521"
++it=sk_tree_oak
++
++at="464,518"
++it=sk_tree_willow
++at="467,520"
++it=sk_tree_willow
++
++# ---- more flax next to the field at 486-488,544-546
++at="490,544"
++it=sk_flax_plant
++at="490,546"
++it=sk_flax_plant
++at="492,544"
++it=sk_flax_plant
++at="492,546"
++it=sk_flax_plant
++at="486,548"
++it=sk_flax_plant
++at="488,548"
++it=sk_flax_plant
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/zones/40/thornwood.chr new/zones/40/thornwood.chr
+--- orig/zones/40/thornwood.chr	2026-10-14 21:36:54.123218866 +0000
++++ new/zones/40/thornwood.chr	2026-10-14 21:42:21.751350339 +0000
+@@ -508,6 +508,237 @@
+ group=1
+ ;
+ 
++
++# ---------------------------------------------------------------- skilling quest givers (driver 160)
++
++#---- Zone 40, Garrick (mine foreman) ----
++z40_garrick:
++name="Garrick"
++description="The foreman of the Thornwick mine, grey with rock dust."
++sprite=203
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_MALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=MINER;dir=3;"
++
++driver=160
++group=1
++;
++
++#---- Zone 40, Torvald (village smith) ----
++z40_torvald:
++name="Torvald"
++description="The village smith. His arms are as thick as the anvil is heavy."
++sprite=200
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_MALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=SMITH;dir=5;"
++
++driver=160
++group=1
++;
++
++#---- Zone 40, Edda (forester) ----
++z40_edda:
++name="Edda"
++description="Edda looks after the grove and decides which trees may be felled."
++sprite=202
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_FEMALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=FORESTER;dir=3;"
++
++driver=160
++group=1
++;
++
++#---- Zone 40, Fenn (fletcher) ----
++z40_fenn:
++name="Fenn"
++description="Fenn makes bows and arrows for the hunters and the watch."
++sprite=201
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_MALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=FLETCHER;dir=3;"
++
++driver=160
++group=1
++;
++
++#---- Zone 40, Wyn (farmer) ----
++z40_wyn:
++name="Wyn"
++description="An old farmer who grows flax for the village weaver."
++sprite=234
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_FEMALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=FARMER;dir=5;"
++
++driver=160
++group=1
++;
++
++#---- Zone 40, Reeve Hale (task board) ----
++z40_reeve:
++name="Reeve Hale"
++description="The reeve keeps the village task board: there is always work in Thornwick."
++sprite=233
++sound=1
++flag=CF_NOATTACK
++flag=CF_IMMORTAL
++flag=CF_MALE
++flag=CF_HASNAME
++flag=CF_NOGIVE
++flag=CF_ALIVE
++
++V_HP=15
++V_ENDURANCE=15
++V_MANA=0
++
++V_WIS=15
++V_INT=15
++V_AGI=15
++V_STR=15
++
++V_HAND=10
++V_ATTACK=10
++V_PARRY=20
++V_SPEEDSKILL=15
++V_PERCEPT=20
++V_STEALTH=5
++V_REGENERATE=10
++V_IMMUNITY=15
++
++# skilling quest giver (src\skillquest.c, zones\generic\skillquests.cfg)
++arg="npc=BOARD;dir=3;"
++
++driver=160
++group=1
++;
++
+ # ---------------------------------------------------------------- monsters (level 8-15)
+ #---- Zone 40, Giant Rat (level 8) ----
+ z40_ratling:
+diff -ruN -x .lobj -x .wobj -x .dllobj -x runtime -x '*.exe' -x server35 -x thornwood.map -x 'create_*' -x chatserver -x '*.d' -x Makefile.linux orig/zones/generic/skillquests.cfg new/zones/generic/skillquests.cfg
+--- orig/zones/generic/skillquests.cfg	1970-01-01 00:00:00.000000000 +0000
++++ new/zones/generic/skillquests.cfg	2026-10-14 21:57:23.995769476 +0000
+@@ -0,0 +1,443 @@
++# =====================================================================
++# skillquests.cfg - skilling quests and the daily task board (Astonia rebuild)
++# =====================================================================
++#
++# Read when an area starts (after skills.cfg and skilling.cfg, whose keys it uses). Code: src\skillquest.c.
++# An error here stops the area from starting, like the other .cfg files; the area log names the line.
++#
++# The NPCs use character driver 160 and arg="npc=KEY;dir=N;" in their .chr template (zones\40\thornwood.chr).
++# Players talk to them:
++#   quest givers:  "quest" (what is there to do), "accept", "done" (hand in everything)
++#   task board:    "task" (get or show today's task), "done", "cancel"
++# /tasks lists a player's progress. /tasks reset (god) resets today's task count,
++# /tasks give <KEY> [count] (god) hands out skilling items for testing.
++#
++# ---------- quest blocks ----------
++#   KEY:                 any name, used by after=
++#   type=quest
++#   quest=               questlog number. Needs an entry in questlog[] in src\questlog.c AND in the client's
++#                        _game_questlog[] (src\gui\questlog.c) or it does not show in the quest log.
++#   npc=                 NPC key that gives it (the npc= in its arg). One NPC gives its quests in file order.
++#   skill= level=        skill level needed to accept it (optional)
++#   after=               quest KEY that must be done first (optional; same NPC is already in order)
++#   need=THING,count     what the player brings (up to 4). THING is a skilling.cfg key: a resource
++#                        (COPPER_ORE), a tool (IRON_AXE) or a recipe that makes an item (SMITH_IRON_DAGGER
++#                        counts smithed Iron Daggers only, not bought ones)
++#   xp=SKILL,amount      skill XP reward (up to 4). The global rate= in skills.cfg applies (75% now).
++#   gold=                gold coins reward
++#   reward=THING[,count] item reward (a skilling.cfg key as for need=)
++#   offer= remind= thanks=   what the NPC says when offering, while it is open, and when it is done
++#
++# For scale (skills.cfg, before the rate): level 15 needs 2,238 XP in all, level 30 needs 11,890,
++# level 45 needs 52,500.
++#
++# ---------- task blocks (daily task board) ----------
++#   KEY:
++#   type=task
++#   id=                  saved in the player's data: never change or reuse
++#   skill= level= maxlevel=   who gets it (skill level in this range)
++#   need=THING,min,max   asks for a random count from min to max
++#   xp_each=             XP per item for skill=
++#   silver_each=         money per item, in silver (100 silver = 1 gold)
++#   text=                what the board NPC says; {count} and {item} are filled in
++#
++# ---------- config ----------
++config:
++board=BOARD              # NPC key of the task board NPC
++board_quest=95           # questlog entry that is open while a task is taken
++tasks_per_day=3          # tasks a player can take per day (cancelled ones count)
++reset_hour=0             # hour (server time, UTC on most servers) when the day's count resets
++bonus_gold=50            # extra gold for finishing all of the day's tasks
++;
++
++# =====================================================================
++# Mining - Garrick, the mine foreman (the rocks north of the village square)
++# =====================================================================
++MINING_1:
++type=quest
++quest=81
++npc=MINER
++skill=MINING
++level=1
++need=COPPER_ORE,15
++need=TIN_ORE,15
++xp=MINING,500
++gold=25
++reward=IRON_PICKAXE
++offer="The smithy eats ore faster than my lads can dig it. Grab a pickaxe from the supply crate by the smithy and dig me some copper and tin."
++remind="Copper and tin, friend. The rocks are just east of here."
++thanks="Good honest ore! Take this iron pickaxe, it bites deeper than bronze."
++;
++
++MINING_2:
++type=quest
++quest=82
++npc=MINER
++skill=MINING
++level=15
++need=IRON_ORE,25
++xp=MINING,2500
++gold=75
++reward=STEEL_PICKAXE
++offer="There is iron in these hills, but it takes a steady hand to get it out."
++remind="Iron ore, from the reddish rocks by the mine."
++thanks="Fine iron. Here, a steel pickaxe. Thou hast earned it."
++;
++
++MINING_3:
++type=quest
++quest=83
++npc=MINER
++skill=MINING
++level=30
++need=COAL,40
++xp=MINING,7000
++gold=200
++offer="Torvald wants to make steel, and steel needs coal. Lots of it."
++remind="Coal, black as night. The dark rocks at the east end of the mine."
++thanks="That will keep the forge burning for a month. Well done!"
++;
++
++# =====================================================================
++# Smithing - Torvald, the village smith (Thornwick smithy, furnace and anvil)
++# =====================================================================
++SMITHING_1:
++type=quest
++quest=84
++npc=SMITH
++skill=SMITHING
++level=1
++need=BRONZE_BAR,10
++xp=SMITHING,500
++gold=25
++offer="Every smith starts at the furnace. Smelt copper and tin into bronze and show me thou canst do it."
++remind="Ten bronze bars. One copper ore and one tin ore make a bar at the furnace."
++thanks="Clean bars, no slag. Thou wilt make a smith yet."
++;
++
++SMITHING_2:
++type=quest
++quest=85
++npc=SMITH
++skill=SMITHING
++level=15
++need=SMITH_IRON_DAGGER,3
++xp=SMITHING,2500
++gold=75
++offer="The village watch needs daggers, and Bram's are bought in from the city. Make me three of iron at the anvil."
++remind="Three iron daggers, made by thine own hand at the anvil. Bought ones will not do."
++thanks="Good weight, good edge. The watch will be glad of these."
++;
++
++SMITHING_3:
++type=quest
++quest=86
++npc=SMITH
++skill=SMITHING
++level=30
++need=STEEL_BAR,10
++need=SMITH_STEEL_DAGGER,2
++xp=SMITHING,7000
++gold=200
++offer="The old keep to the south is stirring. We need steel, and blades of it."
++remind="Ten steel bars and two steel daggers of thine own make."
++thanks="Steel! Real steel, made in Thornwick. I am proud of thee."
++;
++
++# =====================================================================
++# Woodcutting - Edda, the forester (the grove west of the village)
++# =====================================================================
++WOODCUTTING_1:
++type=quest
++quest=87
++npc=FORESTER
++skill=WOODCUTTING
++level=1
++need=LOGS,25
++xp=WOODCUTTING,500
++gold=25
++reward=IRON_AXE
++offer="Winter is coming and the tavern needs firewood. Take an axe from the crate here and fell some of these trees."
++remind="Plain logs, from the trees around this grove."
++thanks="That will keep Marta's hearth warm. Take this iron axe, it will serve thee better."
++;
++
++WOODCUTTING_2:
++type=quest
++quest=88
++npc=FORESTER
++skill=WOODCUTTING
++level=15
++need=OAK_LOGS,25
++xp=WOODCUTTING,2500
++gold=75
++reward=STEEL_AXE
++offer="The west palisade is rotting. Oak is what we need, strong and straight."
++remind="Oak logs, from the big oaks in the grove."
++thanks="Good oak. Here, a steel axe, the best I have."
++;
++
++WOODCUTTING_3:
++type=quest
++quest=89
++npc=FORESTER
++skill=WOODCUTTING
++level=30
++need=WILLOW_LOGS,30
++xp=WOODCUTTING,7000
++gold=200
++offer="Fenn says willow makes the finest bows. Willows grow at the edge of the grove, and down by the water."
++remind="Willow logs, thirty of them."
++thanks="Lovely, supple wood. Fenn will be pleased."
++;
++
++# =====================================================================
++# Crafting - Fenn, the fletcher (workbench in the grove)
++# =====================================================================
++CRAFTING_1:
++type=quest
++quest=90
++npc=FLETCHER
++skill=CRAFTING
++level=1
++need=ARROW_SHAFT,60
++xp=CRAFTING,500
++gold=25
++reward=FEATHER,60
++offer="A fletcher needs shafts, many shafts. Cut logs into arrow shafts at the workbench with a knife."
++remind="Sixty arrow shafts. One log makes fifteen at the workbench."
++thanks="Straight and true. Here are some feathers, thou wilt need them for arrows."
++;
++
++CRAFTING_2:
++type=quest
++quest=91
++npc=FLETCHER
++skill=CRAFTING
++level=10
++need=STRING_LONGBOW,1
++xp=CRAFTING,2500
++gold=75
++offer="The hunters want a proper longbow. Carve an unstrung longbow, spin a bowstring from flax and string it."
++remind="One longbow of thine own make. Flax gives bowstrings, logs give the unstrung bow."
++thanks="A fine bow! The hunters will fight over it."
++;
++
++CRAFTING_3:
++type=quest
++quest=92
++npc=FLETCHER
++skill=CRAFTING
++level=15
++need=IRON_ARROW,45
++xp=CRAFTING,7000
++gold=200
++offer="Bandits camp to the east. The watch needs arrows with iron tips."
++remind="Forty-five iron arrows. Torvald's anvil makes the arrowtips."
++thanks="These will give the bandits something to think about. Well done!"
++;
++
++# =====================================================================
++# Farming - Wyn, the farmer (flax field south-west of the village)
++# =====================================================================
++FARMING_1:
++type=quest
++quest=93
++npc=FARMER
++skill=FARMING
++level=1
++need=FLAX,30
++xp=FARMING,500
++gold=25
++offer="My back is not what it was. Pick me some flax from the field, the weaver is waiting."
++remind="Thirty flax, from the field right here."
++thanks="Bless thee! The weaver will have linen by midwinter."
++;
++
++FARMING_2:
++type=quest
++quest=94
++npc=FARMER
++skill=FARMING
++level=10
++need=FLAX,100
++xp=FARMING,2500
++gold=75
++offer="A good harvest this year. If thou canst bring in a hundred flax, I will pay thee well."
++remind="A hundred flax. It grows back quickly."
++thanks="The whole harvest is in! Thank thee, friend."
++;
++
++# =====================================================================
++# Daily task board - Reeve Hale (village square)
++# =====================================================================
++TASK_COPPER:
++type=task
++id=1
++skill=MINING
++level=1
++maxlevel=40
++need=COPPER_ORE,15,30
++xp_each=10
++silver_each=20
++text="The smithy needs {count} {item}. Canst thou dig it?"
++;
++
++TASK_TIN:
++type=task
++id=2
++skill=MINING
++level=1
++maxlevel=40
++need=TIN_ORE,15,30
++xp_each=10
++silver_each=20
++text="The smithy needs {count} {item}. Canst thou dig it?"
++;
++
++TASK_IRON_ORE:
++type=task
++id=3
++skill=MINING
++level=15
++need=IRON_ORE,15,25
++xp_each=20
++silver_each=40
++text="Bring me {count} {item} for the smithy."
++;
++
++TASK_COAL:
++type=task
++id=4
++skill=MINING
++level=30
++need=COAL,15,25
++xp_each=30
++silver_each=60
++text="The forge is running low. Bring me {count} {item}."
++;
++
++TASK_BRONZE_BARS:
++type=task
++id=5
++skill=SMITHING
++level=1
++maxlevel=40
++need=BRONZE_BAR,8,15
++xp_each=10
++silver_each=50
++text="Torvald is behind on his orders. Smelt {count} {item} for him."
++;
++
++TASK_IRON_BARS:
++type=task
++id=6
++skill=SMITHING
++level=15
++need=IRON_BAR,8,15
++xp_each=18
++silver_each=80
++text="Torvald needs {count} {item}."
++;
++
++TASK_STEEL_BARS:
++type=task
++id=7
++skill=SMITHING
++level=30
++need=STEEL_BAR,5,10
++xp_each=30
++silver_each=150
++text="Steel for the keep: bring {count} {item}."
++;
++
++TASK_LOGS:
++type=task
++id=8
++skill=WOODCUTTING
++level=1
++maxlevel=45
++need=LOGS,15,30
++xp_each=8
++silver_each=15
++text="The tavern needs firewood: {count} {item}."
++;
++
++TASK_OAK_LOGS:
++type=task
++id=9
++skill=WOODCUTTING
++level=15
++need=OAK_LOGS,15,25
++xp_each=15
++silver_each=30
++text="The palisade needs mending. Bring {count} {item}."
++;
++
++TASK_WILLOW_LOGS:
++type=task
++id=10
++skill=WOODCUTTING
++level=30
++need=WILLOW_LOGS,10,20
++xp_each=25
++silver_each=50
++text="Fenn wants {count} {item} for his bows."
++;
++
++TASK_ARROW_SHAFTS:
++type=task
++id=11
++skill=CRAFTING
++level=1
++maxlevel=40
++need=ARROW_SHAFT,45,90
++xp_each=1
++silver_each=2
++text="Fenn needs {count} {item}."
++;
++
++TASK_BOWSTRINGS:
++type=task
++id=12
++skill=CRAFTING
++level=1
++maxlevel=40
++need=BOWSTRING,10,20
++xp_each=3
++silver_each=15
++text="The hunters need {count} {item}."
++;
++
++TASK_BRONZE_ARROWS:
++type=task
++id=13
++skill=CRAFTING
++level=5
++need=BRONZE_ARROW,30,60
++xp_each=2
++silver_each=4
++text="The watch is short of arrows. Bring {count} {item}."
++;
++
++TASK_IRON_ARROWS:
++type=task
++id=14
++skill=CRAFTING
++level=15
++need=IRON_ARROW,30,60
++xp_each=4
++silver_each=8
++text="The watch wants {count} {item} for the bandit raids."
++;
++
++TASK_FLAX:
++type=task
++id=15
++skill=FARMING
++level=1
++need=FLAX,20,40
++xp_each=6
++silver_each=10
++text="The weaver needs {count} {item}."
++;
