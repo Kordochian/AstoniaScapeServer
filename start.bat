@@ -43,6 +43,7 @@ call :area 33 "Long Tunnels"
 rem 34-35 empty
 call :area 36 "Caligar"
 call :area 37 "Arkhata"
+call :area 40 "Thornwood Vale"
 
 echo Done
 goto :eof
