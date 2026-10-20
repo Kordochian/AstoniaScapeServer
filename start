@@ -74,6 +74,8 @@ sleep 0.2
 sleep 0.2
 ./server35 -a 37 -d # Arkhata
 sleep 0.2
+./server35 -a 40 -d # Thornwood Vale
+sleep 0.2
 
 echo Done
 

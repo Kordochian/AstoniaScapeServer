@@ -1098,18 +1098,30 @@ int create_char(char *name, int tmpa) {
     return create_char_nr(tmp, tmpa);
 }
 
+// highest map position used by this area's .map files and which positions they define;
+// see add_map_border()
+static int zone_maxx = 0, zone_maxy = 0;
+static unsigned char *zone_used;
+
+static void mark_used(int x, int y) {
+    if (!zone_used) zone_used = xcalloc(MAXMAP * MAXMAP / 8, IM_TEMP);
+    if (zone_used) zone_used[(x + y * MAXMAP) >> 3] |= 1 << ((x + y * MAXMAP) & 7);
+}
+
+static int is_used(int x, int y) {
+    return zone_used && (zone_used[(x + y * MAXMAP) >> 3] & (1 << ((x + y * MAXMAP) & 7)));
+}
+
 static void field2square(int src, int xf, int yf, int xt, int yt) {
     int x, y;
 
     for (y = yf; y <= yt; y++) {
         for (x = xf; x <= xt; x++) {
             map[x + y * MAXMAP] = map[src];
+            mark_used(x, y);
         }
     }
 }
-
-// highest map position used by this area's .map files; see add_map_border()
-static int zone_maxx = 0, zone_maxy = 0;
 
 static int map_pos_ok(int x, int y, int line) {
     if (x < 0 || x >= MAXMAP || y < 0 || y >= MAXMAP) {
@@ -1149,6 +1161,7 @@ static int process_map(char *ptr) {
             y = atoi(two) + oy;
             if (!map_pos_ok(x, y, line)) return 0;
             bzero(map + x + y * MAXMAP, sizeof(struct map));
+            mark_used(x, y);
         } else if (!strcasecmp(name, "at")) { // like field, but keeps the tile (for .place files)
             if (!comma(one, two, value)) {
                 elog("Error in line %d: Expected two comma seperated values.", line);
@@ -1449,8 +1462,8 @@ void free_item(int in) {
     used_items--;
 }
 
-// size the zone was made for: 256x256 for the old zones, otherwise the used area rounded up
-// to a multiple of 256. Everything outside it is blocked, so old zones behave as before.
+// size the zone was made for: 256x256 for the old zones, otherwise the used area plus a
+// two tile wall. Everything outside it is blocked, so old zones behave as before.
 static int zone_w = 256, zone_h = 256;
 
 static void calc_daylight(void) {
@@ -1469,20 +1482,30 @@ static void calc_daylight(void) {
 }
 
 void add_map_border(void) {
-    int x, y, m;
+    int x, y, m, big;
 
-    zone_w = min(MAXMAP, max(256, (zone_maxx + 1 + 255) / 256 * 256));
-    zone_h = min(MAXMAP, max(256, (zone_maxy + 1 + 255) / 256 * 256));
+    // old zones (nothing beyond 255) keep their wall at 0,1,254,255. A bigger zone gets its
+    // wall two tiles outside the highest used position, and every position its .map files
+    // leave undefined is blocked, so the wall follows the shape of the zone.
+    big = zone_maxx > 255 || zone_maxy > 255;
+    if (big) {
+        zone_w = min(MAXMAP, zone_maxx + 3);
+        zone_h = min(MAXMAP, zone_maxy + 3);
+    } else zone_w = zone_h = 256;
     xlog("Zone size %dx%d (map %dx%d)", zone_w, zone_h, MAXMAP, MAXMAP);
 
-    // two lines of wall around the zone, and nothing beyond it
     for (y = 0; y < MAXMAP; y++) {
         for (x = 0; x < MAXMAP; x++) {
-            if (x > 1 && y > 1 && x < zone_w - 2 && y < zone_h - 2) continue;
+            if (x > 1 && y > 1 && x < zone_w - 2 && y < zone_h - 2 && (!big || is_used(x, y))) continue;
             m = x + y * MAXMAP;
             map[m].flags |= MF_MOVEBLOCK | MF_SIGHTBLOCK | MF_SHOUTBLOCK | MF_SOUNDBLOCK;
             map[m].flags &= ~MF_FIRETHRU;
         }
+    }
+
+    if (zone_used) {
+        xfree(zone_used);
+        zone_used = NULL;
     }
 }
 
